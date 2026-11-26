@@ -186,7 +186,7 @@ export class LinuxAppSession {
     const dims = clampDim(opts.width || 720, opts.height || 480, this.screenWidth, this.screenHeight);
     this.width = dims.width;
     this.height = dims.height;
-    this.fps = Math.max(8, Math.min(35, opts.fps || 20));
+    this.fps = Math.max(8, Math.min(35, opts.fps || 30));
     this.quality = Math.max(2, Math.min(10, opts.quality || 4));
     this.maxQuality = Math.max(45, Math.min(95, opts.maxQuality ?? Math.max(60, Math.min(88, 92 - this.quality * 4))));
     this.motionQuality = Math.max(30, Math.min(this.maxQuality, opts.motionQuality ?? Math.max(40, this.maxQuality - 24)));
@@ -923,7 +923,7 @@ export class LinuxAppSession {
       '-f', 'x11grab',
       '-draw_mouse', '0',
       '-video_size', `${view.width}x${view.height}`,
-      '-framerate', String(Math.min(15, this.fps)),
+      '-framerate', String(Math.min(30, this.fps)),
       '-i', `${this.displayStr}.0+${view.offsetX},${view.offsetY}`,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',

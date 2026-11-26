@@ -163,6 +163,45 @@ html.theme-transitioning * {
   animation: os-dock-bounce-x 920ms cubic-bezier(0.28, 0.84, 0.42, 1) infinite;
 }
 
+/* Smooth macOS-style directional spring pop for anchored Dock flyouts */
+@keyframes os-flyout-up {
+  0% { opacity: 0; transform: translateY(10px) scale(0.95); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes os-flyout-down {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.95); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes os-flyout-right {
+  0% { opacity: 0; transform: translateX(-10px) scale(0.95); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes os-flyout-left {
+  0% { opacity: 0; transform: translateX(10px) scale(0.95); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.flyout-pop-up {
+  animation: os-flyout-up 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: bottom center;
+  will-change: opacity, transform;
+}
+.flyout-pop-down {
+  animation: os-flyout-down 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+  will-change: opacity, transform;
+}
+.flyout-pop-right {
+  animation: os-flyout-right 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: left center;
+  will-change: opacity, transform;
+}
+.flyout-pop-left {
+  animation: os-flyout-left 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: right center;
+  will-change: opacity, transform;
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

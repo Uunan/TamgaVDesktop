@@ -80,7 +80,7 @@ export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
   maxDpr: 2,
   settlePng: true,
   settleDelayMs: 300,
-  x11Fps: 20,
+  x11Fps: 30,
   x11MaxQuality: 85,
   x11MotionQuality: 58,
   audioEnabled: true,

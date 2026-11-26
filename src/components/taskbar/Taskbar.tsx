@@ -8,9 +8,7 @@ import {
   Folder,
   Gauge,
   HardDrive,
-  ImagePlus,
   Layers,
-  LayoutGrid,
   Link2,
   Lock,
   LogOut,
@@ -28,8 +26,6 @@ import {
   VolumeX,
 } from 'lucide-react';
 import {
-  WALLPAPERS,
-  type DesktopMeta,
   type DockPreferences,
   type LinuxAppInfo,
   type OSWindow,
@@ -39,16 +35,15 @@ import {
   type VFSNode,
   type VirtualDesktopInfo,
 } from '../../types/os';
-import { buildAppIconUrl, buildWallpaperUrl } from '../../services/osBridge';
+import { buildAppIconUrl } from '../../services/osBridge';
 import {
   AppStoreIcon,
-  ChromiumLogoIcon,
   FileIcon,
   FirefoxLogoIcon,
+  GoogleChromeLogoIcon,
   SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
-import { WallpaperThumb } from '../desktop/WallpaperLayer';
 import { formatUptime, getFileTypeLabel } from '../../utils/format';
 
 interface TaskbarProps {
@@ -58,8 +53,6 @@ interface TaskbarProps {
   telemetry: TelemetryData | null;
   pingMs: number;
   notificationHistory: ToastItem[];
-  wallpaperId: string;
-  customWallpaper?: string;
   theme: 'dark' | 'light';
   dock: DockPreferences;
   brightness: number;
@@ -79,8 +72,6 @@ interface TaskbarProps {
   onChangeBrightness: (v: number) => void;
   onChangeVolume: (v: number) => void;
   onToggleMute: () => void;
-  onSelectWallpaper: (id: DesktopMeta['preferences']['wallpaper']) => void;
-  onTriggerWallpaperUpload: () => void;
   onToggleTheme: (nextTheme: 'dark' | 'light', origin?: { x: number; y: number }) => void;
   onClearNotifications: () => void;
   onOpenBrowser: () => void;
@@ -156,10 +147,55 @@ function resolveDockPalette(dock: DockPreferences, theme: 'dark' | 'light') {
   };
 }
 
+function computeAnchoredFlyoutStyle(
+  anchor: DOMRect | null,
+  dockPos: DockPreferences['position'],
+  panelWidth: number,
+  panelHeightEst: number
+): React.CSSProperties {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const safe = 12;
+  const gap = 12;
+  const effectiveW = Math.min(panelWidth, vw - safe * 2);
+
+  if (!anchor) {
+    if (dockPos === 'top') return { top: 76, left: safe };
+    if (dockPos === 'left') return { left: 76, top: safe };
+    if (dockPos === 'right') return { right: 76, top: safe };
+    return { bottom: 76, left: safe };
+  }
+
+  if (dockPos === 'top') {
+    const center = anchor.left + anchor.width / 2;
+    const left = Math.max(safe, Math.min(vw - effectiveW - safe, Math.round(center - effectiveW / 2)));
+    return { top: Math.round(anchor.bottom + gap), left };
+  }
+
+  if (dockPos === 'left') {
+    const center = anchor.top + anchor.height / 2;
+    const top = Math.max(safe, Math.min(vh - panelHeightEst - safe, Math.round(center - panelHeightEst / 2)));
+    return { left: Math.round(anchor.right + gap), top };
+  }
+
+  if (dockPos === 'right') {
+    const center = anchor.top + anchor.height / 2;
+    const top = Math.max(safe, Math.min(vh - panelHeightEst - safe, Math.round(center - panelHeightEst / 2)));
+    return { right: Math.round(vw - anchor.left + gap), top };
+  }
+
+  // bottom (default)
+  const center = anchor.left + anchor.width / 2;
+  const left = Math.max(safe, Math.min(vw - effectiveW - safe, Math.round(center - effectiveW / 2)));
+  return { bottom: Math.round(vh - anchor.top + gap), left };
+}
+
 const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) => {
   const [imgFailed, setImgFailed] = useState(false);
 
-  if (win.kind === 'browser') return <ChromiumLogoIcon size={size} />;
+  if (win.kind === 'browser' || (win.kind === 'linux-app' && win.appId === 'chrome')) {
+    return <GoogleChromeLogoIcon size={size} />;
+  }
   if (win.kind === 'terminal') return <TerminalAppIcon size={size} />;
   if (win.kind === 'app-store') return <AppStoreIcon size={size} />;
   if (win.kind === 'settings') return <SettingsAppIcon size={size} />;
@@ -169,7 +205,11 @@ const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) =
   if (win.kind === 'linux-app' && win.appId === 'firefox') {
     return <FirefoxLogoIcon size={size} />;
   }
-  if ((win.kind === 'linux-app' || win.kind === 'vscode') && (win.appIconName || win.kind === 'vscode') && !imgFailed) {
+  if (
+    (win.kind === 'linux-app' || win.kind === 'vscode') &&
+    (win.appIconName || win.kind === 'vscode') &&
+    !imgFailed
+  ) {
     const iconName = win.appIconName || (win.kind === 'vscode' ? 'code' : '');
     if (iconName) {
       return (
@@ -193,8 +233,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   telemetry,
   pingMs,
   notificationHistory,
-  wallpaperId,
-  customWallpaper,
   theme,
   dock,
   brightness,
@@ -214,8 +252,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onChangeBrightness,
   onChangeVolume,
   onToggleMute,
-  onSelectWallpaper,
-  onTriggerWallpaperUpload,
   onToggleTheme,
   onClearNotifications,
   onOpenBrowser,
@@ -231,6 +267,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onLogout,
 }) => {
   const [flyout, setFlyout] = useState<ActiveFlyout>(null);
+  const [flyoutAnchor, setFlyoutAnchor] = useState<DOMRect | null>(null);
   const [now, setNow] = useState(() => new Date());
   const [startSearch, setStartSearch] = useState('');
   const [newDesktopName, setNewDesktopName] = useState('');
@@ -253,13 +290,21 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     return () => window.removeEventListener('pointerdown', handleDown);
   }, []);
 
-  const toggleFlyout = (target: ActiveFlyout) => {
+  const toggleFlyout = (target: ActiveFlyout, e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setFlyoutAnchor(rect);
     setFlyout((prev) => (prev === target ? null : target));
   };
 
   const installedLinuxApps = useMemo(
     () => linuxApps.filter((a) => a.installed),
     [linuxApps]
+  );
+
+  // Exclude Chrome from secondary list since Google Chrome is already pinned in the Core Apps row
+  const secondaryLinuxApps = useMemo(
+    () => installedLinuxApps.filter((a) => a.id !== 'chrome'),
+    [installedLinuxApps]
   );
 
   const searchApps = useMemo(() => {
@@ -310,7 +355,10 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     return cells;
   }, [calCursor, now]);
 
-  const browserWin = windows.find((w) => w.kind === 'browser');
+  // Primary browser window: native Google Chrome (or fallback browser window)
+  const browserWin = windows.find(
+    (w) => (w.kind === 'linux-app' && w.appId === 'chrome') || w.kind === 'browser'
+  );
   const terminalWin = windows.find((w) => w.kind === 'terminal');
   const appStoreWin = windows.find((w) => w.kind === 'app-store');
   const otherWindows = windows.filter(
@@ -319,7 +367,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       w.id !== terminalWin?.id &&
       w.id !== appStoreWin?.id
   );
-  const customWallpaperUrl = customWallpaper ? buildWallpaperUrl(customWallpaper) : undefined;
 
   const timeShort = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
   const timeWithSec = now.toLocaleTimeString('tr-TR', {
@@ -348,6 +395,15 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   const showTextLabels = !isVertical && Boolean(dock.showLabels) && styleMode !== 'minimal';
 
   const palette = useMemo(() => resolveDockPalette(dock, theme), [dock, theme]);
+
+  const flyoutAnimClass =
+    pos === 'top'
+      ? 'flyout-pop-down'
+      : pos === 'left'
+      ? 'flyout-pop-right'
+      : pos === 'right'
+      ? 'flyout-pop-left'
+      : 'flyout-pop-up';
 
   const sizeTokens = useMemo(() => {
     if (sizeMode === 'sm') {
@@ -416,32 +472,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     return `${base} ${dir} bottom-3 left-4 right-4 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-2xl`;
   }, [pos, styleMode, isVertical, sizeTokens]);
 
-  const getFlyoutPositionClass = (anchor: 'start' | 'spaces' | 'end') => {
-    const isLarge = sizeMode === 'lg';
-    if (pos === 'top') {
-      const edge = isLarge ? 'top-24' : 'top-20';
-      if (anchor === 'start') return `${edge} left-4`;
-      if (anchor === 'spaces') return `${edge} left-16`;
-      return `${edge} right-4`;
-    }
-    if (pos === 'left') {
-      const edge = isLarge ? 'left-24' : 'left-20';
-      if (anchor === 'start') return `${edge} top-4`;
-      if (anchor === 'spaces') return `${edge} top-16`;
-      return `${edge} bottom-4`;
-    }
-    if (pos === 'right') {
-      const edge = isLarge ? 'right-24' : 'right-20';
-      if (anchor === 'start') return `${edge} top-4`;
-      if (anchor === 'spaces') return `${edge} top-16`;
-      return `${edge} bottom-4`;
-    }
-    const edge = isLarge ? 'bottom-24' : 'bottom-20';
-    if (anchor === 'start') return `${edge} left-4`;
-    if (anchor === 'spaces') return `${edge} left-16`;
-    return `${edge} right-4`;
-  };
-
   const renderIndicator = (active: boolean, launching?: boolean) => {
     const color = active || launching ? palette.indicatorActive : palette.indicatorIdle;
     if (pos === 'left') {
@@ -497,11 +527,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
 
   return (
     <div ref={containerRef} className="select-none">
-      {/* 1. LAUNCHER MENU */}
+      {/* 1. LAUNCHER MENU — Anchored directly to Launcher button with spring pop */}
       {flyout === 'launcher' && (
         <div
-          style={{ boxShadow: 'var(--os-shadow)' }}
-          className={`fixed ${getFlyoutPositionClass('start')} z-[9980] w-[390px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] overflow-hidden text-[var(--os-text)]`}
+          key="flyout-launcher"
+          data-testid="flyout-launcher"
+          style={{
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 390, 480),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9980] w-[390px] max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] overflow-hidden text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           <div className="p-4 space-y-4">
             <div className="relative">
@@ -542,7 +577,9 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     }}
                     className="w-full p-2.5 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-3 text-left transition-colors"
                   >
-                    {app.id === 'firefox' ? (
+                    {app.id === 'chrome' ? (
+                      <GoogleChromeLogoIcon size={22} />
+                    ) : app.id === 'firefox' ? (
                       <FirefoxLogoIcon size={22} />
                     ) : app.iconName ? (
                       <img src={buildAppIconUrl(app.iconName)} alt="" className="w-5 h-5 object-contain shrink-0" />
@@ -583,7 +620,11 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     }}
                     className="p-2.5 rounded-xl bg-[var(--os-surface-3)] hover:bg-[var(--os-surface-4)] border border-[var(--os-border)] flex flex-col items-center gap-1.5 text-center transition-colors"
                   >
-                    {useFirefoxIcon ? <FirefoxLogoIcon size={32} /> : <ChromiumLogoIcon size={32} />}
+                    {useFirefoxIcon ? (
+                      <FirefoxLogoIcon size={32} />
+                    ) : (
+                      <GoogleChromeLogoIcon size={32} />
+                    )}
                     <span className="text-[11px] font-medium text-[var(--os-text)] truncate w-full">
                       {primaryBrowserLabel}
                     </span>
@@ -613,13 +654,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 </div>
 
                 {/* Installed Native Linux GUI Apps */}
-                {linuxGuiReady && installedLinuxApps.length > 0 && (
+                {linuxGuiReady && secondaryLinuxApps.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)] px-1">
                       Kurulu Uygulamalar
                     </div>
                     <div className="grid grid-cols-2 gap-1.5 max-h-32 overflow-y-auto">
-                      {installedLinuxApps.map((app) => (
+                      {secondaryLinuxApps.map((app) => (
                         <button
                           key={app.id}
                           onClick={() => {
@@ -740,11 +781,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 2. INDEPENDENT VIRTUAL DESKTOPS SWITCHER */}
+      {/* 2. INDEPENDENT VIRTUAL DESKTOPS SWITCHER — Anchored directly to Spaces button */}
       {flyout === 'spaces' && (
         <div
-          style={{ boxShadow: 'var(--os-shadow)' }}
-          className={`fixed ${getFlyoutPositionClass('spaces')} z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)]`}
+          key="flyout-spaces"
+          data-testid="flyout-spaces"
+          style={{
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 320, 320),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9980] w-80 max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           <div>
             <div className="text-xs font-semibold text-[var(--os-text)]">Sanal Masaüstleri</div>
@@ -836,11 +882,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 3. CLEAN CONTROL CENTER (Appearance + Settings + Stream Quality + Wallpapers) */}
+      {/* 3. CLEAN CONTROL CENTER — Anchored directly to Control Center button (No Wallpaper Picker) */}
       {flyout === 'controls' && (
         <div
-          style={{ boxShadow: 'var(--os-shadow)' }}
-          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-[364px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)]`}
+          key="flyout-controls"
+          data-testid="flyout-controls"
+          style={{
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 336, 360),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9980] w-[336px] max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           {/* Quick Settings Entry Row */}
           <div className="grid grid-cols-2 gap-1.5">
@@ -869,7 +920,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               <Gauge className="w-4 h-4 text-emerald-500 shrink-0" />
               <div className="min-w-0">
                 <div className="text-xs font-semibold text-[var(--os-text)] truncate">Akış & Kalite</div>
-                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Hız & Netlik</div>
+                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">30 FPS & Netlik</div>
               </div>
             </button>
           </div>
@@ -957,64 +1008,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             </div>
           </div>
 
-          {/* Day/Night Geometric Wallpaper Picker */}
-          <div className="space-y-2 pt-2.5 border-t border-[var(--os-border)]">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] text-[var(--os-text-muted)]">Arka Plan</span>
-              <button
-                onClick={() => onTriggerWallpaperUpload()}
-                data-testid="wallpaper-upload-btn"
-                className="text-[11px] font-medium text-[var(--os-text)] hover:opacity-80 flex items-center gap-1 transition-opacity"
-              >
-                <ImagePlus className="w-3.5 h-3.5" />
-                <span>Resim Seç</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1.5">
-              {WALLPAPERS.map((wp) => {
-                const active = wallpaperId === wp.id;
-                return (
-                  <button
-                    key={wp.id}
-                    onClick={() => onSelectWallpaper(wp.id)}
-                    data-testid={`cc-wallpaper-${wp.id}`}
-                    className={`group rounded-xl overflow-hidden border p-1 transition-all text-left ${
-                      active
-                        ? 'border-[var(--os-accent-bg)] bg-[var(--os-surface-3)] ring-1 ring-[var(--os-accent-bg)]'
-                        : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
-                    }`}
-                  >
-                    <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-9 rounded-lg" />
-                    <div className="text-[10px] font-medium text-[var(--os-text-secondary)] truncate px-1 pt-1">
-                      {wp.name}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {customWallpaperUrl && (
-              <div className="flex items-center gap-1.5 pt-0.5">
-                <button
-                  onClick={() => onSelectWallpaper('custom')}
-                  className={`flex-1 flex items-center gap-2.5 p-1.5 pr-3 rounded-xl border transition-all text-left ${
-                    wallpaperId === 'custom'
-                      ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
-                      : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:bg-[var(--os-surface-3)]'
-                  }`}
-                >
-                  <img
-                    src={customWallpaperUrl}
-                    alt="Özel Arka Plan"
-                    className="w-10 h-7 rounded-lg object-cover shrink-0 border border-black/15"
-                  />
-                  <span className="text-[11px] font-medium truncate">Özel Resim</span>
-                </button>
-              </div>
-            )}
-          </div>
-
           {/* System Telemetry Strip */}
           <div className="pt-2.5 border-t border-[var(--os-border)] grid grid-cols-3 gap-2 text-[11px]">
             <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
@@ -1041,11 +1034,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 4. NOTIFICATIONS */}
+      {/* 4. NOTIFICATIONS — Anchored to Notifications button */}
       {flyout === 'notifications' && (
         <div
-          style={{ boxShadow: 'var(--os-shadow)' }}
-          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3 text-[var(--os-text)]`}
+          key="flyout-notifications"
+          data-testid="flyout-notifications"
+          style={{
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 320, 260),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9980] w-80 max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           <div className="flex items-center justify-between pb-2 border-b border-[var(--os-border)]">
             <span className="text-xs font-semibold">Bildirimler</span>
@@ -1076,11 +1074,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 5. CLOCK & CALENDAR */}
+      {/* 5. CLOCK & CALENDAR — Anchored to Clock button */}
       {flyout === 'calendar' && (
         <div
-          style={{ boxShadow: 'var(--os-shadow)' }}
-          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-76 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-4 text-[var(--os-text)]`}
+          key="flyout-calendar"
+          data-testid="flyout-calendar"
+          style={{
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 304, 380),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9980] w-76 max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-4 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           <div className="pb-3 border-b border-[var(--os-border)]">
             <div className="text-3xl font-light font-mono tracking-tight text-[var(--os-text)]">
@@ -1165,7 +1168,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           }`}
         >
           <button
-            onClick={() => toggleFlyout('launcher')}
+            onClick={(e) => toggleFlyout('launcher', e)}
             data-testid="dock-launcher-btn"
             title="Menü"
             className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
@@ -1181,7 +1184,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           </button>
 
           <button
-            onClick={() => toggleFlyout('spaces')}
+            onClick={(e) => toggleFlyout('spaces', e)}
             title={`Masaüstü: ${currentDesktop.name}`}
             className={`${
               showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
@@ -1201,32 +1204,46 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             } ${palette.dividerBg} shrink-0`}
           />
 
-          {/* Pinned Browser */}
+          {/* Pinned Default Browser: Google Chrome (with macOS launch bounce) */}
           <button
             onClick={() => {
               if (browserWin) onToggleWindowFromTaskbar(browserWin.id);
               else onOpenBrowser();
             }}
             data-testid="dock-browser-btn"
-            title={primaryBrowserLabel}
+            data-launching={browserWin?.launching ? 'true' : 'false'}
+            title={browserWin?.launching ? `${primaryBrowserLabel} açılıyor...` : primaryBrowserLabel}
             className={`relative ${
               showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
             } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
-              browserWin && !browserWin.minimized && focusedWindowId === browserWin.id
+              browserWin && !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching
                 ? palette.activeBg
                 : palette.hoverBg
             }`}
           >
-            {useFirefoxIcon ? (
-              <FirefoxLogoIcon size={sizeTokens.icon} />
-            ) : (
-              <ChromiumLogoIcon size={sizeTokens.icon} />
-            )}
+            <span
+              className={`inline-flex items-center justify-center ${
+                browserWin?.launching
+                  ? isVertical
+                    ? 'dock-bounce-x'
+                    : 'dock-bounce-y'
+                  : ''
+              }`}
+            >
+              {useFirefoxIcon ? (
+                <FirefoxLogoIcon size={sizeTokens.icon} />
+              ) : (
+                <GoogleChromeLogoIcon size={sizeTokens.icon} />
+              )}
+            </span>
             {showTextLabels && !isCompactDock && (
               <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
             )}
             {browserWin &&
-              renderIndicator(!browserWin.minimized && focusedWindowId === browserWin.id)}
+              renderIndicator(
+                !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching,
+                Boolean(browserWin.launching)
+              )}
           </button>
 
           {/* Pinned Real Linux Terminal */}
@@ -1330,21 +1347,12 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           />
         )}
 
-        {/* End Section: Theme, Audio, Control Center (with Settings), Notifications, Clock */}
+        {/* End Section: Audio, Control Center (with Theme & Settings), Notifications, Clock */}
         <div
           className={`flex items-center gap-1 shrink-0 ${
             isVertical ? 'flex-col' : 'flex-row'
           }`}
         >
-          <button
-            onClick={(e) => onToggleTheme(theme === 'dark' ? 'light' : 'dark', getOriginFromEvent(e))}
-            data-testid="dock-theme-toggle"
-            title={theme === 'dark' ? 'Açık Tema' : 'Koyu Tema'}
-            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${palette.hoverBg}`}
-          >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
-
           {!isCompactDock && (
             <button
               onClick={onToggleMute}
@@ -1360,7 +1368,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           )}
 
           <button
-            onClick={() => toggleFlyout('controls')}
+            onClick={(e) => toggleFlyout('controls', e)}
             data-testid="dock-controls-btn"
             title="Kontrol Merkezi & Ayarlar"
             className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
@@ -1372,7 +1380,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
 
           {!isCompactDock && (
             <button
-              onClick={() => toggleFlyout('notifications')}
+              onClick={(e) => toggleFlyout('notifications', e)}
               title="Bildirimler"
               className={`relative ${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
                 flyout === 'notifications' ? palette.activeBg : palette.hoverBg
@@ -1389,7 +1397,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           )}
 
           <button
-            onClick={() => toggleFlyout('calendar')}
+            onClick={(e) => toggleFlyout('calendar', e)}
             title={`${timeShort} · ${dateShort}`}
             className={`${
               isVertical ? `${sizeTokens.btnSize} px-0.5` : `${sizeTokens.btnPill}`

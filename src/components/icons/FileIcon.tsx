@@ -33,6 +33,37 @@ export function ChromiumLogoIcon({ size = 48 }: { size?: number }) {
   );
 }
 
+export function GoogleChromeLogoIcon({ size = 48 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm">
+      <defs>
+        <linearGradient id="gc-red" x1="10" y1="6" x2="54" y2="24" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#EA4335" />
+          <stop offset="1" stopColor="#D93025" />
+        </linearGradient>
+        <linearGradient id="gc-yellow" x1="36" y1="22" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#FBBC04" />
+          <stop offset="1" stopColor="#F9AB00" />
+        </linearGradient>
+        <linearGradient id="gc-green" x1="6" y1="22" x2="34" y2="58" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#34A853" />
+          <stop offset="1" stopColor="#1E8E3E" />
+        </linearGradient>
+        <radialGradient id="gc-core" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(32 32) scale(12)">
+          <stop stopColor="#4285F4" />
+          <stop offset="1" stopColor="#1A73E8" />
+        </radialGradient>
+      </defs>
+      <circle cx="32" cy="32" r="28" fill="url(#gc-green)" />
+      <path d="M32 4C44.2 4 54.6 11.8 58.4 22.7H32C25.5 22.7 20 26.8 18 32.6L9.5 17.9C14.5 9.5 22.7 4 32 4Z" fill="url(#gc-red)" />
+      <path d="M58.4 22.7C59.4 25.6 60 28.7 60 32C60 47.5 47.5 60 32 60L29.5 59.8L41.8 38.5C43.2 36.6 44 34.4 44 32C44 27.6 41.6 23.8 38 21.8L58.4 22.7Z" fill="url(#gc-yellow)" />
+      <circle cx="32" cy="32" r="13.5" fill="#FFFFFF" />
+      <circle cx="32" cy="32" r="10.4" fill="url(#gc-core)" />
+      <circle cx="29" cy="29" r="2.8" fill="white" fillOpacity="0.4" />
+    </svg>
+  );
+}
+
 export function ComputeSystemIcon({ size = 48 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm">

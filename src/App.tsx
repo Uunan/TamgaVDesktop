@@ -524,8 +524,9 @@ export default function App() {
       const vh = window.innerHeight - 76;
       const viewportWidth = Math.max(960, vw - 36);
       const viewportHeight = Math.max(600, vh - 32 - 42);
-      const width = Math.min(740, vw - 36);
-      const height = Math.min(520, vh - 32);
+      const isBrowserApp = params.appId === 'chrome' || params.appId === 'firefox';
+      const width = Math.min(isBrowserApp ? 1160 : 740, vw - 36);
+      const height = Math.min(isBrowserApp ? 730 : 520, vh - 32);
 
       // Run Visual Studio Code in 100% Web-Native DOM mode (zero video lag, zero remote cursor!)
       if (params.appId === 'vscode' || params.command?.trim() === 'code') {
@@ -598,9 +599,41 @@ export default function App() {
 
   const openPrimaryBrowser = useCallback(
     (initialUrl?: string) => {
-      openChromiumWindow(initialUrl);
+      if (initialUrl && initialUrl.startsWith('file://')) {
+        openChromiumWindow(initialUrl);
+        return;
+      }
+      const existingChrome = windowsRef.current.find(
+        (w) => w.kind === 'linux-app' && w.appId === 'chrome'
+      );
+      if (existingChrome) {
+        focusWindow(existingChrome.id);
+        return;
+      }
+      const chromeApp = linuxApps.find((a) => a.id === 'chrome');
+      if (chromeApp?.installed) {
+        launchLinuxApp({
+          appId: 'chrome',
+          command: chromeApp.command || 'google-chrome-stable',
+          appName: 'Google Chrome',
+          iconName: chromeApp.iconName,
+          needsNoSandbox: true,
+        });
+        return;
+      }
+      if (linuxRuntime?.guiReady) {
+        launchLinuxApp({
+          appId: 'chrome',
+          command: 'google-chrome-stable',
+          appName: 'Google Chrome',
+          needsNoSandbox: true,
+        });
+        return;
+      }
+      openAppStoreWindow();
+      pushToast('Google Chrome', 'Google Chrome kurmak için Uygulamalar mağazasını kullanabilirsiniz.', 'info');
     },
-    [openChromiumWindow]
+    [openChromiumWindow, focusWindow, linuxApps, linuxRuntime?.guiReady, launchLinuxApp, openAppStoreWindow, pushToast]
   );
 
   const openPropertiesWindow = useCallback((node: VFSNode) => {
@@ -1209,7 +1242,7 @@ export default function App() {
         onSetRenamingPath={setRenamingPath}
         onRenameCommit={handleRenameCommit}
         onOpenNode={handleOpenNode}
-        primaryBrowserLabel="Chromium"
+        primaryBrowserLabel="Google Chrome"
         useFirefoxIcon={false}
         onOpenChromium={openPrimaryBrowser}
         onOpenTerminal={() => openTerminalWindow('/Desktop')}
@@ -1420,7 +1453,6 @@ export default function App() {
                   })
                 }
                 onOpenTerminal={() => openTerminalWindow('/Desktop')}
-                onOpenChromium={() => openChromiumWindow()}
               />
             )}
 
@@ -1617,8 +1649,6 @@ export default function App() {
         telemetry={telemetry}
         pingMs={pingMs}
         notificationHistory={notificationHistory}
-        wallpaperId={meta.preferences.wallpaper}
-        customWallpaper={meta.preferences.customWallpaper}
         theme={meta.preferences.theme || 'dark'}
         dock={{ ...DEFAULT_DOCK_PREFERENCES, ...(meta.preferences.dock || {}) }}
         brightness={brightness}
@@ -1629,7 +1659,7 @@ export default function App() {
         linuxApps={linuxApps}
         linuxGuiReady={Boolean(linuxRuntime?.guiReady)}
         useFirefoxIcon={false}
-        primaryBrowserLabel="Chromium"
+        primaryBrowserLabel="Google Chrome"
         authEnabled={authStatus.enabled}
         onSwitchDesktop={handleSwitchDesktop}
         onCreateDesktop={handleCreateDesktop}
@@ -1641,8 +1671,6 @@ export default function App() {
           if (v > 0 && muted) setMuted(false);
         }}
         onToggleMute={() => setMuted((m) => !m)}
-        onSelectWallpaper={(id) => handleUpdatePreferences({ wallpaper: id })}
-        onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
         onToggleTheme={handleChangeTheme}
         onClearNotifications={() => setNotificationHistory([])}
         onOpenBrowser={() => openPrimaryBrowser()}

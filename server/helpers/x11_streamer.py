@@ -198,7 +198,7 @@ def main() -> None:
     display_str = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DISPLAY", ":100")
     width = max(240, min(1920, int(sys.argv[2]) if len(sys.argv) > 2 else 1100))
     height = max(180, min(1080, int(sys.argv[3]) if len(sys.argv) > 3 else 680))
-    max_fps = max(8, min(35, int(sys.argv[4]) if len(sys.argv) > 4 else 24))
+    max_fps = max(8, min(35, int(sys.argv[4]) if len(sys.argv) > 4 else 30))
     quality = max(45, min(92, int(sys.argv[5]) if len(sys.argv) > 5 else 78))
     off_x = max(0, int(sys.argv[6]) if len(sys.argv) > 6 else 0)
     off_y = max(0, int(sys.argv[7]) if len(sys.argv) > 7 else 0)

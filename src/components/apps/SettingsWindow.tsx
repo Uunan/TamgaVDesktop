@@ -74,7 +74,7 @@ export const STREAM_PRESETS: Record<
       maxDpr: 2,
       settlePng: true,
       settleDelayMs: 300,
-      x11Fps: 20,
+      x11Fps: 30,
       x11MaxQuality: 85,
       x11MotionQuality: 58,
     },
@@ -90,7 +90,7 @@ export const STREAM_PRESETS: Record<
       maxDpr: 2,
       settlePng: true,
       settleDelayMs: 240,
-      x11Fps: 25,
+      x11Fps: 30,
       x11MaxQuality: 92,
       x11MotionQuality: 84,
     },
@@ -1124,7 +1124,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                   ['Sunucu', sysInfo?.hostname || telemetry?.hostname || '—'],
                   ['Sistem', sysInfo?.runtime.distro || telemetry?.distro || 'Linux'],
                   ['Çalışma Süresi', telemetry ? formatUptime(telemetry.uptimeSeconds) : '—'],
-                  ['Chromium', telemetry?.engine.ready ? 'Hazır' : 'Yok'],
+                  ['Tarayıcı', 'Google Chrome'],
                   ['Linux GUI', sysInfo?.runtime.guiReady ? 'Hazır' : 'Eksik'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex items-center justify-between py-2">

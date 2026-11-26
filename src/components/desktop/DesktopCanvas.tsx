@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom';
 import type { ClipboardState, DesktopMeta, VFSNode } from '../../types/os';
 import {
   AppStoreIcon,
-  ChromiumLogoIcon,
   ComputeSystemIcon,
   FileIcon,
   FirefoxLogoIcon,
+  GoogleChromeLogoIcon,
   RecycleBinIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
@@ -358,7 +358,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         useFirefoxIcon ? (
           <FirefoxLogoIcon size={sizeConfig.iconPx} />
         ) : (
-          <ChromiumLogoIcon size={sizeConfig.iconPx} />
+          <GoogleChromeLogoIcon size={sizeConfig.iconPx} />
         ),
       onOpen: () => onOpenChromium(),
       onContext: (x: number, y: number) =>

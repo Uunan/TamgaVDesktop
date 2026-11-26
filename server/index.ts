@@ -22,7 +22,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.4.1';
+export const TAMGA_VERSION = '1.5.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -166,10 +166,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     const freeMem = os.freemem();
     const usedMem = totalMem - freeMem;
     const cpuPercent = sampleCpuPercent();
-    const { browserSession } = getDesktopContext(desktopId);
+    const { vfs, browserSession } = getDesktopContext(desktopId);
     const cluster = chromiumCluster.getClusterInfo();
     const sessionStats = browserSession.getSessionStats();
     const runtime = linuxAppManager.getRuntimeStatus();
+    const activeStreamFps = vfs.getMeta().preferences.stream?.x11Fps || config.linuxApps.fps;
 
     return {
       desktopId,
@@ -188,7 +189,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         executable: runtime.guiReady ? 'Linux Native X11' : cluster.executable,
         activeTabs: sessionStats.activeTabs,
         webPagesCount: sessionStats.webPagesCount,
-        fps: runtime.guiReady ? config.linuxApps.fps : sessionStats.fps,
+        fps: runtime.guiReady ? activeStreamFps : sessionStats.fps,
       },
     };
   }
