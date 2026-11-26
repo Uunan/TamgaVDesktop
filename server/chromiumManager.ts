@@ -707,7 +707,9 @@ export class ChromiumDesktopSession {
       if (active.lastFrameBuffer) {
         this.broadcastBinary(active.lastFrameBuffer);
       }
+      await this.applyTabMetrics(active);
       await this.startScreencast(active);
+      await this.captureImmediateFrame(active);
     }
   }
 
@@ -1224,6 +1226,7 @@ export class ChromiumDesktopSession {
       return;
     }
 
+    this.viewerVisible = true;
     tab.isLoading = true;
     try {
       tab.title = new URL(parsed.url).hostname || parsed.url;
