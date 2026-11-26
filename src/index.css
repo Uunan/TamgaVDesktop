@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+:root,
+html[data-theme="dark"] {
+  --os-bg: #141416;
+  --os-surface: #18181a;
+  --os-surface-2: #1f1f22;
+  --os-surface-3: #27272a;
+  --os-surface-4: #323236;
+  --os-sidebar: #151517;
+  --os-dock: rgba(24, 24, 26, 0.92);
+  --os-border: rgba(255, 255, 255, 0.08);
+  --os-border-strong: rgba(255, 255, 255, 0.15);
+  --os-text: #f5f5f7;
+  --os-text-secondary: #d4d4d8;
+  --os-text-muted: #a1a1aa;
+  --os-text-subtle: #71717a;
+  --os-hover: rgba(255, 255, 255, 0.07);
+  --os-active: rgba(255, 255, 255, 0.14);
+  --os-accent-bg: #ffffff;
+  --os-accent-fg: #09090b;
+  --os-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+  --os-dock-shadow: 0 12px 40px rgba(0, 0, 0, 0.52);
+  --os-scroll-thumb: rgba(255, 255, 255, 0.18);
+  --os-lock-bg: rgba(18, 18, 20, 0.9);
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  --os-bg: #efeff2;
+  --os-surface: #ffffff;
+  --os-surface-2: #f5f5f7;
+  --os-surface-3: #e7e7ec;
+  --os-surface-4: #dadce2;
+  --os-sidebar: #f2f2f5;
+  --os-dock: rgba(246, 246, 249, 0.88);
+  --os-border: rgba(0, 0, 0, 0.085);
+  --os-border-strong: rgba(0, 0, 0, 0.15);
+  --os-text: #18181b;
+  --os-text-secondary: #3f3f46;
+  --os-text-muted: #63636a;
+  --os-text-subtle: #8e8e95;
+  --os-hover: rgba(0, 0, 0, 0.055);
+  --os-active: rgba(0, 0, 0, 0.1);
+  --os-accent-bg: #18181b;
+  --os-accent-fg: #ffffff;
+  --os-shadow: 0 22px 55px rgba(0, 0, 0, 0.16);
+  --os-dock-shadow: 0 10px 32px rgba(0, 0, 0, 0.14);
+  --os-scroll-thumb: rgba(0, 0, 0, 0.2);
+  --os-lock-bg: rgba(235, 235, 240, 0.86);
+  color-scheme: light;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: var(--os-bg);
+    color: var(--os-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+}
+
+.desktop-label-shadow {
+  text-shadow:
+    0 1px 1.5px rgba(0, 0, 0, 0.88),
+    0 1px 4px rgba(0, 0, 0, 0.48);
+}
+
+/* View Transition API circular theme reveal */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 99999;
+}
+
+/* Smooth CSS fallback when View Transitions API is unavailable */
+html.theme-transitioning,
+html.theme-transitioning * {
+  transition:
+    background-color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    fill 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 420ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+/* Smooth GPU-composited animated wallpaper transition */
+@keyframes os-wallpaper-enter {
+  0% {
+    opacity: 0;
+    transform: scale(1.045);
+    filter: blur(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0px);
+  }
+}
+
+.wallpaper-enter {
+  animation: os-wallpaper-enter 680ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: opacity, transform, filter;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--os-scroll-thumb);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--os-border-strong);
+}

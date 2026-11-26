@@ -1,0 +1,85 @@
+{
+  "name": "tamga-vdesktop",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, and seamless native Linux GUI apps (Firefox, VS Code, Antigravity).",
+  "license": "MIT",
+  "author": "Uunan",
+  "homepage": "https://github.com/Uunan/TamgaVDesktop#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Uunan/TamgaVDesktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Uunan/TamgaVDesktop/issues"
+  },
+  "keywords": [
+    "tamga",
+    "tamga-vdesktop",
+    "virtual-desktop",
+    "linux-desktop",
+    "cloud-desktop",
+    "web-os",
+    "self-hosted",
+    "firefox",
+    "vscode",
+    "terminal"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "tamga-vdesktop": "./dist/cli.js",
+    "tamga": "./dist/cli.js"
+  },
+  "main": "./dist/server.js",
+  "exports": {
+    ".": "./dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,CLIENT -c cyan,magenta \"tsx watch --ignore './storage/**' server/index.ts\" \"vite\"",
+    "dev:server": "tsx watch --ignore './storage/**' server/index.ts",
+    "dev:client": "vite",
+    "build:client": "vite build",
+    "build:server": "node scripts/build-server.mjs",
+    "build": "rm -rf dist && tsc && npm run build:client && npm run build:server",
+    "start": "node dist/cli.js start",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.2",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/adm-zip": "^0.5.7",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.4.1",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "concurrently": "^9.1.2",
+    "lucide-react": "^0.503.0",
+    "playwright-core": "^1.51.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.4",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.2"
+  }
+}
