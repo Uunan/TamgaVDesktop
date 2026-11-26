@@ -1012,7 +1012,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               <Gauge className="w-4 h-4 text-emerald-500 shrink-0" />
               <div className="min-w-0">
                 <div className="text-xs font-semibold text-[var(--os-text)] truncate">Akış & Kalite</div>
-                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">30 FPS & Netlik</div>
+                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">45-60 FPS & Netlik</div>
               </div>
             </button>
           </div>

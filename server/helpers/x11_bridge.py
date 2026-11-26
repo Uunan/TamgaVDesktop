@@ -689,20 +689,45 @@ def main() -> None:
     alt_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Alt_L"))
     v_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"v"))
 
-    # Discover 8 genuinely unused evdev XKB keycodes for race-free Unicode character injection
+    # Discover genuinely unused evdev XKB keycodes (preferring >=100 to skip IME-reserved 93/97),
+    # pre-seed common Turkish & Euro pairs before target app launches, and reserve rotating scratch slots.
     min_kc_c = ctypes.c_int(8)
     max_kc_c = ctypes.c_int(255)
     libX11.XDisplayKeycodes(dpy, ctypes.byref(min_kc_c), ctypes.byref(max_kc_c))
-    scratch_kcs = []
-    for cand_kc in range(max(90, min_kc_c.value), min(246, max_kc_c.value + 1)):
+    free_kcs = []
+    for cand_kc in list(range(max(100, min_kc_c.value), min(246, max_kc_c.value + 1))) + list(
+        range(max(90, min_kc_c.value), min(100, max_kc_c.value + 1))
+    ):
         if cand_kc in (shift_kc, ctrl_kc, alt_kc, v_kc):
             continue
         ks0 = libX11.XkbKeycodeToKeysym(dpy, cand_kc, 0, 0)
         ks1 = libX11.XkbKeycodeToKeysym(dpy, cand_kc, 0, 1)
         if ks0 == 0 and ks1 == 0:
-            scratch_kcs.append(cand_kc)
-            if len(scratch_kcs) >= 8:
-                break
+            free_kcs.append(cand_kc)
+
+    preseed_pairs = [
+        ("ş", "Ş"),
+        ("ı", "İ"),
+        ("ğ", "Ğ"),
+        ("ü", "Ü"),
+        ("ö", "Ö"),
+        ("ç", "Ç"),
+        ("₺", "€"),
+    ]
+    preseeded_count = 0
+    for low_ch, up_ch in preseed_pairs:
+        if len(free_kcs) <= 4 + preseeded_count:
+            break
+        pkc = free_kcs[preseeded_count]
+        preseeded_count += 1
+        ks_low = ord(low_ch) if 0x00A0 <= ord(low_ch) <= 0x00FF else (0x01000000 | ord(low_ch))
+        ks_up = ord(up_ch) if 0x00A0 <= ord(up_ch) <= 0x00FF else (0x01000000 | ord(up_ch))
+        syms = (ctypes.c_ulong * 2)(ks_low, ks_up)
+        libX11.XChangeKeyboardMapping(dpy, pkc, 2, syms, 1)
+    if preseeded_count > 0:
+        libX11.XSync(dpy, 0)
+
+    scratch_kcs = free_kcs[preseeded_count : preseeded_count + 8]
     if not scratch_kcs:
         scratch_kcs = [200, 201, 202, 203]
     scratch_idx = [0]
@@ -881,6 +906,7 @@ def main() -> None:
                     syms = (ctypes.c_ulong * 2)(ks, ks)
                     libX11.XChangeKeyboardMapping(dpy, skc, 2, syms, 1)
                     libX11.XSync(dpy, 0)
+                    time.sleep(0.03)
                     libXtst.XTestFakeKeyEvent(dpy, skc, 1, 0)
                     libXtst.XTestFakeKeyEvent(dpy, skc, 0, 0)
                     libX11.XSync(dpy, 0)
