@@ -39,6 +39,7 @@ import { LinuxAppWindow } from './components/apps/LinuxAppWindow';
 import { AppStoreWindow } from './components/apps/AppStoreWindow';
 import { VSCodeWindow } from './components/apps/VSCodeWindow';
 import { SettingsWindow } from './components/apps/SettingsWindow';
+import { PreviewWindow } from './components/apps/PreviewWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
 import { translateFolderDisplayName } from './utils/format';
 
@@ -597,19 +598,103 @@ export default function App() {
     [pushToast, openVSCodeWindow, linuxApps]
   );
 
+  const openPreviewWindow = useCallback((node: VFSNode) => {
+    const z = ++nextZRef.current;
+    const id = `win-preview-${node.path}`;
+    setWindows((prev) => {
+      const existing = prev.find((w) => w.id === id);
+      if (existing) {
+        return prev.map((w) => (w.id === id ? { ...w, minimized: false, zIndex: z } : w));
+      }
+      const vw = window.innerWidth;
+      const vh = window.innerHeight - 76;
+      const width = Math.min(920, vw - 36);
+      const height = Math.min(640, vh - 32);
+      const offset = (prev.filter((w) => w.kind === 'preview').length % 5) * 22;
+      return [
+        ...prev,
+        {
+          id,
+          kind: 'preview',
+          title: `${node.name} — Önizleme`,
+          previewNodePath: node.path,
+          x: Math.max(18, Math.round((vw - width) / 2) + offset - 18),
+          y: Math.max(18, Math.round((vh - height) / 2) + offset - 14),
+          width,
+          height,
+          minimized: false,
+          maximized: false,
+          zIndex: z,
+        },
+      ];
+    });
+    setFocusedWindowId(id);
+  }, []);
+
+  const closeWindowById = useCallback(
+    (id: string) => {
+      const target = windowsRef.current.find((w) => w.id === id);
+      if (target?.kind === 'linux-app' && target.appSessionId) {
+        appsApi.close(target.appSessionId, target.appViewId || 'main').catch(() => {});
+      }
+      if (
+        target?.kind === 'browser' &&
+        (meta.preferences.browser?.closeTabsOnExit ?? true)
+      ) {
+        lastVideoBytesRef.current = null;
+        sendWs({ type: 'browser_reset' });
+      }
+      setWindows((prev) => prev.filter((w) => w.id !== id));
+      setFocusedWindowId((prev) => (prev === id ? null : prev));
+    },
+    [meta.preferences.browser?.closeTabsOnExit, sendWs]
+  );
+
+  const handleDropFilesOnLinuxApp = useCallback(
+    async (sessionId: string, vfsPaths: string[]) => {
+      if (!sessionId || vfsPaths.length === 0) return;
+      try {
+        await appsApi.openFiles(sessionId, vfsPaths);
+        const win = windowsRef.current.find((w) => w.appSessionId === sessionId);
+        if (win) focusWindow(win.id);
+        pushToast(
+          win?.title || 'Uygulama',
+          `${vfsPaths.length} dosya uygulamaya aktarıldı.`,
+          'success'
+        );
+      } catch (e) {
+        pushToast('Dosya Açılamadı', (e as Error).message, 'error');
+      }
+    },
+    [focusWindow, pushToast]
+  );
+
   const openPrimaryBrowser = useCallback(
-    (initialUrl?: string) => {
+    (arg?: string | { forceNew?: boolean }) => {
+      const initialUrl = typeof arg === 'string' ? arg : undefined;
+      const forceNew = typeof arg === 'object' && Boolean(arg?.forceNew);
+
       if (initialUrl && initialUrl.startsWith('file://')) {
+        const vfsPath = initialUrl.slice('file://'.length);
+        const found = allNodes.find((n) => n.path === vfsPath);
+        if (found) {
+          openPreviewWindow(found);
+          return;
+        }
         openChromiumWindow(initialUrl);
         return;
       }
-      const existingChrome = windowsRef.current.find(
-        (w) => w.kind === 'linux-app' && w.appId === 'chrome'
-      );
-      if (existingChrome) {
-        focusWindow(existingChrome.id);
-        return;
+
+      if (!forceNew) {
+        const existingChrome = windowsRef.current.find(
+          (w) => w.kind === 'linux-app' && w.appId === 'chrome'
+        );
+        if (existingChrome) {
+          focusWindow(existingChrome.id);
+          return;
+        }
       }
+
       const chromeApp = linuxApps.find((a) => a.id === 'chrome');
       if (chromeApp?.installed) {
         launchLinuxApp({
@@ -618,6 +703,7 @@ export default function App() {
           appName: 'Google Chrome',
           iconName: chromeApp.iconName,
           needsNoSandbox: true,
+          forceNew,
         });
         return;
       }
@@ -627,13 +713,24 @@ export default function App() {
           command: 'google-chrome-stable',
           appName: 'Google Chrome',
           needsNoSandbox: true,
+          forceNew,
         });
         return;
       }
       openAppStoreWindow();
       pushToast('Google Chrome', 'Google Chrome kurmak için Uygulamalar mağazasını kullanabilirsiniz.', 'info');
     },
-    [openChromiumWindow, focusWindow, linuxApps, linuxRuntime?.guiReady, launchLinuxApp, openAppStoreWindow, pushToast]
+    [
+      allNodes,
+      openPreviewWindow,
+      openChromiumWindow,
+      focusWindow,
+      linuxApps,
+      linuxRuntime?.guiReady,
+      launchLinuxApp,
+      openAppStoreWindow,
+      pushToast,
+    ]
   );
 
   const openPropertiesWindow = useCallback((node: VFSNode) => {
@@ -827,9 +924,9 @@ export default function App() {
   const handleOpenNode = useCallback(
     (node: VFSNode) => {
       if (node.isDir) openFolderWindow(node.path);
-      else openChromiumWindow(`file://${node.path}`);
+      else openPreviewWindow(node);
     },
-    [openFolderWindow, openChromiumWindow]
+    [openFolderWindow, openPreviewWindow]
   );
 
   const handleCreateFolder = async (parentPath: string, pos?: { x: number; y: number }) => {
@@ -1260,6 +1357,7 @@ export default function App() {
         onUploadHostFiles={(files) => handleUploadFiles('/Desktop', files)}
         onContextMenu={(x, y, target) => setCtxMenu({ x, y, target })}
         onExternalDropHover={setExternalDropTarget}
+        onDropFilesOnLinuxApp={handleDropFilesOnLinuxApp}
       />
 
       {/* OPEN WINDOWS */}
@@ -1268,7 +1366,10 @@ export default function App() {
           (win.kind === 'browser' && externalDropTarget === 'browser') ||
           (win.kind === 'folder' &&
             Boolean(win.folderPath) &&
-            externalDropTarget === `folder:${win.folderPath}`);
+            externalDropTarget === `folder:${win.folderPath}`) ||
+          (win.kind === 'linux-app' &&
+            Boolean(win.appSessionId) &&
+            externalDropTarget === `linux-app:${win.appSessionId}`);
 
         return (
           <WindowFrame
@@ -1279,21 +1380,7 @@ export default function App() {
             hiddenUntilReady={Boolean(win.launching)}
             dockPosition={meta.preferences.dock?.position || 'bottom'}
             onFocus={focusWindow}
-            onClose={(id) => {
-              const target = windows.find((w) => w.id === id);
-              if (target?.kind === 'linux-app' && target.appSessionId) {
-                appsApi.close(target.appSessionId, target.appViewId || 'main').catch(() => {});
-              }
-              if (
-                target?.kind === 'browser' &&
-                (meta.preferences.browser?.closeTabsOnExit ?? true)
-              ) {
-                lastVideoBytesRef.current = null;
-                sendWs({ type: 'browser_reset' });
-              }
-              setWindows((prev) => prev.filter((w) => w.id !== id));
-              if (focusedWindowId === id) setFocusedWindowId(null);
-            }}
+            onClose={closeWindowById}
             onMinimize={(id) =>
               setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, minimized: true } : w)))
             }
@@ -1344,6 +1431,25 @@ export default function App() {
               />
             )}
 
+            {win.kind === 'preview' && win.previewNodePath && (
+              <PreviewWindow
+                initialPath={win.previewNodePath}
+                allNodes={allNodes}
+                onTitleChange={(nextTitle, nextPath) =>
+                  setWindows((prev) =>
+                    prev.map((w) =>
+                      w.id === win.id
+                        ? { ...w, title: nextTitle, previewNodePath: nextPath }
+                        : w
+                    )
+                  )
+                }
+                onVfsSaved={refreshVfs}
+                onSetWallpaper={handleSetWallpaperFromNode}
+                onNotify={pushToast}
+              />
+            )}
+
             {win.kind === 'terminal' && win.terminalSessionId && (
               <TerminalWindow
                 sessionId={win.terminalSessionId}
@@ -1380,6 +1486,9 @@ export default function App() {
                 viewId={win.appViewId || 'main'}
                 appName={win.title}
                 isFocused={focusedWindowId === win.id}
+                externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
+                onVfsChanged={refreshVfs}
+                onNotify={pushToast}
                 onReady={() => {
                   setWindows((prev) =>
                     prev.map((w) => (w.id === win.id && w.launching ? { ...w, launching: false } : w))
@@ -1673,21 +1782,23 @@ export default function App() {
         onToggleMute={() => setMuted((m) => !m)}
         onToggleTheme={handleChangeTheme}
         onClearNotifications={() => setNotificationHistory([])}
-        onOpenBrowser={() => openPrimaryBrowser()}
+        onOpenBrowser={(opts) => openPrimaryBrowser(opts)}
         onOpenTerminal={() => openTerminalWindow('/Desktop')}
         onOpenAppStore={openAppStoreWindow}
         onOpenSettings={(tab) => openSettingsWindow(tab || 'stream')}
-        onLaunchLinuxApp={(app) =>
+        onLaunchLinuxApp={(app, opts) =>
           launchLinuxApp({
             appId: app.id,
             command: app.command,
             appName: app.name,
             iconName: app.iconName,
             needsNoSandbox: app.needsNoSandbox,
+            forceNew: opts?.forceNew,
           })
         }
         onOpenFolder={openFolderWindow}
         onOpenNode={handleOpenNode}
+        onCloseWindow={closeWindowById}
         onToggleWindowFromTaskbar={(winId) => {
           const target = windows.find((w) => w.id === winId);
           if (!target) return;

@@ -118,6 +118,23 @@ export const appsApi = {
       body: JSON.stringify(params),
     }),
 
+  uninstall: (params: { appId?: string; aptPackage?: string }) =>
+    jsonReq<{ jobId: string }>('/api/apps/uninstall', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  searchApt: (query: string) =>
+    jsonReq<{ results: Array<{ packageName: string; summary: string; installed: boolean }> }>(
+      `/api/apps/search?q=${encodeURIComponent(query)}`
+    ),
+
+  openFiles: (sessionId: string, vfsPaths: string[]) =>
+    jsonReq<{ ok: boolean }>('/api/apps/open-files', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, vfsPaths }),
+    }),
+
   getInstallJob: (jobId: string) =>
     jsonReq<{ status: 'running' | 'done' | 'error'; log: string }>(
       `/api/apps/install/${encodeURIComponent(jobId)}`

@@ -52,6 +52,8 @@ export interface DockPreferences {
   opacity: number;
   blur: number;
   showLabels: boolean;
+  magnification: boolean;
+  magnificationScale: number;
 }
 
 export interface DesktopMeta {
@@ -109,6 +111,8 @@ export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
   opacity: 86,
   blur: 18,
   showLabels: true,
+  magnification: true,
+  magnificationScale: 1.45,
 };
 
 export interface VirtualDesktopInfo {

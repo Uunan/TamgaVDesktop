@@ -35,6 +35,7 @@ interface DesktopCanvasProps {
   onUploadHostFiles: (files: FileList) => void;
   onContextMenu: (x: number, y: number, target: ContextMenuItemTarget) => void;
   onExternalDropHover?: (target: string | null) => void;
+  onDropFilesOnLinuxApp?: (sessionId: string, paths: string[]) => void;
 }
 
 const PAD_X = 26;
@@ -63,6 +64,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   onUploadHostFiles,
   onContextMenu,
   onExternalDropHover,
+  onDropFilesOnLinuxApp,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -256,9 +258,13 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       let detectedTarget: string | null = null;
 
       if (hitEl) {
+        const linuxAppAttrEl = hitEl.closest('[data-drop-linux-app]') as HTMLElement | null;
         const folderAttrEl = hitEl.closest('[data-drop-folder]') as HTMLElement | null;
         const browserAttrEl = hitEl.closest('[data-drop-browser]') as HTMLElement | null;
-        if (folderAttrEl) {
+        if (linuxAppAttrEl && !ds.node.isDir) {
+          const sid = linuxAppAttrEl.getAttribute('data-drop-linux-app');
+          if (sid) detectedTarget = `linux-app:${sid}`;
+        } else if (folderAttrEl) {
           const folderPath = folderAttrEl.getAttribute('data-drop-folder');
           if (folderPath && folderPath !== '/' && !ds.dragPaths.includes(folderPath)) {
             detectedTarget = `folder:${folderPath}`;
@@ -289,7 +295,10 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         onExternalDropHover?.(null);
 
         if (ds.moved) {
-          if (ds.hoverTarget === 'folder:/.trash') {
+          if (ds.hoverTarget?.startsWith('linux-app:') && !ds.node.isDir) {
+            const sid = ds.hoverTarget.slice('linux-app:'.length);
+            onDropFilesOnLinuxApp?.(sid, ds.dragPaths);
+          } else if (ds.hoverTarget === 'folder:/.trash') {
             onTrashNodes(ds.dragPaths);
           } else if (ds.hoverTarget?.startsWith('folder:')) {
             const destDir = ds.hoverTarget.slice('folder:'.length);
@@ -330,6 +339,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     onOpenChromium,
     onSaveIconPosition,
     onExternalDropHover,
+    onDropFilesOnLinuxApp,
   ]);
 
   const cutSet = useMemo(

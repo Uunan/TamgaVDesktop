@@ -5,6 +5,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Eye,
   Folder,
   Gauge,
   HardDrive,
@@ -12,9 +13,11 @@ import {
   Link2,
   Lock,
   LogOut,
+  Minimize2,
   Monitor,
   Moon,
   Package,
+  Play,
   Plus,
   RotateCw,
   Search,
@@ -24,6 +27,7 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import {
   type DockPreferences,
@@ -74,20 +78,29 @@ interface TaskbarProps {
   onToggleMute: () => void;
   onToggleTheme: (nextTheme: 'dark' | 'light', origin?: { x: number; y: number }) => void;
   onClearNotifications: () => void;
-  onOpenBrowser: () => void;
+  onOpenBrowser: (opts?: { forceNew?: boolean }) => void;
   onOpenTerminal: () => void;
   onOpenAppStore: () => void;
   onOpenSettings: (tab?: SettingsTabId) => void;
-  onLaunchLinuxApp: (app: LinuxAppInfo) => void;
+  onLaunchLinuxApp: (app: LinuxAppInfo, opts?: { forceNew?: boolean }) => void;
   onOpenFolder: (path: string) => void;
   onOpenNode: (node: VFSNode) => void;
   onToggleWindowFromTaskbar: (winId: string) => void;
+  onCloseWindow: (winId: string) => void;
   onLockScreen: () => void;
   onReboot: () => void;
   onLogout?: () => void;
 }
 
-type ActiveFlyout = 'launcher' | 'spaces' | 'controls' | 'notifications' | 'calendar' | null;
+type ActiveFlyout = 'launcher' | 'controls' | 'notifications' | 'calendar' | null;
+
+interface DockContextState {
+  title: string;
+  anchor: DOMRect;
+  win?: OSWindow;
+  onOpen?: () => void;
+  onNewWindow?: () => void;
+}
 
 function getOriginFromEvent(e: React.MouseEvent<HTMLButtonElement>): { x: number; y: number } {
   if (e.clientX || e.clientY) {
@@ -190,6 +203,59 @@ function computeAnchoredFlyoutStyle(
   return { bottom: Math.round(vh - anchor.top + gap), left };
 }
 
+/* Smooth macOS cosine-wave Dock icon magnifier */
+const DockMagnifySlot: React.FC<{
+  enabled: boolean;
+  maxScale: number;
+  pointer: { x: number; y: number } | null;
+  pos: DockPreferences['position'];
+  children: React.ReactNode;
+}> = ({ enabled, maxScale, pointer, pos, children }) => {
+  const slotRef = useRef<HTMLDivElement>(null);
+
+  let scale = 1;
+  let lift = 0;
+
+  if (enabled && pointer && slotRef.current) {
+    const rect = slotRef.current.getBoundingClientRect();
+    const isVert = pos === 'left' || pos === 'right';
+    const center = isVert ? rect.top + rect.height / 2 : rect.left + rect.width / 2;
+    const cursor = isVert ? pointer.y : pointer.x;
+    const dist = Math.abs(cursor - center);
+    const radius = 115;
+    if (dist < radius) {
+      const influence = Math.cos((dist / radius) * (Math.PI / 2));
+      scale = 1 + (Math.max(1.05, Math.min(2, maxScale)) - 1) * influence;
+      lift = (scale - 1) * 20;
+    }
+  }
+
+  const transform =
+    scale > 1.005
+      ? pos === 'top'
+        ? `translateY(${lift.toFixed(1)}px) scale(${scale.toFixed(3)})`
+        : pos === 'left'
+        ? `translateX(${lift.toFixed(1)}px) scale(${scale.toFixed(3)})`
+        : pos === 'right'
+        ? `translateX(-${lift.toFixed(1)}px) scale(${scale.toFixed(3)})`
+        : `translateY(-${lift.toFixed(1)}px) scale(${scale.toFixed(3)})`
+      : 'translate(0, 0) scale(1)';
+
+  return (
+    <div
+      ref={slotRef}
+      style={{
+        transform,
+        transition: 'transform 95ms cubic-bezier(0.22, 1, 0.36, 1)',
+        zIndex: scale > 1.08 ? 20 : 1,
+      }}
+      className="relative shrink-0 will-change-transform"
+    >
+      {children}
+    </div>
+  );
+};
+
 const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) => {
   const [imgFailed, setImgFailed] = useState(false);
 
@@ -199,6 +265,9 @@ const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) =
   if (win.kind === 'terminal') return <TerminalAppIcon size={size} />;
   if (win.kind === 'app-store') return <AppStoreIcon size={size} />;
   if (win.kind === 'settings') return <SettingsAppIcon size={size} />;
+  if (win.kind === 'preview') {
+    return <Eye style={{ width: size - 4, height: size - 4 }} className="shrink-0 text-sky-400" />;
+  }
   if (win.kind === 'folder') {
     return <Folder style={{ width: size - 4, height: size - 4 }} className="shrink-0" />;
   }
@@ -262,12 +331,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onOpenFolder,
   onOpenNode,
   onToggleWindowFromTaskbar,
+  onCloseWindow,
   onLockScreen,
   onReboot,
   onLogout,
 }) => {
   const [flyout, setFlyout] = useState<ActiveFlyout>(null);
   const [flyoutAnchor, setFlyoutAnchor] = useState<DOMRect | null>(null);
+  const [dockCtx, setDockCtx] = useState<DockContextState | null>(null);
+  const [dockPointer, setDockPointer] = useState<{ x: number; y: number } | null>(null);
+
   const [now, setNow] = useState(() => new Date());
   const [startSearch, setStartSearch] = useState('');
   const [newDesktopName, setNewDesktopName] = useState('');
@@ -284,6 +357,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     const handleDown = (e: PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setFlyout(null);
+        setDockCtx(null);
       }
     };
     window.addEventListener('pointerdown', handleDown);
@@ -291,9 +365,23 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   }, []);
 
   const toggleFlyout = (target: ActiveFlyout, e: React.MouseEvent<HTMLButtonElement>) => {
+    setDockCtx(null);
     const rect = e.currentTarget.getBoundingClientRect();
     setFlyoutAnchor(rect);
     setFlyout((prev) => (prev === target ? null : target));
+  };
+
+  const openDockContext = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    payload: Omit<DockContextState, 'anchor'>
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFlyout(null);
+    setDockCtx({
+      ...payload,
+      anchor: e.currentTarget.getBoundingClientRect(),
+    });
   };
 
   const installedLinuxApps = useMemo(
@@ -301,7 +389,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     [linuxApps]
   );
 
-  // Exclude Chrome from secondary list since Google Chrome is already pinned in the Core Apps row
   const secondaryLinuxApps = useMemo(
     () => installedLinuxApps.filter((a) => a.id !== 'chrome'),
     [installedLinuxApps]
@@ -355,7 +442,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     return cells;
   }, [calCursor, now]);
 
-  // Primary browser window: native Google Chrome (or fallback browser window)
   const browserWin = windows.find(
     (w) => (w.kind === 'linux-app' && w.appId === 'chrome') || w.kind === 'browser'
   );
@@ -393,6 +479,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   const isVertical = pos === 'left' || pos === 'right';
   const isCompactDock = styleMode === 'macos' || styleMode === 'minimal';
   const showTextLabels = !isVertical && Boolean(dock.showLabels) && styleMode !== 'minimal';
+  const magEnabled = dock.magnification ?? true;
+  const magScale = dock.magnificationScale ?? 1.45;
 
   const palette = useMemo(() => resolveDockPalette(dock, theme), [dock, theme]);
 
@@ -527,6 +615,80 @@ export const Taskbar: React.FC<TaskbarProps> = ({
 
   return (
     <div ref={containerRef} className="select-none">
+      {/* 0. DOCK RIGHT-CLICK CONTEXT MENU — Animated & anchored right above the clicked Dock icon */}
+      {dockCtx && (
+        <div
+          key={`dock-ctx-${dockCtx.title}`}
+          data-testid="dock-context-menu"
+          style={{
+            ...computeAnchoredFlyoutStyle(dockCtx.anchor, pos, 200, 150),
+            boxShadow: 'var(--os-shadow)',
+          }}
+          className={`fixed z-[9990] w-50 rounded-2xl bg-[var(--os-surface-2)]/95 backdrop-blur-xl border border-[var(--os-border-strong)] p-1.5 text-xs text-[var(--os-text)] ${flyoutAnimClass}`}
+        >
+          <div className="px-2.5 py-1.5 text-[11px] font-semibold text-[var(--os-text-muted)] truncate border-b border-[var(--os-border)] mb-1">
+            {dockCtx.title}
+          </div>
+
+          {dockCtx.win ? (
+            <>
+              <button
+                onClick={() => {
+                  onToggleWindowFromTaskbar(dockCtx.win!.id);
+                  setDockCtx(null);
+                }}
+                className="w-full px-2.5 py-2 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-2 text-left transition-colors"
+              >
+                <Minimize2 className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                <span>
+                  {dockCtx.win.minimized || focusedWindowId !== dockCtx.win.id
+                    ? 'Öne Getir'
+                    : 'Küçült'}
+                </span>
+              </button>
+
+              {dockCtx.onNewWindow && (
+                <button
+                  onClick={() => {
+                    dockCtx.onNewWindow?.();
+                    setDockCtx(null);
+                  }}
+                  className="w-full px-2.5 py-2 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-2 text-left transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                  <span>Yeni Pencere</span>
+                </button>
+              )}
+
+              <div className="my-1 border-t border-[var(--os-border)]" />
+
+              <button
+                onClick={() => {
+                  onCloseWindow(dockCtx.win!.id);
+                  setDockCtx(null);
+                }}
+                data-testid="dock-ctx-close"
+                className="w-full px-2.5 py-2 rounded-xl hover:bg-red-500/15 text-red-400 flex items-center gap-2 text-left font-medium transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Kapat</span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => {
+                dockCtx.onOpen?.();
+                setDockCtx(null);
+              }}
+              className="w-full px-2.5 py-2 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-2 text-left transition-colors"
+            >
+              <Play className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+              <span>Aç</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 1. LAUNCHER MENU — Anchored directly to Launcher button with spring pop */}
       {flyout === 'launcher' && (
         <div
@@ -611,7 +773,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               </div>
             ) : (
               <>
-                {/* Core Apps Row */}
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => {
@@ -653,7 +814,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                   </button>
                 </div>
 
-                {/* Installed Native Linux GUI Apps */}
                 {linuxGuiReady && secondaryLinuxApps.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)] px-1">
@@ -781,117 +941,16 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 2. INDEPENDENT VIRTUAL DESKTOPS SWITCHER — Anchored directly to Spaces button */}
-      {flyout === 'spaces' && (
-        <div
-          key="flyout-spaces"
-          data-testid="flyout-spaces"
-          style={{
-            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 320, 320),
-            boxShadow: 'var(--os-shadow)',
-          }}
-          className={`fixed z-[9980] w-80 max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
-        >
-          <div>
-            <div className="text-xs font-semibold text-[var(--os-text)]">Sanal Masaüstleri</div>
-            <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-              İzole çalışma alanları
-            </div>
-          </div>
-
-          <div className="space-y-1.5 max-h-56 overflow-y-auto">
-            {desktops.map((d) => {
-              const active = d.id === currentDesktop.id;
-              return (
-                <div
-                  key={d.id}
-                  className={`flex items-center justify-between p-2.5 rounded-xl border transition-colors ${
-                    active
-                      ? 'bg-[var(--os-surface-3)] border-[var(--os-border-strong)] text-[var(--os-text)]'
-                      : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:bg-[var(--os-hover)]'
-                  }`}
-                >
-                  <button
-                    onClick={() => {
-                      if (!active) onSwitchDesktop(d.id);
-                      setFlyout(null);
-                    }}
-                    className="flex-1 text-left min-w-0"
-                  >
-                    <div className="text-xs font-medium truncate">{d.name}</div>
-                    <div className="text-[10px] text-[var(--os-text-subtle)] font-mono truncate">
-                      ?desktop={d.id}
-                    </div>
-                  </button>
-
-                  <div className="flex items-center gap-1 shrink-0 ml-2">
-                    <button
-                      onClick={() => {
-                        onCopyDesktopLink(d.id);
-                        setCopiedId(d.id);
-                        setTimeout(() => setCopiedId(null), 1500);
-                      }}
-                      title="Bağlantıyı kopyala"
-                      className="p-1.5 rounded-lg hover:bg-[var(--os-hover)] text-[var(--os-text-muted)] hover:text-[var(--os-text)] transition-colors"
-                    >
-                      {copiedId === d.id ? (
-                        <Check className="w-3.5 h-3.5 text-[var(--os-text)]" />
-                      ) : (
-                        <Link2 className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                    {desktops.length > 1 && (
-                      <button
-                        onClick={() => onDeleteDesktop(d.id)}
-                        title="Masaüstünü Sil"
-                        className="p-1.5 rounded-lg hover:bg-red-500/15 text-[var(--os-text-subtle)] hover:text-red-500 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              onCreateDesktop(newDesktopName.trim() || undefined);
-              setNewDesktopName('');
-              setFlyout(null);
-            }}
-            className="flex items-center gap-1.5 pt-2 border-t border-[var(--os-border)]"
-          >
-            <input
-              type="text"
-              value={newDesktopName}
-              onChange={(e) => setNewDesktopName(e.target.value)}
-              placeholder="Yeni masaüstü adı..."
-              className="flex-1 px-3 py-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] focus:border-[var(--os-border-strong)] focus:outline-none text-xs text-[var(--os-text)] placeholder:text-[var(--os-text-subtle)]"
-            />
-            <button
-              type="submit"
-              className="px-3 py-2 rounded-xl bg-[var(--os-accent-bg)] hover:opacity-90 text-[var(--os-accent-fg)] text-xs font-semibold flex items-center gap-1 shrink-0 transition-opacity"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Oluştur</span>
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* 3. CLEAN CONTROL CENTER — Anchored directly to Control Center button (No Wallpaper Picker) */}
+      {/* 2. CLEAN CONTROL CENTER — Includes Settings, Stream, Theme, Virtual Desktops, Audio, Brightness, Telemetry */}
       {flyout === 'controls' && (
         <div
           key="flyout-controls"
           data-testid="flyout-controls"
           style={{
-            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 336, 360),
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 344, 490),
             boxShadow: 'var(--os-shadow)',
           }}
-          className={`fixed z-[9980] w-[336px] max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
+          className={`fixed z-[9980] w-[344px] max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           {/* Quick Settings Entry Row */}
           <div className="grid grid-cols-2 gap-1.5">
@@ -954,6 +1013,94 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 <span>Açık</span>
               </button>
             </div>
+          </div>
+
+          {/* Virtual Desktops Switcher (moved cleanly into Control Center!) */}
+          <div data-testid="control-center-spaces" className="space-y-2 pt-2.5 border-t border-[var(--os-border)]">
+            <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
+              <span className="flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" />
+                <span>Sanal Masaüstleri</span>
+              </span>
+              <span className="font-mono text-[10px]">{desktops.length}</span>
+            </div>
+
+            <div className="space-y-1 max-h-28 overflow-y-auto">
+              {desktops.map((d) => {
+                const active = d.id === currentDesktop.id;
+                return (
+                  <div
+                    key={d.id}
+                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl border transition-colors ${
+                      active
+                        ? 'bg-[var(--os-surface-3)] border-[var(--os-border-strong)] text-[var(--os-text)]'
+                        : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:bg-[var(--os-hover)]'
+                    }`}
+                  >
+                    <button
+                      onClick={() => {
+                        if (!active) onSwitchDesktop(d.id);
+                        setFlyout(null);
+                      }}
+                      className="flex-1 text-left min-w-0 text-xs font-medium truncate"
+                    >
+                      {d.name}
+                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0 ml-1">
+                      <button
+                        onClick={() => {
+                          onCopyDesktopLink(d.id);
+                          setCopiedId(d.id);
+                          setTimeout(() => setCopiedId(null), 1500);
+                        }}
+                        title="Bağlantıyı kopyala"
+                        className="p-1 rounded-lg hover:bg-[var(--os-hover)] text-[var(--os-text-muted)] hover:text-[var(--os-text)]"
+                      >
+                        {copiedId === d.id ? (
+                          <Check className="w-3 h-3" />
+                        ) : (
+                          <Link2 className="w-3 h-3" />
+                        )}
+                      </button>
+                      {desktops.length > 1 && (
+                        <button
+                          onClick={() => onDeleteDesktop(d.id)}
+                          title="Masaüstünü Sil"
+                          className="p-1 rounded-lg hover:bg-red-500/15 text-[var(--os-text-subtle)] hover:text-red-500"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onCreateDesktop(newDesktopName.trim() || undefined);
+                setNewDesktopName('');
+                setFlyout(null);
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="text"
+                value={newDesktopName}
+                onChange={(e) => setNewDesktopName(e.target.value)}
+                placeholder="Yeni masaüstü..."
+                className="flex-1 px-2.5 py-1.5 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] focus:border-[var(--os-border-strong)] focus:outline-none text-[11px] text-[var(--os-text)] placeholder:text-[var(--os-text-subtle)]"
+              />
+              <button
+                type="submit"
+                className="px-2.5 py-1.5 rounded-xl bg-[var(--os-accent-bg)] hover:opacity-90 text-[var(--os-accent-fg)] text-[11px] font-semibold flex items-center gap-1 shrink-0"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Ekle</span>
+              </button>
+            </form>
           </div>
 
           {/* Audio & Brightness */}
@@ -1034,7 +1181,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 4. NOTIFICATIONS — Anchored to Notifications button */}
+      {/* 3. NOTIFICATIONS — Anchored to Notifications button */}
       {flyout === 'notifications' && (
         <div
           key="flyout-notifications"
@@ -1074,7 +1221,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 5. CLOCK & CALENDAR — Anchored to Clock button */}
+      {/* 4. CLOCK & CALENDAR — Anchored to Clock button */}
       {flyout === 'calendar' && (
         <div
           key="flyout-calendar"
@@ -1149,54 +1296,46 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* CUSTOMIZABLE DOCK / PANEL */}
+      {/* CUSTOMIZABLE DOCK / PANEL WITH MACOS MAGNIFICATION & RIGHT-CLICK MENU */}
       <div
         data-testid="dock-bar"
         data-dock-position={pos}
         data-dock-style={styleMode}
+        data-dock-magnification={magEnabled ? 'true' : 'false'}
         style={dockStyleObj}
+        onPointerMove={(e) => {
+          if (magEnabled) setDockPointer({ x: e.clientX, y: e.clientY });
+        }}
+        onPointerLeave={() => setDockPointer(null)}
         className={dockContainerClass}
       >
-        {/* Start Section: Launcher + Spaces + Core Pinned Apps + Running Windows */}
+        {/* Start Section: Launcher + Core Pinned Apps + Running Windows */}
         <div
           className={`flex items-center gap-1 min-w-0 ${
             isVertical
-              ? 'flex-col flex-1 overflow-y-auto no-scrollbar'
+              ? 'flex-col flex-1'
               : isCompactDock
               ? 'flex-row'
               : 'flex-row flex-1'
           }`}
         >
-          <button
-            onClick={(e) => toggleFlyout('launcher', e)}
-            data-testid="dock-launcher-btn"
-            title="Menü"
-            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
-              flyout === 'launcher' ? palette.activeBg : palette.hoverBg
-            }`}
-          >
-            <div className="grid grid-cols-2 gap-1">
-              <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-              <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-              <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-              <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-            </div>
-          </button>
-
-          <button
-            onClick={(e) => toggleFlyout('spaces', e)}
-            title={`Masaüstü: ${currentDesktop.name}`}
-            className={`${
-              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-            } ${btnShapeClass} flex items-center justify-center gap-2 text-xs font-medium transition-colors shrink-0 ${
-              flyout === 'spaces' ? palette.activeBg : palette.chipBg
-            }`}
-          >
-            <Layers className="w-4 h-4 shrink-0" />
-            {showTextLabels && !isCompactDock && (
-              <span className="hidden sm:inline max-w-[100px] truncate">{currentDesktop.name}</span>
-            )}
-          </button>
+          <DockMagnifySlot enabled={magEnabled} maxScale={magScale} pointer={dockPointer} pos={pos}>
+            <button
+              onClick={(e) => toggleFlyout('launcher', e)}
+              data-testid="dock-launcher-btn"
+              title="Menü"
+              className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
+                flyout === 'launcher' ? palette.activeBg : palette.hoverBg
+              }`}
+            >
+              <div className="grid grid-cols-2 gap-1">
+                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
+                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
+                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
+                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
+              </div>
+            </button>
+          </DockMagnifySlot>
 
           <div
             className={`${
@@ -1204,101 +1343,130 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             } ${palette.dividerBg} shrink-0`}
           />
 
-          {/* Pinned Default Browser: Google Chrome (with macOS launch bounce) */}
-          <button
-            onClick={() => {
-              if (browserWin) onToggleWindowFromTaskbar(browserWin.id);
-              else onOpenBrowser();
-            }}
-            data-testid="dock-browser-btn"
-            data-launching={browserWin?.launching ? 'true' : 'false'}
-            title={browserWin?.launching ? `${primaryBrowserLabel} açılıyor...` : primaryBrowserLabel}
-            className={`relative ${
-              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
-              browserWin && !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching
-                ? palette.activeBg
-                : palette.hoverBg
-            }`}
-          >
-            <span
-              className={`inline-flex items-center justify-center ${
-                browserWin?.launching
-                  ? isVertical
-                    ? 'dock-bounce-x'
-                    : 'dock-bounce-y'
-                  : ''
+          {/* Pinned Default Browser: Google Chrome */}
+          <DockMagnifySlot enabled={magEnabled} maxScale={magScale} pointer={dockPointer} pos={pos}>
+            <button
+              onClick={() => {
+                if (browserWin) onToggleWindowFromTaskbar(browserWin.id);
+                else onOpenBrowser();
+              }}
+              onContextMenu={(e) =>
+                openDockContext(e, {
+                  title: primaryBrowserLabel,
+                  win: browserWin,
+                  onOpen: () => onOpenBrowser(),
+                  onNewWindow: () => onOpenBrowser({ forceNew: true }),
+                })
+              }
+              data-testid="dock-browser-btn"
+              data-launching={browserWin?.launching ? 'true' : 'false'}
+              title={browserWin?.launching ? `${primaryBrowserLabel} açılıyor...` : primaryBrowserLabel}
+              className={`relative ${
+                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+                browserWin && !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching
+                  ? palette.activeBg
+                  : palette.hoverBg
               }`}
             >
-              {useFirefoxIcon ? (
-                <FirefoxLogoIcon size={sizeTokens.icon} />
-              ) : (
-                <GoogleChromeLogoIcon size={sizeTokens.icon} />
+              <span
+                className={`inline-flex items-center justify-center ${
+                  browserWin?.launching
+                    ? isVertical
+                      ? 'dock-bounce-x'
+                      : 'dock-bounce-y'
+                    : ''
+                }`}
+              >
+                {useFirefoxIcon ? (
+                  <FirefoxLogoIcon size={sizeTokens.icon} />
+                ) : (
+                  <GoogleChromeLogoIcon size={sizeTokens.icon} />
+                )}
+              </span>
+              {showTextLabels && !isCompactDock && (
+                <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
               )}
-            </span>
-            {showTextLabels && !isCompactDock && (
-              <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
-            )}
-            {browserWin &&
-              renderIndicator(
-                !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching,
-                Boolean(browserWin.launching)
-              )}
-          </button>
+              {browserWin &&
+                renderIndicator(
+                  !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching,
+                  Boolean(browserWin.launching)
+                )}
+            </button>
+          </DockMagnifySlot>
 
           {/* Pinned Real Linux Terminal */}
-          <button
-            onClick={() => {
-              if (terminalWin) onToggleWindowFromTaskbar(terminalWin.id);
-              else onOpenTerminal();
-            }}
-            data-testid="dock-terminal-btn"
-            title="Uç Birim"
-            className={`relative ${
-              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
-              terminalWin && !terminalWin.minimized && focusedWindowId === terminalWin.id
-                ? palette.activeBg
-                : palette.hoverBg
-            }`}
-          >
-            <TerminalAppIcon size={sizeTokens.icon} />
-            {showTextLabels && !isCompactDock && (
-              <span className="text-xs font-medium hidden lg:inline">Uç Birim</span>
-            )}
-            {terminalWin &&
-              renderIndicator(!terminalWin.minimized && focusedWindowId === terminalWin.id)}
-          </button>
+          <DockMagnifySlot enabled={magEnabled} maxScale={magScale} pointer={dockPointer} pos={pos}>
+            <button
+              onClick={() => {
+                if (terminalWin) onToggleWindowFromTaskbar(terminalWin.id);
+                else onOpenTerminal();
+              }}
+              onContextMenu={(e) =>
+                openDockContext(e, {
+                  title: 'Uç Birim',
+                  win: terminalWin,
+                  onOpen: onOpenTerminal,
+                  onNewWindow: onOpenTerminal,
+                })
+              }
+              data-testid="dock-terminal-btn"
+              title="Uç Birim"
+              className={`relative ${
+                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+                terminalWin && !terminalWin.minimized && focusedWindowId === terminalWin.id
+                  ? palette.activeBg
+                  : palette.hoverBg
+              }`}
+            >
+              <TerminalAppIcon size={sizeTokens.icon} />
+              {showTextLabels && !isCompactDock && (
+                <span className="text-xs font-medium hidden lg:inline">Uç Birim</span>
+              )}
+              {terminalWin &&
+                renderIndicator(!terminalWin.minimized && focusedWindowId === terminalWin.id)}
+            </button>
+          </DockMagnifySlot>
 
-          {/* Pinned Linux App Manager */}
-          <button
-            onClick={() => {
-              if (appStoreWin) onToggleWindowFromTaskbar(appStoreWin.id);
-              else onOpenAppStore();
-            }}
-            data-testid="dock-apps-btn"
-            title="Uygulamalar"
-            className={`relative ${
-              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
-              appStoreWin && !appStoreWin.minimized && focusedWindowId === appStoreWin.id
-                ? palette.activeBg
-                : palette.hoverBg
-            }`}
-          >
-            <AppStoreIcon size={sizeTokens.icon} />
-            {showTextLabels && !isCompactDock && (
-              <span className="text-xs font-medium hidden xl:inline">Uygulamalar</span>
-            )}
-            {appStoreWin &&
-              renderIndicator(!appStoreWin.minimized && focusedWindowId === appStoreWin.id)}
-          </button>
+          {/* Pinned Linux App Store */}
+          <DockMagnifySlot enabled={magEnabled} maxScale={magScale} pointer={dockPointer} pos={pos}>
+            <button
+              onClick={() => {
+                if (appStoreWin) onToggleWindowFromTaskbar(appStoreWin.id);
+                else onOpenAppStore();
+              }}
+              onContextMenu={(e) =>
+                openDockContext(e, {
+                  title: 'Uygulamalar',
+                  win: appStoreWin,
+                  onOpen: onOpenAppStore,
+                })
+              }
+              data-testid="dock-apps-btn"
+              title="Uygulamalar"
+              className={`relative ${
+                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+                appStoreWin && !appStoreWin.minimized && focusedWindowId === appStoreWin.id
+                  ? palette.activeBg
+                  : palette.hoverBg
+              }`}
+            >
+              <AppStoreIcon size={sizeTokens.icon} />
+              {showTextLabels && !isCompactDock && (
+                <span className="text-xs font-medium hidden xl:inline">Uygulamalar</span>
+              )}
+              {appStoreWin &&
+                renderIndicator(!appStoreWin.minimized && focusedWindowId === appStoreWin.id)}
+            </button>
+          </DockMagnifySlot>
 
-          {/* Open Other Windows (Linux Apps w/ macOS Launch Bounce, Folders, Settings when open) */}
+          {/* Open Other Windows (Linux Apps w/ macOS Launch Bounce, Folders, Preview, Settings) */}
           {otherWindows.length > 0 && (
             <div
               className={`flex items-center gap-1 min-w-0 ${
-                isVertical ? 'flex-col' : 'flex-row overflow-x-auto no-scrollbar'
+                isVertical ? 'flex-col' : 'flex-row'
               }`}
             >
               {otherWindows.map((w) => {
@@ -1309,29 +1477,51 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     ? 'dock-bounce-x'
                     : 'dock-bounce-y'
                   : '';
+                const matchedLinuxApp = w.appId
+                  ? linuxApps.find((a) => a.id === w.appId)
+                  : undefined;
+
                 return (
-                  <button
+                  <DockMagnifySlot
                     key={w.id}
-                    onClick={() => onToggleWindowFromTaskbar(w.id)}
-                    data-testid={`dock-win-${w.appId || w.kind}`}
-                    data-launching={isLaunching ? 'true' : 'false'}
-                    title={isLaunching ? `${w.title} açılıyor...` : w.title}
-                    className={`relative ${
-                      showTextLabels && !isCompactDock
-                        ? `${sizeTokens.btnPill} max-w-[165px]`
-                        : sizeTokens.btnSize
-                    } ${btnShapeClass} flex items-center justify-center gap-2 shrink-0 text-xs transition-all hover:scale-105 ${
-                      active ? palette.activeBg : palette.hoverBg
-                    }`}
+                    enabled={magEnabled}
+                    maxScale={magScale}
+                    pointer={dockPointer}
+                    pos={pos}
                   >
-                    <span className={`inline-flex items-center justify-center ${bounceClass}`}>
-                      <DockAppIcon win={w} size={sizeTokens.icon} />
-                    </span>
-                    {showTextLabels && !isCompactDock && (
-                      <span className="truncate">{w.title}</span>
-                    )}
-                    {renderIndicator(active, isLaunching)}
-                  </button>
+                    <button
+                      onClick={() => onToggleWindowFromTaskbar(w.id)}
+                      onContextMenu={(e) =>
+                        openDockContext(e, {
+                          title: w.title,
+                          win: w,
+                          onNewWindow: matchedLinuxApp
+                            ? () => onLaunchLinuxApp(matchedLinuxApp, { forceNew: true })
+                            : w.kind === 'terminal'
+                            ? onOpenTerminal
+                            : undefined,
+                        })
+                      }
+                      data-testid={`dock-win-${w.appId || w.kind}`}
+                      data-launching={isLaunching ? 'true' : 'false'}
+                      title={isLaunching ? `${w.title} açılıyor...` : w.title}
+                      className={`relative ${
+                        showTextLabels && !isCompactDock
+                          ? `${sizeTokens.btnPill} max-w-[165px]`
+                          : sizeTokens.btnSize
+                      } ${btnShapeClass} flex items-center justify-center gap-2 shrink-0 text-xs transition-colors ${
+                        active ? palette.activeBg : palette.hoverBg
+                      }`}
+                    >
+                      <span className={`inline-flex items-center justify-center ${bounceClass}`}>
+                        <DockAppIcon win={w} size={sizeTokens.icon} />
+                      </span>
+                      {showTextLabels && !isCompactDock && (
+                        <span className="truncate">{w.title}</span>
+                      )}
+                      {renderIndicator(active, isLaunching)}
+                    </button>
+                  </DockMagnifySlot>
                 );
               })}
             </div>
@@ -1347,7 +1537,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           />
         )}
 
-        {/* End Section: Audio, Control Center (with Theme & Settings), Notifications, Clock */}
+        {/* End Section: Audio, Control Center (Theme, Virtual Desktops, Settings), Notifications, Clock */}
         <div
           className={`flex items-center gap-1 shrink-0 ${
             isVertical ? 'flex-col' : 'flex-row'

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Upload } from 'lucide-react';
 import { remoteAudio } from '../../services/audioPlayer';
+import { appsApi, vfsApi } from '../../services/osBridge';
 import { useWindowFrameControls } from '../desktop/WindowFrame';
 
 export interface ExtraLinuxWindowEvent {
@@ -14,10 +16,13 @@ interface LinuxAppWindowProps {
   viewId?: string;
   appName: string;
   isFocused?: boolean;
+  externalDropHighlighted?: boolean;
   onTitleChange?: (title: string) => void;
   onReady?: () => void;
   onAppExit?: () => void;
   onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
+  onVfsChanged?: () => void;
+  onNotify?: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
 export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
@@ -25,10 +30,13 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   viewId = 'main',
   appName,
   isFocused = true,
+  externalDropHighlighted = false,
   onTitleChange,
   onReady,
   onAppExit,
   onWindowOpened,
+  onVfsChanged,
+  onNotify,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,6 +64,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
+  const [nativeDragOver, setNativeDragOver] = useState(false);
 
   const sendInput = (payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -118,7 +127,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
 
     ws.onopen = () => {
-      // Do not force browser placeholder dims on startup; let the X11 app report view_geometry first.
       if (isFocused) {
         sendInput({ type: 'focus' });
       }
@@ -228,7 +236,68 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
   };
 
+  // Non-passive native wheel listener so Mac Cmd+Scroll / Ctrl+Scroll / Pinch zooms inside GIMP instead of browser page!
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const { x, y } = toCoords(e.clientX, e.clientY);
+      sendInput({
+        type: 'wheel',
+        x,
+        y,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        ctrlKey: e.ctrlKey || e.metaKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+      });
+    };
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [sessionId, viewId]);
+
+  const handleNativeDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setNativeDragOver(false);
+
+    // 1. Files dragged from Tamga FolderWindow
+    const vfsRaw = e.dataTransfer.getData('application/x-runcompute-paths');
+    if (vfsRaw) {
+      try {
+        const paths = JSON.parse(vfsRaw) as string[];
+        if (paths.length > 0) {
+          await appsApi.openFiles(sessionId, paths);
+          onNotify?.(appName, `${paths.length} dosya uygulamaya aktarıldı.`, 'success');
+        }
+      } catch (err) {
+        onNotify?.('Dosya Açılamadı', (err as Error).message, 'error');
+      }
+      return;
+    }
+
+    // 2. Files dragged directly from the user's host computer (Mac/Windows Finder/Explorer)
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      try {
+        const up = await vfsApi.uploadFiles('/Downloads', e.dataTransfer.files);
+        onVfsChanged?.();
+        const savedPaths = up.saved.map((n) => n.path);
+        if (savedPaths.length > 0) {
+          await appsApi.openFiles(sessionId, savedPaths);
+          onNotify?.(appName, `${savedPaths.length} dosya yüklendi ve açıldı.`, 'success');
+        }
+      } catch (err) {
+        onNotify?.('Dosya Aktarılamadı', (err as Error).message, 'error');
+      }
+    }
+  };
+
   const mapButton = (btn: number) => (btn === 2 ? 'right' : btn === 1 ? 'middle' : 'left');
+  const showDropBanner = nativeDragOver || externalDropHighlighted;
 
   return (
     <div
@@ -236,6 +305,24 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       data-testid="linux-app-window"
       data-app-session={sessionId}
       data-app-view={viewId}
+      data-drop-linux-app={sessionId}
+      onDragOver={(e) => {
+        if (
+          e.dataTransfer.types.includes('application/x-runcompute-paths') ||
+          e.dataTransfer.types.includes('Files')
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = 'copy';
+          if (!nativeDragOver) setNativeDragOver(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setNativeDragOver(false);
+        }
+      }}
+      onDrop={handleNativeDrop}
       className="relative w-full h-full overflow-hidden bg-[var(--os-bg)] select-none"
     >
       <canvas
@@ -283,11 +370,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           }
           sendInput({ type: 'mouseup', x, y, button: mapButton(e.button) });
         }}
-        onWheel={(e) => {
-          e.preventDefault();
-          const { x, y } = toCoords(e.clientX, e.clientY);
-          sendInput({ type: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
-        }}
         onKeyDown={async (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
             e.preventDefault();
@@ -334,6 +416,13 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         style={{ cursor: cursorStyle }}
         className="w-full h-full block object-contain outline-none touch-none"
       />
+
+      {showDropBanner && (
+        <div className="pointer-events-none absolute inset-3 rounded-2xl border-2 border-dashed border-[var(--os-accent-bg)] bg-black/55 backdrop-blur-sm flex flex-col items-center justify-center gap-2 text-white">
+          <Upload className="w-7 h-7" />
+          <div className="text-xs font-semibold">{appName} ile açmak için dosyayı bırakın</div>
+        </div>
+      )}
 
       {errorMsg && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6 text-center bg-[var(--os-bg)]">

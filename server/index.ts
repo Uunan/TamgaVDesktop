@@ -22,7 +22,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.5.0';
+export const TAMGA_VERSION = '1.6.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -121,6 +121,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   const linuxDisplayBridge = new LinuxDisplayBridge();
   const bootStartedAt = Date.now();
 
+  const vfsWatchers = new Map<string, fs.FSWatcher[]>();
+  const vfsWatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   function getDesktopContext(rawId: unknown) {
     const id = sanitizeDesktopId(typeof rawId === 'string' ? rawId : 'main');
     const desktopInfo = registry.ensureDesktop(id);
@@ -132,6 +135,31 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           : undefined;
       vfs = new VFSManager(desktopInfo.id, hostOverride);
       vfsInstances.set(desktopInfo.id, vfs);
+
+      // Watch Desktop & Downloads so Chrome/Firefox downloads and GIMP exports appear live immediately
+      const targetVfs = vfs;
+      const watchers: fs.FSWatcher[] = [];
+      for (const rel of ['/Downloads', '/Desktop']) {
+        try {
+          const dirPath = targetVfs.resolveDiskPath(rel);
+          fs.mkdirSync(dirPath, { recursive: true });
+          const w = fs.watch(dirPath, () => {
+            const prev = vfsWatchTimers.get(desktopInfo.id);
+            if (prev) clearTimeout(prev);
+            vfsWatchTimers.set(
+              desktopInfo.id,
+              setTimeout(() => {
+                vfsWatchTimers.delete(desktopInfo.id);
+                try {
+                  targetVfs.notifyChange();
+                } catch {}
+              }, 450)
+            );
+          });
+          watchers.push(w);
+        } catch {}
+      }
+      vfsWatchers.set(desktopInfo.id, watchers);
     }
     const browserSession = chromiumCluster.getOrCreateSession(desktopInfo.id, vfs);
     return { desktopInfo, vfs, browserSession };
@@ -415,6 +443,68 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       return;
     }
     res.json(job);
+  });
+
+  app.get('/api/apps/search', (req, res) => {
+    try {
+      const q = String(req.query.q || '').trim();
+      const results = q.length >= 2 ? linuxAppManager.searchApt(q) : [];
+      res.json({ results });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/api/apps/uninstall', (req, res) => {
+    try {
+      if (!config.linuxApps.allowInstall) {
+        res.status(403).json({ error: 'Bu sunucuda arayüzden uygulama yönetimi kapalı.' });
+        return;
+      }
+      const appId = req.body?.appId ? String(req.body.appId) : undefined;
+      const aptPackage = req.body?.aptPackage ? String(req.body.aptPackage) : undefined;
+      const result = linuxAppManager.startUninstall(appId, aptPackage);
+      res.json(result);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/api/apps/open-files', (req, res) => {
+    try {
+      const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
+      const { vfs } = getDesktopContext(desktopId);
+      const sessionId = String(req.body?.sessionId || '');
+      const vfsPaths: string[] = Array.isArray(req.body?.vfsPaths)
+        ? req.body.vfsPaths.map((x: unknown) => String(x))
+        : [];
+      if (!sessionId || vfsPaths.length === 0) {
+        res.status(400).json({ error: 'Oturum kimliği ve dosya yolu gereklidir.' });
+        return;
+      }
+      const realPaths = vfsPaths
+        .map((vp: string) => {
+          try {
+            return vfs.resolveDiskPath(vp);
+          } catch {
+            return null;
+          }
+        })
+        .filter((p: string | null): p is string => Boolean(p && fs.existsSync(p)));
+
+      if (realPaths.length === 0) {
+        res.status(404).json({ error: 'Açılacak dosya bulunamadı.' });
+        return;
+      }
+      const ok = linuxDisplayBridge.openFiles(sessionId, realPaths);
+      if (!ok) {
+        res.status(404).json({ error: 'Uygulama oturumu bulunamadı.' });
+        return;
+      }
+      res.json({ ok: true, count: realPaths.length });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   app.get('/api/apps/vscode-status', (_req, res) => {

@@ -660,6 +660,8 @@ def main() -> None:
         libX11.XSync(dpy, 0)
 
     shift_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Shift_L"))
+    ctrl_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Control_L"))
+    alt_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Alt_L"))
     x11_lock = threading.Lock()
     wm = WindowManager(display_str, screen_w, screen_h)
     env = wm.env
@@ -760,11 +762,20 @@ def main() -> None:
                 else:
                     dy = float(msg.get("deltaY", 0))
                     dx = float(msg.get("deltaX", 0))
+                    want_ctrl = bool(msg.get("ctrlKey") or msg.get("metaKey"))
+                    want_shift = bool(msg.get("shiftKey"))
+                    want_alt = bool(msg.get("altKey"))
                     with x11_lock:
                         libXtst.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                        if want_ctrl and ctrl_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 1, 0)
+                        if want_shift and shift_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
+                        if want_alt and alt_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, alt_kc, 1, 0)
                         if abs(dy) > 0:
                             btn = 5 if dy > 0 else 4
-                            ticks = max(1, min(4, int(round(abs(dy) / 90)) or 1))
+                            ticks = 1 if want_ctrl else max(1, min(4, int(round(abs(dy) / 90)) or 1))
                             for _ in range(ticks):
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
@@ -772,6 +783,12 @@ def main() -> None:
                             btn = 7 if dx > 0 else 6
                             libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                             libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+                        if want_alt and alt_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, alt_kc, 0, 0)
+                        if want_shift and shift_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
+                        if want_ctrl and ctrl_kc:
+                            libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 0, 0)
                         libX11.XFlush(dpy)
 
             elif mtype in ("keydown", "keyup"):

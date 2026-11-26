@@ -48,6 +48,8 @@ export interface DockPreferences {
   opacity: number;
   blur: number;
   showLabels: boolean;
+  magnification: boolean;
+  magnificationScale: number;
 }
 
 export interface DesktopMeta {
@@ -105,6 +107,8 @@ export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
   opacity: 86,
   blur: 18,
   showLabels: true,
+  magnification: true,
+  magnificationScale: 1.45,
 };
 
 export interface VirtualDesktopInfo {
@@ -154,12 +158,23 @@ export interface LinuxAppInfo {
   name: string;
   description: string;
   command: string;
-  category: 'browser' | 'development' | 'media' | 'office' | 'system' | 'other';
+  category: 'browser' | 'development' | 'media' | 'office' | 'communication' | 'system' | 'other';
+  publisher?: string;
+  accent?: string;
+  featured?: boolean;
   iconName?: string;
   installed: boolean;
   installable?: boolean;
+  uninstallable?: boolean;
+  packageName?: string;
   desktopFile?: string;
   needsNoSandbox?: boolean;
+}
+
+export interface AptSearchResult {
+  packageName: string;
+  summary: string;
+  installed: boolean;
 }
 
 export interface RunningLinuxSession {
@@ -213,6 +228,7 @@ export type SettingsTabId = 'stream' | 'dock' | 'appearance' | 'terminal' | 'sys
 export type WindowKind =
   | 'browser'
   | 'folder'
+  | 'preview'
   | 'properties'
   | 'terminal'
   | 'linux-app'
@@ -225,6 +241,7 @@ export interface OSWindow {
   kind: WindowKind;
   title: string;
   folderPath?: string;
+  previewNodePath?: string;
   vscodeUrl?: string;
   targetNodePath?: string;
   appSessionId?: string;

@@ -821,6 +821,42 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     />
                   }
                 />
+
+                <Row
+                  label="Büyütme Efekti (macOS)"
+                  tip="Fare ile Dock simgelerinin üzerinde gezinirken simgelerin yumuşakça büyümesini sağlar."
+                  right={
+                    <Toggle
+                      testId="toggle-dock-magnification"
+                      checked={dock.magnification ?? true}
+                      onChange={(v) => updateDock({ magnification: v })}
+                    />
+                  }
+                />
+
+                <div className="px-4 py-3 space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="font-medium flex items-center">
+                      Büyütme Ölçeği
+                      <InfoTip text="Fare üzerine gelindiğinde Dock simgelerinin ne kadar büyüyeceğini belirler." />
+                    </span>
+                    <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                      {(dock.magnificationScale ?? 1.45).toFixed(2)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="dock-magnification-scale"
+                    min={1.15}
+                    max={1.85}
+                    step={0.05}
+                    disabled={!(dock.magnification ?? true)}
+                    value={dock.magnificationScale ?? 1.45}
+                    onChange={(e) => updateDock({ magnificationScale: Number(e.target.value) })}
+                    style={{ accentColor: 'var(--os-accent-bg)' }}
+                    className="w-full disabled:opacity-35"
+                  />
+                </div>
               </div>
             </>
           )}

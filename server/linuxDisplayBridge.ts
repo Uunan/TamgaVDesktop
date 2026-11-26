@@ -606,10 +606,42 @@ export class LinuxAppSession {
     return profileDir;
   }
 
-  private buildLaunchCommand(extraNewWindow = false): { cmd: string; cwd: string } {
-    const profileDir = this.getProfileDir();
-    const desktopFilesDir = path.join(this.desktopDataRoot, 'vfs', 'Desktop');
+  private prepareDesktopXdgConfig(): { xdgConfigHome: string; downloadsDir: string; desktopFilesDir: string } {
+    const vfsRoot = path.join(this.desktopDataRoot, 'vfs');
+    const desktopFilesDir = path.join(vfsRoot, 'Desktop');
+    const downloadsDir = path.join(vfsRoot, 'Downloads');
+    const documentsDir = path.join(vfsRoot, 'Documents');
+    const xdgConfigHome = path.join(this.desktopDataRoot, '.config');
     fs.mkdirSync(desktopFilesDir, { recursive: true });
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    fs.mkdirSync(documentsDir, { recursive: true });
+    fs.mkdirSync(path.join(xdgConfigHome, 'gtk-3.0'), { recursive: true });
+    fs.mkdirSync(path.join(xdgConfigHome, 'gtk-4.0'), { recursive: true });
+
+    const gtkIni = '[Settings]\ngtk-decoration-layout=:\ngtk-dialogs-use-header=0\n';
+    try {
+      fs.writeFileSync(path.join(xdgConfigHome, 'gtk-3.0', 'settings.ini'), gtkIni, 'utf-8');
+      fs.writeFileSync(path.join(xdgConfigHome, 'gtk-4.0', 'settings.ini'), gtkIni, 'utf-8');
+      fs.writeFileSync(
+        path.join(xdgConfigHome, 'user-dirs.dirs'),
+        [
+          `XDG_DESKTOP_DIR="${desktopFilesDir}"`,
+          `XDG_DOWNLOAD_DIR="${downloadsDir}"`,
+          `XDG_DOCUMENTS_DIR="${documentsDir}"`,
+          `XDG_PICTURES_DIR="${desktopFilesDir}"`,
+          `XDG_MUSIC_DIR="${documentsDir}"`,
+          `XDG_VIDEOS_DIR="${downloadsDir}"`,
+        ].join('\n') + '\n',
+        'utf-8'
+      );
+    } catch {}
+
+    return { xdgConfigHome, downloadsDir, desktopFilesDir };
+  }
+
+  private buildLaunchCommand(extraNewWindow = false): { cmd: string; cwd: string; xdgConfigHome: string } {
+    const profileDir = this.getProfileDir();
+    const { xdgConfigHome, downloadsDir, desktopFilesDir } = this.prepareDesktopXdgConfig();
 
     const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
     let finalCmd = this.command;
@@ -650,9 +682,7 @@ export class LinuxAppSession {
           'user_pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);',
           'user_pref("gfx.webrender.software", true);',
           'user_pref("gfx.x11-egl.force-disabled", true);',
-          'user_pref("browser.download.dir", ' +
-            JSON.stringify(path.join(this.desktopDataRoot, 'vfs', 'Downloads')) +
-            ');',
+          'user_pref("browser.download.dir", ' + JSON.stringify(downloadsDir) + ');',
           'user_pref("browser.download.folderList", 2);',
         ].join('\n') + '\n',
         'utf-8'
@@ -696,6 +726,47 @@ export class LinuxAppSession {
           } catch {}
         }
       }
+
+      if (isChromiumBrowser) {
+        // Ensure Chrome hides duplicate inner min/max/close buttons & routes Downloads straight to VFS/Downloads
+        try {
+          const defaultDir = path.join(profileDir, 'Default');
+          fs.mkdirSync(defaultDir, { recursive: true });
+          const firstRunPath = path.join(profileDir, 'First Run');
+          if (!fs.existsSync(firstRunPath)) fs.writeFileSync(firstRunPath, '', 'utf-8');
+
+          const prefsPath = path.join(defaultDir, 'Preferences');
+          let prefs: Record<string, any> = {};
+          if (fs.existsSync(prefsPath)) {
+            try {
+              prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'));
+            } catch {
+              prefs = {};
+            }
+          }
+          prefs.browser = {
+            ...(prefs.browser || {}),
+            custom_chrome_frame: false,
+            has_seen_welcome_page: true,
+          };
+          prefs.download = {
+            ...(prefs.download || {}),
+            default_directory: downloadsDir,
+            directory_upgrade: true,
+            prompt_for_download: false,
+          };
+          prefs.savefile = {
+            ...(prefs.savefile || {}),
+            default_directory: downloadsDir,
+          };
+          prefs.selectfile = {
+            ...(prefs.selectfile || {}),
+            last_directory: desktopFilesDir,
+          };
+          fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf-8');
+        } catch {}
+      }
+
       const extraFlags: string[] = [];
       if (isRoot && !finalCmd.includes('--no-sandbox')) {
         extraFlags.push('--no-sandbox');
@@ -709,6 +780,9 @@ export class LinuxAppSession {
         }
         if (!finalCmd.includes('--no-default-browser-check')) {
           extraFlags.push('--no-default-browser-check');
+        }
+        if (!extraNewWindow && !finalCmd.includes('--window-size')) {
+          extraFlags.push(`--window-size=${this.width},${this.height}`);
         }
       }
       if (!finalCmd.includes('--user-data-dir')) {
@@ -728,19 +802,21 @@ export class LinuxAppSession {
       finalCmd = `${finalCmd} -n`;
     }
 
-    return { cmd: finalCmd, cwd: desktopFilesDir };
+    return { cmd: finalCmd, cwd: desktopFilesDir, xdgConfigHome };
   }
 
   private launchTargetApp(baseEnv: NodeJS.ProcessEnv): void {
-    const { cmd, cwd } = this.buildLaunchCommand(false);
+    const { cmd, cwd, xdgConfigHome } = this.buildLaunchCommand(false);
+    const downloadsDir = path.join(this.desktopDataRoot, 'vfs', 'Downloads');
 
     this.appProc = spawn('/bin/bash', ['-c', `exec ${cmd}`], {
       cwd,
       env: {
         ...baseEnv,
         HOME: baseEnv.HOME || os.homedir(),
+        XDG_CONFIG_HOME: xdgConfigHome,
+        XDG_DOWNLOAD_DIR: downloadsDir,
         DONT_PROMPT_WSL_INSTALL: '1',
-        XDG_DOWNLOAD_DIR: path.join(this.desktopDataRoot, 'vfs', 'Downloads'),
       },
       stdio: 'ignore',
     });
@@ -777,9 +853,9 @@ export class LinuxAppSession {
 
   public spawnExtraWindow(customCommand?: string): void {
     if (this.closed) return;
-    const { cmd, cwd } = customCommand
-      ? { cmd: customCommand, cwd: path.join(this.desktopDataRoot, 'vfs', 'Desktop') }
-      : this.buildLaunchCommand(true);
+    const built = this.buildLaunchCommand(true);
+    const cmd = customCommand || built.cmd;
+    const cwd = built.cwd;
 
     const child = spawn('/bin/bash', ['-c', cmd], {
       cwd,
@@ -787,6 +863,45 @@ export class LinuxAppSession {
       env: {
         ...this.baseEnv,
         HOME: this.baseEnv.HOME || os.homedir(),
+        XDG_CONFIG_HOME: built.xdgConfigHome,
+        XDG_DOWNLOAD_DIR: path.join(this.desktopDataRoot, 'vfs', 'Downloads'),
+        DONT_PROMPT_WSL_INSTALL: '1',
+      },
+      stdio: 'ignore',
+    });
+    child.unref();
+  }
+
+  public openFiles(realPaths: string[]): void {
+    if (this.closed || realPaths.length === 0) return;
+    const { xdgConfigHome, desktopFilesDir, downloadsDir } = this.prepareDesktopXdgConfig();
+    const quotedFiles = realPaths
+      .map((p) => `'${p.replace(/'/g, "'\\''")}'`)
+      .join(' ');
+    const baseBin = path.basename(this.command.split(/\s+/)[0] || '');
+    const profileDir = this.getProfileDir();
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+    let cmd = `${this.command} ${quotedFiles}`;
+    if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
+      cmd = `${this.command} -profile "${profileDir}" ${quotedFiles}`;
+    } else if (
+      ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'brave-browser'].includes(baseBin)
+    ) {
+      cmd = `${this.command} ${isRoot ? '--no-sandbox' : ''} --test-type --user-data-dir="${profileDir}" ${quotedFiles}`;
+    } else if (baseBin === 'gimp') {
+      // GIMP automatically forwards file paths to the already-running instance on the same DISPLAY!
+      cmd = `${this.command} ${quotedFiles}`;
+    }
+
+    const child = spawn('/bin/bash', ['-c', cmd], {
+      cwd: desktopFilesDir,
+      detached: true,
+      env: {
+        ...this.baseEnv,
+        HOME: this.baseEnv.HOME || os.homedir(),
+        XDG_CONFIG_HOME: xdgConfigHome,
+        XDG_DOWNLOAD_DIR: downloadsDir,
         DONT_PROMPT_WSL_INSTALL: '1',
       },
       stdio: 'ignore',
@@ -1185,6 +1300,13 @@ export class LinuxDisplayBridge {
         width: s.width,
         height: s.height,
       }));
+  }
+
+  public openFiles(sessionId: string, realPaths: string[]): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    s.openFiles(realPaths);
+    return true;
   }
 
   public closeSession(sessionId: string, viewId?: string): void {
