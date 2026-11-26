@@ -221,31 +221,41 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
     return subscribeVideoFrame(paintBytes);
   }, [subscribeVideoFrame, activeTab?.id, activeTab?.mode]);
 
-  // Sync viewport size cleanly
+  const hasActiveTab = Boolean(activeTab);
+
+  // Sync viewport size cleanly (wait for activeTab so viewportContainerRef is guaranteed mounted)
   useEffect(() => {
+    if (!hasActiveTab) return;
     const el = viewportContainerRef.current;
     if (!el) return;
+
+    const emitViewport = (w: number, h: number) => {
+      if (w < 120 || h < 120) return;
+      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      sendWs({
+        type: 'browser_viewport',
+        width: Math.round(w),
+        height: Math.round(h),
+        devicePixelRatio: dpr,
+      });
+    };
+
+    const initialRect = el.getBoundingClientRect();
+    emitViewport(initialRect.width, initialRect.height);
+
     let timer: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect || rect.width < 120 || rect.height < 120) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-        sendWs({
-          type: 'browser_viewport',
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-          devicePixelRatio: dpr,
-        });
-      }, 150);
+      timer = setTimeout(() => emitViewport(rect.width, rect.height), 150);
     });
     ro.observe(el);
     return () => {
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [sendWs]);
+  }, [sendWs, hasActiveTab]);
 
   const localNode =
     activeTab?.mode === 'file' ? allNodes.find((n) => n.path === activeTab.filePath) : undefined;
