@@ -191,31 +191,47 @@ export function findPlaywrightManagedBrowser(chromiumRef?: { executablePath: () 
 
 export function resolvePlaywrightCliPath(): string | null {
   try {
-    return require.resolve('playwright-core/cli.js');
+    const pkgPath = require.resolve('playwright-core/package.json');
+    const cliPath = path.join(path.dirname(pkgPath), 'cli.js');
+    if (fs.existsSync(cliPath)) return cliPath;
   } catch {
-    return null;
+    // fallback paths for bundled environments
   }
+  const moduleDir = path.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    path.resolve(moduleDir, '..', 'node_modules', 'playwright-core', 'cli.js'),
+    path.resolve(moduleDir, '..', '..', 'playwright-core', 'cli.js'),
+    path.resolve(process.cwd(), 'node_modules', 'playwright-core', 'cli.js'),
+    '/usr/lib/node_modules/tamga-vdesktop/node_modules/playwright-core/cli.js',
+    '/usr/lib/node_modules/playwright-core/cli.js',
+    '/usr/local/lib/node_modules/tamga-vdesktop/node_modules/playwright-core/cli.js',
+    '/usr/local/lib/node_modules/playwright-core/cli.js',
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 export function installPlaywrightBrowserSync(opts?: { quiet?: boolean; withDeps?: boolean }): boolean {
   const existing = findPlaywrightManagedBrowser();
-  if (existing) return true;
+  if (existing && !opts?.withDeps) return true;
 
   const cliPath = resolvePlaywrightCliPath();
   if (!cliPath) {
+    if (existing) return true;
     if (!opts?.quiet) {
       console.error('[TamgaVDesktop] playwright-core/cli.js bulunamadı.');
     }
     return false;
   }
 
+  const shouldWithDeps = Boolean(
+    opts?.withDeps && process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0
+  );
   const args = [cliPath, 'install', 'chromium-headless-shell'];
-  if (opts?.withDeps && process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0) {
-    args.push('--with-deps');
-  }
-  if (opts?.quiet) {
-    args.push('--no-progress');
-  }
+  if (shouldWithDeps) args.push('--with-deps');
+  if (opts?.quiet) args.push('--no-progress');
 
   if (!opts?.quiet) {
     console.log('[TamgaVDesktop] Yerleşik Playwright Chromium tarayıcısı kuruluyor...');
@@ -233,6 +249,7 @@ export function installPlaywrightBrowserSync(opts?: { quiet?: boolean; withDeps?
 
   // Fallback for Playwright versions without chromium-headless-shell target alias
   const fallbackArgs = [cliPath, 'install', '--only-shell', 'chromium'];
+  if (shouldWithDeps) fallbackArgs.push('--with-deps');
   if (opts?.quiet) fallbackArgs.push('--no-progress');
   const res2 = spawnSync(process.execPath, fallbackArgs, {
     stdio: opts?.quiet ? 'ignore' : 'inherit',
