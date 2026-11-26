@@ -50,9 +50,12 @@ interface InternalTab {
   page?: Page;
   cdp?: CDPSession;
   lastFrameBuffer?: Buffer;
+  lastScreencastData?: string;
   streaming: boolean;
   settleTimer?: ReturnType<typeof setTimeout>;
   suppressSettleUntil?: number;
+  lastUserInputAt?: number;
+  lastPngAt?: number;
 }
 
 export type JsonEventCallback = (msg: Record<string, unknown>) => void;
@@ -882,6 +885,16 @@ export class ChromiumDesktopSession {
     cdp.on('Page.screencastFrame', (payload) => {
       cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => {});
 
+      const now = Date.now();
+      if (payload.data === tab.lastScreencastData) {
+        return;
+      }
+      if (now < (tab.suppressSettleUntil || 0) && (tab.lastUserInputAt || 0) <= (tab.lastPngAt || 0)) {
+        tab.lastScreencastData = payload.data;
+        return;
+      }
+      tab.lastScreencastData = payload.data;
+
       const jpegBuf = Buffer.from(payload.data, 'base64');
       const packet = Buffer.allocUnsafe(1 + jpegBuf.length);
       packet[0] = PACKET_VIDEO_JPEG;
@@ -894,14 +907,12 @@ export class ChromiumDesktopSession {
         this.broadcastBinary(packet);
 
         // Send a lossless PNG frame shortly after motion settles for native Retina text clarity
-        if (Date.now() > (tab.suppressSettleUntil || 0)) {
-          if (tab.settleTimer) clearTimeout(tab.settleTimer);
-          tab.settleTimer = setTimeout(() => {
-            if (this.activeTabId === tab.id && tab.mode === 'web') {
-              this.captureImmediateFrame(tab).catch(() => {});
-            }
-          }, 220);
-        }
+        if (tab.settleTimer) clearTimeout(tab.settleTimer);
+        tab.settleTimer = setTimeout(() => {
+          if (this.activeTabId === tab.id && tab.mode === 'web') {
+            this.captureImmediateFrame(tab).catch(() => {});
+          }
+        }, 220);
       }
     });
 
@@ -1024,8 +1035,10 @@ export class ChromiumDesktopSession {
   private async captureImmediateFrame(tab: InternalTab) {
     if (!tab.page || tab.page.isClosed() || tab.mode !== 'web') return;
     try {
-      tab.suppressSettleUntil = Date.now() + 380;
+      tab.suppressSettleUntil = Date.now() + 900;
       const pngBuf = await tab.page.screenshot({ type: 'png' });
+      tab.lastPngAt = Date.now();
+      tab.suppressSettleUntil = tab.lastPngAt + 550;
       const packet = Buffer.allocUnsafe(1 + pngBuf.length);
       packet[0] = PACKET_VIDEO_JPEG;
       pngBuf.copy(packet, 1);
@@ -1047,6 +1060,8 @@ export class ChromiumDesktopSession {
     tab.mode = parsed.mode;
     tab.filePath = parsed.filePath;
     tab.url = parsed.url;
+    tab.lastScreencastData = undefined;
+    tab.suppressSettleUntil = 0;
 
     if (parsed.mode === 'newtab') {
       await this.stopScreencast(tab);
@@ -1161,6 +1176,8 @@ export class ChromiumDesktopSession {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
     if (active?.mode === 'web' && active.page && !active.page.isClosed()) {
       try {
+        active.lastScreencastData = undefined;
+        active.suppressSettleUntil = 0;
         await this.stopScreencast(active);
         await this.applyTabMetrics(active);
         await this.startScreencast(active);
@@ -1174,6 +1191,7 @@ export class ChromiumDesktopSession {
     if (!tabId) return;
     const tab = this.tabs.get(tabId);
     if (!tab || tab.mode !== 'web' || !tab.page || !tab.cdp || tab.page.isClosed()) return;
+    tab.lastUserInputAt = Date.now();
 
     const kind = payload.kind as string;
     if (kind === 'mouse') {
