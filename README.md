@@ -5,7 +5,8 @@
 ## Özellikler
 
 - **%100 Kodla Anlık Masaüstü Kabuğu:** Klasik VNC/RDP gibi bulanık tam ekran görüntü aktarımı yerine; masaüstü, ikonlar, dock, pencere çerçeveleri, Dosya Gezgini, Açık/Koyu tema geçişleri ve özel duvar kağıtları tamamen tarayıcıda 120fps yerli kodla çalışır.
-- **Gerçek Linux GUI Uygulamaları (Pencere Bazlı):** Sunucuda kurulu olan gerçek **Firefox**, **VS Code**, **Antigravity**, **GIMP**, **VLC** veya herhangi bir Linux GUI uygulaması çerçevesiz olarak kendi pencere çerçevemiz içinde açılır (canlı ses, pano senkronizasyonu, dinamik boyutlandırma ve Türkçe klavye desteğiyle).
+- **%100 Web-Native VS Code Motoru (`code serve-web`):** Sunucuda kurulu olan resmi VS Code, video akışı veya gecikmeli uzak imleç olmadan doğrudan pencere çerçevemiz içinde %100 yerli DOM hızında (120fps) çalışır.
+- **Sıfır Çift İmleçli, Olay Güdümlü Linux GUI Uygulamaları (`XDamage` + `TurboJPEG` + `XFixes`):** **Firefox**, **Antigravity**, **GIMP**, **VLC** ve diğer Linux X11 uygulamaları yalnızca pikseller değiştiğinde (`XDamage`) `libturbojpeg` ile kodlanır (statikken %0 CPU); X11 imleci görüntüye çizilmez ve imleç şekilleri (`pointer`, `text`, `ew-resize`) doğrudan gerçek işletim sistemi imlecinizle senkronize edilir.
 - **Gerçek Linux Terminali:** Sıfır C++ derleme gerektiren yerleşik PTY köprüsü ile `bash`/`zsh` kabuğu doğrudan sunucunuzda çalışır.
 - **Tek VDS'te Bağımsız Sanal Masaüstleri:** `?desktop=<ad>` üzerinden her biri izole dosya sistemi, tema, duvar kağıdı ve uygulama profiline sahip sınırsız sanal masaüstü.
 - **Animasyonlu Tema & Özel Arka Plan:** Dairesel yayılan Açık ↔ Koyu tema animasyonu, cihazdan veya sanal dosyalardan animasyonlu özel duvar kağıdı seçimi, tam ekran öneri bildirimi.

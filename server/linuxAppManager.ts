@@ -84,17 +84,18 @@ echo "deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-cent
 apt-get update -y && apt-get install -y antigravity`,
   },
   {
-    id: 'chromium',
-    name: 'Chromium',
-    description: 'Açık kaynaklı Chromium web tarayıcısı',
-    binaryNames: ['chromium', 'chromium-browser', 'google-chrome'],
-    defaultCommand: 'chromium-browser',
+    id: 'chrome',
+    name: 'Google Chrome',
+    description: 'Resmi Google Chrome web tarayıcısı (.deb, Snap olmadan)',
+    binaryNames: ['google-chrome-stable', 'google-chrome'],
+    defaultCommand: 'google-chrome-stable',
     category: 'browser',
     needsNoSandbox: true,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y chromium || apt-get install -y chromium-browser`,
+wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+apt-get update -y && apt-get install -y /tmp/google-chrome.deb
+rm -f /tmp/google-chrome.deb`,
   },
   {
     id: 'mousepad',

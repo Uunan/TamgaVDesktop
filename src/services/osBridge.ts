@@ -110,6 +110,17 @@ export const appsApi = {
     jsonReq<{ status: 'running' | 'done' | 'error'; log: string }>(
       `/api/apps/install/${encodeURIComponent(jobId)}`
     ),
+
+  startVSCodeWeb: (folderPath?: string) =>
+    jsonReq<{ url: string }>('/api/apps/vscode-start', {
+      method: 'POST',
+      body: JSON.stringify({ folderPath }),
+    }),
+
+  vscodeStatus: () =>
+    jsonReq<{ installed: boolean; ready: boolean; statusMessage: string }>(
+      '/api/apps/vscode-status'
+    ),
 };
 
 export const vfsApi = {

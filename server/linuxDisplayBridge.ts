@@ -20,7 +20,7 @@ export interface LinuxAppSessionOptions {
 }
 
 export interface LinuxAppSubscriber {
-  onVideoFrame: (jpegBytes: Buffer) => void;
+  onVideoFrame: (jpegBytes: Buffer, done?: () => void) => void;
   onAudioChunk: (pcm16Bytes: Buffer) => void;
   onEvent: (event: { type: string; [key: string]: unknown }) => void;
 }
@@ -33,6 +33,26 @@ function findFreeDisplay(inUse: Set<number>): number {
     }
   }
   return 100 + Math.floor(Math.random() * 100);
+}
+
+function hasTurboJpegAndXDamage(): boolean {
+  const candidates = [
+    '/lib/x86_64-linux-gnu/libturbojpeg.so.0',
+    '/usr/lib/x86_64-linux-gnu/libturbojpeg.so.0',
+    '/lib/aarch64-linux-gnu/libturbojpeg.so.0',
+    '/usr/lib/aarch64-linux-gnu/libturbojpeg.so.0',
+    '/usr/lib/libturbojpeg.so.0',
+  ];
+  const hasTj = candidates.some((p) => fs.existsSync(p));
+  const dmgCandidates = [
+    '/lib/x86_64-linux-gnu/libXdamage.so.1',
+    '/usr/lib/x86_64-linux-gnu/libXdamage.so.1',
+    '/lib/aarch64-linux-gnu/libXdamage.so.1',
+    '/usr/lib/aarch64-linux-gnu/libXdamage.so.1',
+    '/usr/lib/libXdamage.so.1',
+  ];
+  const hasDmg = dmgCandidates.some((p) => fs.existsSync(p));
+  return hasTj && hasDmg;
 }
 
 function buildOpenboxRcXml(): string {
@@ -61,6 +81,7 @@ export class LinuxAppSession {
   public readonly displayNum: number;
   public readonly displayStr: string;
   public title: string;
+  public cursor = 'default';
   public width: number;
   public height: number;
   public startedAt = Date.now();
@@ -77,13 +98,15 @@ export class LinuxAppSession {
   private openboxProc: ChildProcess | null = null;
   private appProc: ChildProcess | null = null;
   private x11BridgeProc: ChildProcess | null = null;
-  private ffmpegProc: ChildProcess | null = null;
+  private streamerProc: ChildProcess | null = null;
+  private streamerMode: 'xdamage' | 'ffmpeg' = 'xdamage';
   private parecProc: ChildProcess | null = null;
   private pulseSinkName = '';
 
   private subscribers = new Set<LinuxAppSubscriber>();
   private lastFrame: Buffer | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private hadWindow = false;
   private closed = false;
   private onCloseCb: () => void;
 
@@ -100,13 +123,15 @@ export class LinuxAppSession {
     this.displayStr = `:${displayNum}`;
     this.width = Math.max(420, Math.min(1920, Math.round(opts.width || 1100)));
     this.height = Math.max(300, Math.min(1080, Math.round(opts.height || 680)));
-    // Keep even dimensions for ffmpeg x11grab
     this.width = this.width - (this.width % 2);
     this.height = this.height - (this.height % 2);
-    this.fps = Math.max(8, Math.min(30, opts.fps || 20));
+    this.fps = Math.max(10, Math.min(30, opts.fps || 24));
     this.quality = Math.max(2, Math.min(10, opts.quality || 4));
     this.enableAudio = opts.enableAudio ?? true;
-    this.tempDir = path.join(os.tmpdir(), `tamga-gui-${this.sessionId.replace(/[^a-z0-9_-]/gi, '')}`);
+    this.tempDir = path.join(
+      os.tmpdir(),
+      `tamga-gui-${this.sessionId.replace(/[^a-z0-9_-]/gi, '')}`
+    );
     this.onCloseCb = onCloseCb;
   }
 
@@ -115,18 +140,31 @@ export class LinuxAppSession {
     const obRcPath = path.join(this.tempDir, 'rc.xml');
     fs.writeFileSync(obRcPath, buildOpenboxRcXml(), 'utf-8');
 
-    // 1. Start lightweight Xvfb display
+    // 1. Start lightweight Xvfb display with DAMAGE + XFIXES + RANDR
     this.xvfbProc = spawn(
       'Xvfb',
-      [this.displayStr, '-screen', '0', '1920x1080x24', '-ac', '+extension', 'RANDR', '+render', '-noreset'],
+      [
+        this.displayStr,
+        '-screen',
+        '0',
+        '1920x1080x24',
+        '-ac',
+        '+extension',
+        'RANDR',
+        '+extension',
+        'DAMAGE',
+        '+extension',
+        'XFIXES',
+        '+render',
+        '-noreset',
+      ],
       { stdio: 'ignore' }
     );
 
-    // Wait for X11 socket
     const xSocket = `/tmp/.X11-unix/X${this.displayNum}`;
     for (let i = 0; i < 40; i++) {
       if (fs.existsSync(xSocket)) break;
-      await new Promise((r) => setTimeout(r, 80));
+      await new Promise((r) => setTimeout(r, 60));
     }
 
     const baseEnv: NodeJS.ProcessEnv = {
@@ -137,6 +175,8 @@ export class LinuxAppSession {
       QT_AUTO_SCREEN_SCALE_FACTOR: '0',
       MOZ_ENABLE_WAYLAND: '0',
       GTK_CSD: '0',
+      NO_AT_BRIDGE: '1',
+      XCURSOR_THEME: 'DMZ-White',
     };
 
     // 2. Start borderless Openbox window manager (~4MB RAM)
@@ -145,48 +185,47 @@ export class LinuxAppSession {
       stdio: 'ignore',
     });
 
-    // 3. Optional PulseAudio virtual sink for real native Linux app audio -> 24kHz PCM WS
+    // 3. Optional PulseAudio sink
     if (this.enableAudio) {
       this.setupPulseAudio(baseEnv);
     }
 
-    // 4. Start persistent X11/XTest bridge (mouse, keyboard, Turkish UTF-8, clipboard, resize, title)
+    // 4. Event-driven X11/XTest + XFixes cursor bridge
     this.startX11Bridge(baseEnv);
 
-    // 5. Launch real Linux GUI app with per-desktop isolated profile directory
+    // 5. Launch real Linux GUI app
     this.launchTargetApp(baseEnv);
 
-    // 6. Start ultra-fast MJPEG x11grab stream
-    setTimeout(() => {
-      if (!this.closed) this.startFfmpegCapture();
-    }, 350);
+    // 6. Start zero-idle XDamage+TurboJPEG capture (or low-delay cursorless ffmpeg fallback)
+    if (hasTurboJpegAndXDamage()) {
+      this.startXDamageStreamer(baseEnv);
+    } else {
+      this.startFfmpegFallbackCapture();
+    }
   }
 
   private setupPulseAudio(baseEnv: NodeJS.ProcessEnv): void {
     try {
-      // Ensure PulseAudio daemon is running (works even as root with --disallow-exit)
       try {
-        execSync('pactl info', { stdio: 'ignore', timeout: 1500 });
+        execSync('pactl info', { stdio: 'ignore', timeout: 1200 });
       } catch {
-        spawn('pulseaudio', ['--daemonize=yes', '--exit-idle-time=-1', '--disallow-module-loading=0', '--no-cpu-limit'], {
-          stdio: 'ignore',
-        });
+        spawn(
+          'pulseaudio',
+          ['--daemonize=yes', '--exit-idle-time=-1', '--disallow-module-loading=0', '--no-cpu-limit'],
+          { stdio: 'ignore' }
+        );
       }
       const sinkName = `tamga_${this.sessionId.replace(/[^a-z0-9]/gi, '').slice(-10)}`;
       try {
         execSync(
           `pactl load-module module-null-sink sink_name=${sinkName} sink_properties=device.description=${sinkName}`,
-          { stdio: 'ignore', timeout: 2000 }
+          { stdio: 'ignore', timeout: 1500 }
         );
         this.pulseSinkName = sinkName;
         baseEnv.PULSE_SINK = sinkName;
         this.startAudioCapture(sinkName);
-      } catch {
-        // Audio optional; proceed silently if PulseAudio unavailable
-      }
-    } catch {
-      // ignore
-    }
+      } catch {}
+    } catch {}
   }
 
   private startAudioCapture(sinkName: string): void {
@@ -198,7 +237,7 @@ export class LinuxAppSession {
       );
       this.parecProc = parec;
 
-      const CHUNK_BYTES = 2048; // ~42ms of 24kHz 16-bit mono PCM
+      const CHUNK_BYTES = 2048;
       let pcmBuf = Buffer.alloc(0);
 
       parec.stdout?.on('data', (chunk: Buffer) => {
@@ -208,7 +247,6 @@ export class LinuxAppSession {
           const slice = pcmBuf.subarray(0, CHUNK_BYTES);
           pcmBuf = pcmBuf.subarray(CHUNK_BYTES);
 
-          // Silence gate: avoid wasting bandwidth when silent
           let peak = 0;
           for (let i = 0; i < slice.length; i += 2) {
             const v = Math.abs(slice.readInt16LE(i));
@@ -222,17 +260,19 @@ export class LinuxAppSession {
           }
         }
       });
-    } catch {
-      // ignore audio capture failure
-    }
+    } catch {}
   }
 
   private startX11Bridge(baseEnv: NodeJS.ProcessEnv): void {
     const scriptPath = resolveHelperPath('x11_bridge.py');
-    const proc = spawn('python3', ['-u', scriptPath, this.displayStr, String(this.width), String(this.height)], {
-      env: baseEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const proc = spawn(
+      'python3',
+      ['-u', scriptPath, this.displayStr, String(this.width), String(this.height)],
+      {
+        env: baseEnv,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }
+    );
     this.x11BridgeProc = proc;
 
     let lineBuf = '';
@@ -246,7 +286,16 @@ export class LinuxAppSession {
           try {
             const msg = JSON.parse(line);
             if (msg.type === 'title' && typeof msg.title === 'string') {
+              this.hadWindow = true;
               this.title = msg.title;
+            } else if (msg.type === 'cursor' && typeof msg.cursor === 'string') {
+              this.cursor = msg.cursor;
+            } else if (msg.type === 'all_windows_closed' && !this.closed) {
+              for (const sub of this.subscribers) {
+                sub.onEvent({ type: 'app_exit', code: 0 });
+              }
+              this.close();
+              return;
             }
             for (const sub of this.subscribers) {
               sub.onEvent(msg);
@@ -259,7 +308,11 @@ export class LinuxAppSession {
   }
 
   private launchTargetApp(baseEnv: NodeJS.ProcessEnv): void {
-    const profileDir = path.join(this.desktopDataRoot, 'app-profiles', this.appId.replace(/[^a-z0-9_-]/gi, '_'));
+    const profileDir = path.join(
+      this.desktopDataRoot,
+      'app-profiles',
+      this.appId.replace(/[^a-z0-9_-]/gi, '_')
+    );
     fs.mkdirSync(profileDir, { recursive: true });
     const desktopFilesDir = path.join(this.desktopDataRoot, 'vfs', 'Desktop');
     fs.mkdirSync(desktopFilesDir, { recursive: true });
@@ -269,7 +322,7 @@ export class LinuxAppSession {
     const baseBin = path.basename(finalCmd.split(/\s+/)[0] || '');
 
     if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
-      // Pre-seed lightweight user.js for crisp software WebRender and clean startup without first-run dim overlays
+      // Optimized Firefox profile for low-CPU VDS: instant scroll, no heavy animations, 2 content processes, zero welcome dim
       const userJsPath = path.join(profileDir, 'user.js');
       fs.writeFileSync(
         userJsPath,
@@ -283,9 +336,18 @@ export class LinuxAppSession {
           'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
           'user_pref("browser.startup.homepage", "https://www.google.com");',
           'user_pref("browser.tabs.inTitlebar", 0);',
+          'user_pref("general.smoothScroll", false);',
+          'user_pref("toolkit.cosmeticAnimations.enabled", false);',
+          'user_pref("ui.prefersReducedMotion", 1);',
+          'user_pref("dom.ipc.processCount", 2);',
+          'user_pref("browser.sessionstore.interval", 60000);',
+          'user_pref("browser.newtabpage.activity-stream.feeds.topsites", false);',
+          'user_pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);',
           'user_pref("gfx.webrender.software", true);',
           'user_pref("gfx.x11-egl.force-disabled", true);',
-          'user_pref("browser.download.dir", ' + JSON.stringify(path.join(this.desktopDataRoot, 'vfs', 'Downloads')) + ');',
+          'user_pref("browser.download.dir", ' +
+            JSON.stringify(path.join(this.desktopDataRoot, 'vfs', 'Downloads')) +
+            ');',
           'user_pref("browser.download.folderList", 2);',
         ].join('\n') + '\n',
         'utf-8'
@@ -293,7 +355,7 @@ export class LinuxAppSession {
       finalCmd = `${finalCmd} --no-remote -profile "${profileDir}" --width=${this.width} --height=${this.height}`;
     } else if (
       this.needsNoSandbox ||
-      ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome'].includes(baseBin)
+      ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'].includes(baseBin)
     ) {
       const extraFlags: string[] = [];
       if (isRoot && !finalCmd.includes('--no-sandbox')) {
@@ -303,58 +365,159 @@ export class LinuxAppSession {
         extraFlags.push(`--user-data-dir="${profileDir}"`);
       }
       if (!finalCmd.includes('--disable-gpu')) {
-        extraFlags.push('--disable-gpu-sandbox', '--disable-dev-shm-usage');
+        extraFlags.push('--disable-gpu', '--disable-dev-shm-usage');
+      }
+      // Prevent Electron CLI wrappers (/usr/bin/code, /usr/bin/antigravity) from detaching and exiting immediately
+      if ((baseBin === 'code' || baseBin === 'antigravity') && !finalCmd.includes('--verbose')) {
+        extraFlags.push('--verbose');
       }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
     }
 
-    // Wrap with dbus-run-session if available so Electron / Firefox / GTK apps work cleanly headless
-    const wrapped = `exec ${finalCmd}`;
-    this.appProc = spawn('/bin/bash', ['-c', wrapped], {
+    this.appProc = spawn('/bin/bash', ['-c', `exec ${finalCmd}`], {
       cwd: desktopFilesDir,
       env: {
         ...baseEnv,
         HOME: baseEnv.HOME || os.homedir(),
+        DONT_PROMPT_WSL_INSTALL: '1',
         XDG_DOWNLOAD_DIR: path.join(this.desktopDataRoot, 'vfs', 'Downloads'),
       },
       stdio: 'ignore',
     });
 
+    // Do NOT immediately kill session if a wrapper script forks into background; verify if X11 windows exist!
     this.appProc.on('exit', (code) => {
-      if (!this.closed) {
-        for (const sub of this.subscribers) {
-          sub.onEvent({ type: 'app_exit', code: code ?? 0 });
+      if (this.closed) return;
+      setTimeout(() => {
+        if (this.closed) return;
+        try {
+          const out = execSync(`wmctrl -l`, {
+            env: { ...process.env, DISPLAY: this.displayStr },
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 1200,
+          })
+            .toString('utf-8')
+            .trim();
+          if (out.length > 0) {
+            // Detached child GUI window is still alive! Let x11_bridge monitor all_windows_closed.
+            this.hadWindow = true;
+            return;
+          }
+        } catch {}
+
+        // If no window appeared and process exited, close session cleanly
+        if (!this.hadWindow || code !== 0) {
+          for (const sub of this.subscribers) {
+            sub.onEvent({ type: 'app_exit', code: code ?? 0 });
+          }
+          this.close();
         }
-        this.close();
+      }, 1500);
+    });
+  }
+
+  private startXDamageStreamer(baseEnv: NodeJS.ProcessEnv): void {
+    this.streamerMode = 'xdamage';
+    const scriptPath = resolveHelperPath('x11_streamer.py');
+    // Map ffmpeg q:v (2..10) -> JPEG quality (86..62)
+    const jpegQual = Math.max(60, Math.min(88, 92 - this.quality * 4));
+    const proc = spawn(
+      'python3',
+      [
+        '-u',
+        scriptPath,
+        this.displayStr,
+        String(this.width),
+        String(this.height),
+        String(this.fps),
+        String(jpegQual),
+      ],
+      {
+        env: baseEnv,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }
+    );
+    this.streamerProc = proc;
+
+    let acc = Buffer.alloc(0);
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      if (this.closed) return;
+      acc = Buffer.concat([acc, chunk]);
+
+      while (acc.length >= 4) {
+        const frameLen = acc.readUInt32BE(0);
+        if (frameLen <= 0 || frameLen > 5 * 1024 * 1024) {
+          acc = Buffer.alloc(0);
+          break;
+        }
+        if (acc.length < 4 + frameLen) {
+          break;
+        }
+        const frame = Buffer.from(acc.subarray(4, 4 + frameLen));
+        acc = acc.subarray(4 + frameLen);
+        this.lastFrame = frame;
+
+        if (this.subscribers.size === 0) {
+          // Immediately ACK when no clients connected so streamer doesn't stall
+          if (proc.stdin?.writable) proc.stdin.write('a\n');
+          continue;
+        }
+
+        let ackSent = false;
+        const sendAckOnce = () => {
+          if (!ackSent) {
+            ackSent = true;
+            if (!this.closed && proc.stdin?.writable) {
+              proc.stdin.write('a\n');
+            }
+          }
+        };
+
+        for (const sub of this.subscribers) {
+          sub.onVideoFrame(frame, sendAckOnce);
+        }
+        // Safety fallback ACK after 180ms in case socket closed mid-send
+        setTimeout(sendAckOnce, 180).unref();
+      }
+    });
+
+    proc.on('exit', (code) => {
+      if (!this.closed && code !== 0) {
+        // Fallback to cursorless low-delay ffmpeg if XDamage streamer failed
+        this.startFfmpegFallbackCapture();
       }
     });
   }
 
-  private startFfmpegCapture(): void {
+  private startFfmpegFallbackCapture(): void {
     if (this.closed) return;
-    if (this.ffmpegProc) {
+    this.streamerMode = 'ffmpeg';
+    if (this.streamerProc) {
       try {
-        this.ffmpegProc.kill('SIGTERM');
+        this.streamerProc.kill('SIGTERM');
       } catch {}
-      this.ffmpegProc = null;
+      this.streamerProc = null;
     }
 
     const args = [
       '-loglevel', 'error',
+      '-fflags', 'nobuffer',
+      '-flags', 'low_delay',
       '-f', 'x11grab',
-      '-draw_mouse', '1',
+      '-draw_mouse', '0',
       '-video_size', `${this.width}x${this.height}`,
-      '-framerate', String(this.fps),
+      '-framerate', String(Math.min(15, this.fps)),
       '-i', `${this.displayStr}.0+0,0`,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
       '-pix_fmt', 'yuvj420p',
-      '-q:v', String(this.quality),
+      '-q:v', String(this.quality + 1),
       '-',
     ];
 
-    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    this.ffmpegProc = ff;
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    this.streamerProc = ff;
 
     let acc = Buffer.alloc(0);
     const SOI = Buffer.from([0xff, 0xd8]);
@@ -363,12 +526,9 @@ export class LinuxAppSession {
     ff.stdout?.on('data', (chunk: Buffer) => {
       if (this.closed) return;
       acc = Buffer.concat([acc, chunk]);
-
-      // Prevent unbounded growth
       if (acc.length > 4 * 1024 * 1024) {
         acc = acc.subarray(acc.length - 512 * 1024);
       }
-
       while (true) {
         const start = acc.indexOf(SOI);
         if (start === -1) {
@@ -382,8 +542,6 @@ export class LinuxAppSession {
         }
         const frame = Buffer.from(acc.subarray(start, end + 2));
         acc = acc.subarray(end + 2);
-
-        // Idle frame deduplication: skip broadcasting byte-identical static frames
         if (this.lastFrame && this.lastFrame.length === frame.length && this.lastFrame.equals(frame)) {
           continue;
         }
@@ -398,8 +556,11 @@ export class LinuxAppSession {
   public subscribe(sub: LinuxAppSubscriber): () => void {
     this.subscribers.add(sub);
     sub.onEvent({ type: 'title', title: this.title });
+    sub.onEvent({ type: 'cursor', cursor: this.cursor });
     if (this.lastFrame) {
       sub.onVideoFrame(this.lastFrame);
+    } else if (this.streamerMode === 'xdamage' && this.streamerProc?.stdin?.writable) {
+      this.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
     }
     return () => {
       this.subscribers.delete(sub);
@@ -423,13 +584,20 @@ export class LinuxAppSession {
     this.height = evenH;
     this.sendInput({ type: 'resize', width: evenW, height: evenH });
 
+    if (this.streamerMode === 'xdamage' && this.streamerProc?.stdin?.writable) {
+      this.streamerProc.stdin.write(
+        JSON.stringify({ type: 'resize', width: evenW, height: evenH }) + '\n'
+      );
+      return;
+    }
+
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => {
-      if (!this.closed) {
+      if (!this.closed && this.streamerMode === 'ffmpeg') {
         this.lastFrame = null;
-        this.startFfmpegCapture();
+        this.startFfmpegFallbackCapture();
       }
-    }, 150);
+    }, 160);
   }
 
   public close(): void {
@@ -437,7 +605,14 @@ export class LinuxAppSession {
     this.closed = true;
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
 
-    const procs = [this.ffmpegProc, this.parecProc, this.x11BridgeProc, this.appProc, this.openboxProc, this.xvfbProc];
+    const procs = [
+      this.streamerProc,
+      this.parecProc,
+      this.x11BridgeProc,
+      this.appProc,
+      this.openboxProc,
+      this.xvfbProc,
+    ];
     for (const p of procs) {
       if (p) {
         try {
@@ -456,14 +631,14 @@ export class LinuxAppSession {
       try {
         fs.rmSync(this.tempDir, { recursive: true, force: true });
       } catch {}
-    }, 600);
+    }, 500);
 
     if (this.pulseSinkName) {
       try {
-        execSync(`pactl list short modules | grep "${this.pulseSinkName}" | awk '{print $1}' | xargs -r -n1 pactl unload-module`, {
-          stdio: 'ignore',
-          timeout: 1500,
-        });
+        execSync(
+          `pactl list short modules | grep "${this.pulseSinkName}" | awk '{print $1}' | xargs -r -n1 pactl unload-module`,
+          { stdio: 'ignore', timeout: 1500 }
+        );
       } catch {}
     }
 

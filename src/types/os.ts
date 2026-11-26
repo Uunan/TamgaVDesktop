@@ -107,7 +107,14 @@ export interface TabSummary {
   filePath?: string;
 }
 
-export type WindowKind = 'browser' | 'folder' | 'properties' | 'terminal' | 'linux-app' | 'app-store';
+export type WindowKind =
+  | 'browser'
+  | 'folder'
+  | 'properties'
+  | 'terminal'
+  | 'linux-app'
+  | 'app-store'
+  | 'vscode';
 
 export interface OSWindow {
   id: string;

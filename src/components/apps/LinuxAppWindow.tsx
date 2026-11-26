@@ -26,6 +26,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 
   const [hasFrame, setHasFrame] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [cursorStyle, setCursorStyle] = useState<string>('default');
 
   const sendInput = (payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -99,6 +100,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         const msg = JSON.parse(String(ev.data));
         if (msg.type === 'title' && typeof msg.title === 'string') {
           onTitleChange?.(msg.title);
+        } else if (msg.type === 'cursor' && typeof msg.cursor === 'string') {
+          setCursorStyle(msg.cursor);
         } else if (msg.type === 'app_exit') {
           onAppExit?.();
         } else if (msg.type === 'error' && msg.message) {
@@ -251,7 +254,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             metaKey: e.metaKey,
           });
         }}
-        className="w-full h-full block object-contain outline-none cursor-default touch-none"
+        style={{ cursor: cursorStyle }}
+        className="w-full h-full block object-contain outline-none touch-none"
       />
 
       {!hasFrame && !errorMsg && (

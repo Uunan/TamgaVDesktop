@@ -19,8 +19,9 @@ import { AuthManager } from './authManager';
 import { TerminalManager } from './terminalManager';
 import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
+import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.0.1';
+export const TAMGA_VERSION = '1.1.2';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -88,9 +89,22 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
 
   setStorageRoot(config.dataDir);
 
+  const authManager = new AuthManager(config);
+  const vscodeManager = new VSCodeServerManager(config.dataDir);
+
   const app = express();
   app.set('trust proxy', config.trustProxy);
   app.use(cors({ origin: true, credentials: true }));
+
+  // Reverse-proxy 100% Web-Native VS Code BEFORE express.json() so raw request streams stay intact
+  app.use('/vscode-web', (req, res) => {
+    if (!authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
+      res.status(401).send('Oturum açmanız gerekiyor.');
+      return;
+    }
+    vscodeManager.proxyHttp(req, res);
+  });
+
   app.use(express.json({ limit: '25mb' }));
 
   const upload = multer({
@@ -98,7 +112,6 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     limits: { fileSize: 50 * 1024 * 1024 },
   });
 
-  const authManager = new AuthManager(config);
   const registry = new DesktopRegistry();
   const vfsInstances = new Map<string, VFSManager>();
   const chromiumCluster = new ChromiumCluster();
@@ -365,6 +378,26 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       return;
     }
     res.json(job);
+  });
+
+  app.get('/api/apps/vscode-status', (_req, res) => {
+    res.json(vscodeManager.getStatus());
+  });
+
+  app.post('/api/apps/vscode-start', async (req, res) => {
+    try {
+      const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
+      const { vfs } = getDesktopContext(desktopId);
+      await vscodeManager.ensureStarted();
+      const targetVPath = String(req.body?.folderPath || '/Projects');
+      const diskFolder = vfs.resolveDiskPath(targetVPath);
+      fs.mkdirSync(diskFolder, { recursive: true });
+      res.json({
+        url: `/vscode-web/?folder=${encodeURIComponent(diskFolder)}`,
+      });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   // --- Multi-Desktop Management Endpoints ---
@@ -688,9 +721,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   }
 
-  function sendBinary(ws: WebSocket, packet: Buffer) {
-    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 1_500_000) {
-      ws.send(packet, { binary: true });
+  function sendBinary(ws: WebSocket, packet: Buffer, cb?: () => void) {
+    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 512_000) {
+      ws.send(packet, { binary: true }, () => cb?.());
+    } else {
+      cb?.();
     }
   }
 
@@ -702,7 +737,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
 
     const reqUrl = new URL(req.url || '/ws', 'http://localhost');
-    if (reqUrl.pathname === '/ws') {
+    if (reqUrl.pathname.startsWith('/vscode-web')) {
+      vscodeManager.proxyUpgrade(req, socket, head);
+    } else if (reqUrl.pathname === '/ws') {
       desktopWss.handleUpgrade(req, socket, head, (ws) => {
         desktopWss.emit('connection', ws, req);
       });
@@ -824,7 +861,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     });
   });
 
-  // 3. Real Native Linux GUI App Stream WS (Binary 0x01 Video + 0x02 Audio + JSON Input/Title)
+  // 3. Real Native Linux GUI App Stream WS (Binary 0x01 Video + 0x02 Audio + JSON Input/Title/Cursor)
   appWss.on('connection', (ws, req) => {
     const reqUrl = new URL(req.url || '/ws/app', 'http://localhost');
     const sessionId = reqUrl.searchParams.get('sessionId') || '';
@@ -836,11 +873,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
 
     const unsub = session.subscribe({
-      onVideoFrame: (jpeg) => {
+      onVideoFrame: (jpeg, done) => {
         const pkt = Buffer.allocUnsafe(1 + jpeg.length);
         pkt[0] = PACKET_VIDEO_JPEG;
         jpeg.copy(pkt, 1);
-        sendBinary(ws, pkt);
+        sendBinary(ws, pkt, done);
       },
       onAudioChunk: (pcm) => {
         const pkt = Buffer.allocUnsafe(1 + pcm.length);
@@ -885,6 +922,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     clearInterval(telemetryTimer);
     terminalManager.destroyAll();
     linuxDisplayBridge.destroyAll();
+    vscodeManager.stop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

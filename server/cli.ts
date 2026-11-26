@@ -144,7 +144,7 @@ function cmdSetupLinux(flags: Record<string, string | boolean>) {
     'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -y',
-    'apt-get install -y --no-install-recommends xvfb openbox ffmpeg libxtst6 libx11-6 libxfixes3 libxext6 xclip xdotool wmctrl dbus-x11 x11-utils pulseaudio pulseaudio-utils fonts-dejavu-core fonts-liberation fonts-noto-color-emoji desktop-file-utils hicolor-icon-theme wget gnupg ca-certificates curl',
+    'apt-get install -y --no-install-recommends xvfb openbox ffmpeg libturbojpeg libxdamage1 libxtst6 libx11-6 libxfixes3 libxext6 xclip xdotool wmctrl dbus-x11 x11-utils dmz-cursor-theme pulseaudio pulseaudio-utils fonts-dejavu-core fonts-liberation fonts-noto-color-emoji desktop-file-utils hicolor-icon-theme wget gnupg ca-certificates curl',
   ];
 
   if (withFirefox) {

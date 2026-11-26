@@ -1003,7 +1003,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 >
                   {w.kind === 'terminal' ? (
                     <Terminal className="w-4 h-4 shrink-0" />
-                  ) : w.kind === 'linux-app' ? (
+                  ) : w.kind === 'linux-app' || w.kind === 'vscode' ? (
                     <AppWindow className="w-4 h-4 shrink-0" />
                   ) : w.kind === 'app-store' ? (
                     <LayoutGrid className="w-4 h-4 shrink-0" />

@@ -29,6 +29,7 @@ import { LoginScreen } from './components/auth/LoginScreen';
 import { TerminalWindow } from './components/apps/TerminalWindow';
 import { LinuxAppWindow } from './components/apps/LinuxAppWindow';
 import { AppStoreWindow } from './components/apps/AppStoreWindow';
+import { VSCodeWindow } from './components/apps/VSCodeWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
 import { translateFolderDisplayName } from './utils/format';
 
@@ -396,6 +397,36 @@ export default function App() {
       const vh = window.innerHeight - 76;
       const width = Math.min(1160, vw - 36);
       const height = Math.min(720, vh - 32);
+
+      // Run Visual Studio Code in 100% Web-Native DOM mode (zero video lag, zero remote cursor!)
+      if (params.appId === 'vscode' || params.command?.trim() === 'code') {
+        const z = ++nextZRef.current;
+        const id = 'win-vscode-main';
+        setWindows((prev) => {
+          const existing = prev.find((w) => w.id === id);
+          if (existing) {
+            return prev.map((w) => (w.id === id ? { ...w, minimized: false, zIndex: z } : w));
+          }
+          return [
+            ...prev,
+            {
+              id,
+              kind: 'vscode',
+              title: 'Visual Studio Code',
+              folderPath: '/Projects',
+              x: Math.max(18, Math.round((vw - width) / 2)),
+              y: Math.max(18, Math.round((vh - height) / 2)),
+              width,
+              height,
+              minimized: false,
+              maximized: false,
+              zIndex: z,
+            },
+          ];
+        });
+        setFocusedWindowId(id);
+        return;
+      }
 
       try {
         const res = await appsApi.launch({
@@ -1105,6 +1136,8 @@ export default function App() {
                 }}
               />
             )}
+
+            {win.kind === 'vscode' && <VSCodeWindow folderPath={win.folderPath} />}
 
             {win.kind === 'linux-app' && win.appSessionId && (
               <LinuxAppWindow
