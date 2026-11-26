@@ -40,9 +40,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const decodingRef = useRef(false);
-  const pendingJpegRef = useRef<Uint8Array | null>(null);
   const lastMoveTsRef = useRef(0);
   const touchStateRef = useRef<{ lastY: number; moved: boolean } | null>(null);
   const dimsRef = useRef({ width: 720, height: 480 });
@@ -84,6 +83,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     hasGeometryRef.current = false;
     serverDimsRef.current = { width: 0, height: 0 };
     readyFiredRef.current = false;
+    ctxRef.current = null;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(
       `${proto}//${window.location.host}/ws/app?sessionId=${encodeURIComponent(sessionId)}&view=${encodeURIComponent(viewId)}`
@@ -91,39 +91,105 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    const decodeAndDraw = async (bytes: Uint8Array) => {
-      if (decodingRef.current) {
-        pendingJpegRef.current = bytes;
-        return;
+    type QueuedFrame = {
+      kind: 'full' | 'rect';
+      rx: number;
+      ry: number;
+      fullW: number;
+      fullH: number;
+      bitmapPromise: Promise<ImageBitmap>;
+    };
+
+    const queue: QueuedFrame[] = [];
+    let draining = false;
+
+    const getCtx = (canvas: HTMLCanvasElement) => {
+      if (!ctxRef.current) {
+        ctxRef.current =
+          canvas.getContext('2d', { alpha: false, desynchronized: true }) ||
+          canvas.getContext('2d');
       }
-      decodingRef.current = true;
+      return ctxRef.current;
+    };
+
+    const drainQueue = async () => {
+      if (draining) return;
+      draining = true;
       try {
-        const blob = new Blob([bytes as BlobPart], { type: 'image/jpeg' });
-        const bitmap = await createImageBitmap(blob);
-        const canvas = canvasRef.current;
-        if (canvas && !closed) {
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-          }
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(bitmap, 0, 0);
-          if (!readyFiredRef.current) {
-            readyFiredRef.current = true;
-            onReadyRef.current?.();
+        while (queue.length > 0 && !closed) {
+          const item = queue.shift()!;
+          let bitmap: ImageBitmap | null = null;
+          try {
+            bitmap = await item.bitmapPromise;
+            const canvas = canvasRef.current;
+            if (canvas && !closed) {
+              const targetW = item.kind === 'full' ? bitmap.width : item.fullW;
+              const targetH = item.kind === 'full' ? bitmap.height : item.fullH;
+              if (targetW > 0 && targetH > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
+                canvas.width = targetW;
+                canvas.height = targetH;
+                ctxRef.current = null;
+              }
+              const ctx = getCtx(canvas);
+              if (ctx) {
+                if (item.kind === 'full') {
+                  ctx.drawImage(bitmap, 0, 0);
+                } else {
+                  ctx.drawImage(bitmap, item.rx, item.ry);
+                }
+              }
+              if (!readyFiredRef.current) {
+                readyFiredRef.current = true;
+                onReadyRef.current?.();
+              }
+            }
+          } catch {
+            // ignore malformed frame
+          } finally {
+            bitmap?.close();
           }
         }
-        bitmap.close();
-      } catch {
-        // drop malformed frame
       } finally {
-        decodingRef.current = false;
-        const next = pendingJpegRef.current;
-        if (next && !closed) {
-          pendingJpegRef.current = null;
-          decodeAndDraw(next);
-        }
+        draining = false;
       }
+    };
+
+    const enqueueFullFrame = (bytes: Uint8Array) => {
+      // A newer full keyframe supersedes any older queued frames/patches -> drop stale frames for lowest latency
+      while (queue.length > 0) {
+        const stale = queue.shift()!;
+        stale.bitmapPromise.then((b) => b.close()).catch(() => {});
+      }
+      const blob = new Blob([bytes as BlobPart], { type: 'image/jpeg' });
+      queue.push({
+        kind: 'full',
+        rx: 0,
+        ry: 0,
+        fullW: 0,
+        fullH: 0,
+        bitmapPromise: createImageBitmap(blob),
+      });
+      drainQueue();
+    };
+
+    const enqueueRectFrame = (buf: ArrayBuffer) => {
+      if (buf.byteLength <= 13) return;
+      const dv = new DataView(buf);
+      const rx = dv.getUint16(1, false);
+      const ry = dv.getUint16(3, false);
+      const fullW = dv.getUint16(9, false);
+      const fullH = dv.getUint16(11, false);
+      const jpegBytes = new Uint8Array(buf, 13);
+      const blob = new Blob([jpegBytes as BlobPart], { type: 'image/jpeg' });
+      queue.push({
+        kind: 'rect',
+        rx,
+        ry,
+        fullW,
+        fullH,
+        bitmapPromise: createImageBitmap(blob),
+      });
+      drainQueue();
     };
 
     ws.onopen = () => {
@@ -138,7 +204,9 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         if (buf.byteLength < 2) return;
         const header = new Uint8Array(buf, 0, 1)[0];
         if (header === 0x01) {
-          decodeAndDraw(new Uint8Array(buf, 1));
+          enqueueFullFrame(new Uint8Array(buf, 1));
+        } else if (header === 0x03) {
+          enqueueRectFrame(buf);
         } else if (header === 0x02) {
           remoteAudio.pushPcm16(buf.slice(1));
         }
@@ -183,6 +251,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 
     return () => {
       closed = true;
+      while (queue.length > 0) {
+        const stale = queue.shift()!;
+        stale.bitmapPromise.then((b) => b.close()).catch(() => {});
+      }
       ws.close();
       wsRef.current = null;
     };
@@ -236,28 +308,77 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
   };
 
-  // Non-passive native wheel listener so Mac Cmd+Scroll / Ctrl+Scroll / Pinch zooms inside GIMP instead of browser page!
+  // Non-passive native wheel listener with 16ms delta coalescing so high-Hz trackpads & Cmd+Scroll zoom feel silky smooth
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    let wheelTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingWheel: {
+      x: number;
+      y: number;
+      deltaX: number;
+      deltaY: number;
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+      altKey: boolean;
+    } | null = null;
+
+    const flushWheel = () => {
+      wheelTimer = null;
+      if (!pendingWheel) return;
+      const w = pendingWheel;
+      pendingWheel = null;
+      sendInput({ type: 'wheel', ...w });
+    };
+
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
       const { x, y } = toCoords(e.clientX, e.clientY);
-      sendInput({
-        type: 'wheel',
-        x,
-        y,
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
-        ctrlKey: e.ctrlKey || e.metaKey,
-        metaKey: e.metaKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-      });
+      const ctrl = e.ctrlKey || e.metaKey;
+      // Send modifier-zoom ticks immediately for snappy GIMP zoom; coalesce rapid plain scroll deltas over 16ms
+      if (ctrl) {
+        flushWheel();
+        sendInput({
+          type: 'wheel',
+          x,
+          y,
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          ctrlKey: true,
+          metaKey: e.metaKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+        });
+        return;
+      }
+      if (pendingWheel) {
+        pendingWheel.x = x;
+        pendingWheel.y = y;
+        pendingWheel.deltaX += e.deltaX;
+        pendingWheel.deltaY += e.deltaY;
+      } else {
+        pendingWheel = {
+          x,
+          y,
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+        };
+      }
+      if (!wheelTimer) {
+        wheelTimer = setTimeout(flushWheel, 16);
+      }
     };
     canvas.addEventListener('wheel', handleWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', handleWheel);
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+      if (wheelTimer) clearTimeout(wheelTimer);
+    };
   }, [sessionId, viewId]);
 
   const handleNativeDrop = async (e: React.DragEvent) => {

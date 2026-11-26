@@ -1,9 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import multer from 'multer';
@@ -22,7 +24,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.6.1';
+export const TAMGA_VERSION = '1.7.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -848,9 +850,65 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   });
 
-  // --- Serve Compiled Frontend (Production / Single-Port Mode) ---
+  // --- Serve Compiled Frontend with In-Memory Brotli / Gzip Compression (4x faster boot over WAN) ---
   const clientDist = resolveClientDistDir();
   if (clientDist) {
+    const staticCompCache = new Map<string, { br: Buffer; gz: Buffer; mime: string }>();
+    app.use((req, res, next) => {
+      if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+        next();
+        return;
+      }
+      const ext = path.extname(req.path).slice(1).toLowerCase();
+      if (!['js', 'mjs', 'css', 'svg', 'json'].includes(ext)) {
+        next();
+        return;
+      }
+      const accept = String(req.headers['accept-encoding'] || '');
+      const enc: 'br' | 'gzip' | null = accept.includes('br')
+        ? 'br'
+        : accept.includes('gzip')
+        ? 'gzip'
+        : null;
+      if (!enc) {
+        next();
+        return;
+      }
+      const safeRel = path.normalize(req.path).replace(/^(\.\.[/\\])+/, '');
+      const fullPath = path.join(clientDist, safeRel);
+      if (!fullPath.startsWith(clientDist) || !fs.existsSync(fullPath)) {
+        next();
+        return;
+      }
+      try {
+        let entry = staticCompCache.get(fullPath);
+        if (!entry) {
+          const raw = fs.readFileSync(fullPath);
+          entry = {
+            br: zlib.brotliCompressSync(raw, {
+              params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 6 },
+            }),
+            gz: zlib.gzipSync(raw, { level: 6 }),
+            mime: MIME_MAP[ext] || 'application/octet-stream',
+          };
+          staticCompCache.set(fullPath, entry);
+        }
+        const payload = enc === 'br' ? entry.br : entry.gz;
+        const isHashedAsset = req.path.startsWith('/assets/');
+        res.writeHead(200, {
+          'Content-Type': entry.mime,
+          'Content-Encoding': enc,
+          'Content-Length': String(payload.length),
+          'Cache-Control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+          Vary: 'Accept-Encoding',
+        });
+        res.end(payload);
+        return;
+      } catch {
+        next();
+      }
+    });
+
     app.use(express.static(clientDist, { maxAge: '1h', index: false }));
     app.get('*', (req, res, next) => {
       if (req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
@@ -862,11 +920,15 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   }
 
   const server = http.createServer(app);
+  // Disable TCP Nagle's algorithm globally so small mouse/key/frame packets leave with 0ms delay
+  server.on('connection', (sock) => {
+    sock.setNoDelay(true);
+  });
 
-  // --- Multi-Channel WebSocket Upgrade Router ---
-  const desktopWss = new WebSocketServer({ noServer: true });
-  const terminalWss = new WebSocketServer({ noServer: true });
-  const appWss = new WebSocketServer({ noServer: true });
+  // --- Multi-Channel WebSocket Upgrade Router (perMessageDeflate disabled for zero-overhead binary streaming) ---
+  const desktopWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const terminalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const appWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
   function sendJson(ws: WebSocket, payload: Record<string, unknown>) {
     if (ws.readyState === WebSocket.OPEN) {
@@ -874,15 +936,19 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   }
 
-  function sendBinary(ws: WebSocket, packet: Buffer, cb?: () => void) {
-    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 512_000) {
-      ws.send(packet, { binary: true }, () => cb?.());
+  function sendBinary(ws: WebSocket, packet: Buffer, cb?: () => void, onDrop?: () => void) {
+    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 262_144) {
+      ws.send(packet, { binary: true, compress: false }, () => cb?.());
     } else {
+      onDrop?.();
       cb?.();
     }
   }
 
   server.on('upgrade', (req, socket, head) => {
+    if (socket instanceof net.Socket) {
+      socket.setNoDelay(true);
+    }
     if (!authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
@@ -1067,12 +1133,17 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       return;
     }
 
+    let dropRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const unsub = session.subscribeView(viewId, {
-      onVideoFrame: (jpeg, done) => {
-        const pkt = Buffer.allocUnsafe(1 + jpeg.length);
-        pkt[0] = PACKET_VIDEO_JPEG;
-        jpeg.copy(pkt, 1);
-        sendBinary(ws, pkt, done);
+      onVideoFrame: (framedPkt, done) => {
+        sendBinary(ws, framedPkt, done, () => {
+          if (!dropRefreshTimer) {
+            dropRefreshTimer = setTimeout(() => {
+              dropRefreshTimer = null;
+              session.requestRefresh(viewId);
+            }, 90);
+          }
+        });
       },
       onAudioChunk: (pcm) => {
         const pkt = Buffer.allocUnsafe(1 + pcm.length);

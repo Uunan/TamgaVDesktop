@@ -72,63 +72,96 @@ const CURATED_CATALOG: CatalogAppDef[] = [
     accent: '#6366f1',
     featured: true,
     needsNoSandbox: true,
-    installScript: `set -e
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get install -y curl tar gzip ca-certificates gnupg libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 2>/dev/null || apt-get install -y curl tar gzip ca-certificates gnupg libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 || true
-ARCH=$(dpkg --print-architecture)
-if [ "$ARCH" = "arm64" ]; then PLAT="linux-arm"; else PLAT="linux-x64"; fi
-echo "Resmi Google Antigravity sürümü kontrol ediliyor ($PLAT)..."
-PAGE=$(curl -fsSL "https://antigravity.google/download?os=linux" || true)
-URL=$(printf "%s" "$PAGE" | grep -oE "https://storage\\.googleapis\\.com/antigravity-public/antigravity-hub/[^\"' ]+/\${PLAT}/Antigravity\\.tar\\.gz" | head -n 1 || true)
-if [ -z "$URL" ]; then
-  URL=$(printf "%s" "$PAGE" | grep -oE "https://edgedl\\.me\\.gvt1\\.com/[^\"' ]+/\${PLAT}/Antigravity[^\"' ]*\\.tar\\.gz" | head -n 1 || true)
-fi
-if [ -n "$URL" ]; then
-  echo "İndiriliyor: $URL"
-  rm -rf /tmp/antigravity-dl /opt/antigravity
-  mkdir -p /tmp/antigravity-dl /opt/antigravity
-  curl -fL --progress-bar "$URL" -o /tmp/antigravity-dl/antigravity.tar.gz
-  tar -xzf /tmp/antigravity-dl/antigravity.tar.gz -C /tmp/antigravity-dl
-  SUBDIR=$(find /tmp/antigravity-dl -maxdepth 2 -type f \\( -name "antigravity" -o -name "Antigravity" \\) | head -n 1)
-  if [ -n "$SUBDIR" ]; then
-    APP_DIR=$(dirname "$SUBDIR")
-    cp -a "$APP_DIR/." /opt/antigravity/
-  else
-    cp -a /tmp/antigravity-dl/. /opt/antigravity/
-  fi
-  rm -rf /tmp/antigravity-dl
-  if [ -f /opt/antigravity/chrome-sandbox ]; then
-    chown root:root /opt/antigravity/chrome-sandbox && chmod 4755 /opt/antigravity/chrome-sandbox || true
-  fi
-  BIN_TARGET=$(find /opt/antigravity -maxdepth 1 -type f \\( -name "antigravity" -o -name "Antigravity" \\) | head -n 1)
-  chmod +x "$BIN_TARGET"
-  cat > /usr/local/bin/antigravity <<WRAP
-#!/bin/sh
-exec "$BIN_TARGET" "\\$@"
-WRAP
-  chmod +x /usr/local/bin/antigravity
-  ICON_PATH=$(find /opt/antigravity -maxdepth 4 -type f \\( -name "*.png" -o -name "*.svg" \\) | grep -iE "icon|antigravity|logo" | head -n 1 || true)
-  if [ -n "$ICON_PATH" ]; then
-    mkdir -p /usr/share/pixmaps
-    cp "$ICON_PATH" /usr/share/pixmaps/antigravity.png 2>/dev/null || true
-  fi
-  cat > /usr/share/applications/antigravity.desktop <<DESK
-[Desktop Entry]
-Name=Google Antigravity
-Comment=Google Antigravity AI IDE
-Exec=/usr/local/bin/antigravity %F
-Icon=antigravity
-Terminal=false
-Type=Application
-Categories=Development;IDE;
-DESK
-else
-  echo "Doğrudan tarball bulunamadı, resmi Google Antigravity APT deposu kullanılıyor..."
-  mkdir -p /etc/apt/keyrings
-  curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg
-  echo "deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main" > /etc/apt/sources.list.d/antigravity.list
-  apt-get update -y && apt-get install -y antigravity
-fi`,
+    installScript: [
+      'set -e',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'apt-get update -y && (apt-get install -y curl tar gzip ca-certificates gnupg python3 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 2>/dev/null || apt-get install -y curl tar gzip ca-certificates gnupg python3 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 || true)',
+      'ARCH=$(dpkg --print-architecture)',
+      'if [ "$ARCH" = "arm64" ]; then PLAT="linux-arm"; else PLAT="linux-x64"; fi',
+      'echo "Resmi Google Antigravity sürümü kontrol ediliyor ($PLAT)..."',
+      'cat <<\'PYEOF\' > /tmp/ag_resolve.py',
+      'import os, re, urllib.request',
+      'plat = os.environ.get("PLAT", "linux-x64")',
+      'def fetch(u):',
+      '    req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})',
+      '    with urllib.request.urlopen(req, timeout=15) as r:',
+      '        return r.read().decode("utf-8", "ignore")',
+      'try:',
+      '    html = fetch("https://antigravity.google/download?os=linux")',
+      '    pats = [',
+      '        r"https://storage\\.googleapis\\.com/antigravity-public/antigravity-hub/[^\"\\x27\\s<>]+/" + re.escape(plat) + r"/Antigravity\\.tar\\.gz",',
+      '        r"https://edgedl\\.me\\.gvt1\\.com/[^\"\\x27\\s<>]+/" + re.escape(plat) + r"/Antigravity[^\"\\x27\\s<>]*\\.tar\\.gz",',
+      '        r"https://[^\"\\x27\\s<>]+/" + re.escape(plat) + r"/Antigravity[^\"\\x27\\s<>]*\\.tar\\.gz",',
+      '    ]',
+      '    found = ""',
+      '    for p in pats:',
+      '        m = re.search(p, html)',
+      '        if m:',
+      '            found = m.group(0)',
+      '            break',
+      '    if not found:',
+      '        for js_m in re.findall(r"/(?:_next|assets)/[^\"\\x27\\s<>]+\\.js", html)[:6]:',
+      '            try:',
+      '                js = fetch("https://antigravity.google" + js_m)',
+      '                for p in pats:',
+      '                    m = re.search(p, js)',
+      '                    if m:',
+      '                        found = m.group(0)',
+      '                        break',
+      '                if found:',
+      '                    break',
+      '            except Exception:',
+      '                pass',
+      '    print(found)',
+      'except Exception:',
+      '    print("")',
+      'PYEOF',
+      'URL=$(PLAT="$PLAT" python3 /tmp/ag_resolve.py || true)',
+      'rm -f /tmp/ag_resolve.py',
+      'if [ -n "$URL" ]; then',
+      '  echo "İndiriliyor: $URL"',
+      '  rm -rf /tmp/antigravity-dl /opt/antigravity',
+      '  mkdir -p /tmp/antigravity-dl /opt/antigravity',
+      '  curl -fL --progress-bar "$URL" -o /tmp/antigravity-dl/antigravity.tar.gz',
+      '  tar -xzf /tmp/antigravity-dl/antigravity.tar.gz -C /tmp/antigravity-dl',
+      '  SUBDIR=$(find /tmp/antigravity-dl -maxdepth 2 -type f \\( -name "antigravity" -o -name "Antigravity" \\) | head -n 1)',
+      '  if [ -n "$SUBDIR" ]; then',
+      '    APP_DIR=$(dirname "$SUBDIR")',
+      '    cp -a "$APP_DIR/." /opt/antigravity/',
+      '  else',
+      '    cp -a /tmp/antigravity-dl/. /opt/antigravity/',
+      '  fi',
+      '  rm -rf /tmp/antigravity-dl',
+      '  if [ -f /opt/antigravity/chrome-sandbox ]; then',
+      '    chown root:root /opt/antigravity/chrome-sandbox && chmod 4755 /opt/antigravity/chrome-sandbox || true',
+      '  fi',
+      '  BIN_TARGET=$(find /opt/antigravity -maxdepth 1 -type f \\( -name "antigravity" -o -name "Antigravity" \\) | head -n 1)',
+      '  chmod +x "$BIN_TARGET"',
+      '  printf "#!/bin/sh\\nexec \\"%s\\" \\"\\$@\\"\\n" "$BIN_TARGET" > /usr/local/bin/antigravity',
+      '  chmod +x /usr/local/bin/antigravity',
+      '  ICON_PATH=$(find /opt/antigravity -maxdepth 4 -type f \\( -name "*.png" -o -name "*.svg" \\) | grep -iE "icon|antigravity|logo" | head -n 1 || true)',
+      '  if [ -n "$ICON_PATH" ]; then',
+      '    mkdir -p /usr/share/pixmaps',
+      '    cp "$ICON_PATH" /usr/share/pixmaps/antigravity.png 2>/dev/null || true',
+      '  fi',
+      '  cat > /usr/share/applications/antigravity.desktop <<DESK',
+      '[Desktop Entry]',
+      'Name=Google Antigravity',
+      'Comment=Google Antigravity AI IDE',
+      'Exec=/usr/local/bin/antigravity %F',
+      'Icon=antigravity',
+      'Terminal=false',
+      'Type=Application',
+      'Categories=Development;IDE;',
+      'DESK',
+      'else',
+      '  echo "Doğrudan tarball bulunamadı, resmi Google Antigravity APT deposu kullanılıyor..."',
+      '  mkdir -p /etc/apt/keyrings',
+      '  curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg',
+      '  echo "deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main" > /etc/apt/sources.list.d/antigravity.list',
+      '  apt-get update -y && apt-get install -y antigravity',
+      'fi',
+    ].join('\n'),
     uninstallScript: `set -e
 rm -rf /opt/antigravity /usr/local/bin/antigravity /usr/share/applications/antigravity.desktop /usr/share/pixmaps/antigravity.png
 apt-get remove -y antigravity 2>/dev/null || true`,
@@ -918,7 +951,25 @@ export class LinuxAppManager {
     const record = { status: 'running' as 'running' | 'done' | 'error', log: '' };
     this.installLogs.set(jobId, record);
 
-    const proc = spawn('/bin/bash', ['-c', script], {
+    const safePreamble = [
+      'export DEBIAN_FRONTEND=noninteractive',
+      'apt-get() { command apt-get -o DPkg::Lock::Timeout=180 "$@"; }',
+      'apt() { command apt -o DPkg::Lock::Timeout=180 "$@"; }',
+      'dpkg() { command dpkg --force-confdef --force-confold "$@"; }',
+      'wait_dpkg_lock() {',
+      '  local i=0',
+      '  while command -v fuser >/dev/null 2>&1 && fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do',
+      '    if [ "$i" -eq 0 ]; then echo "Sistem paket kilidi (unattended-upgrades) serbest kalması bekleniyor..."; fi',
+      '    i=$((i+1))',
+      '    if [ "$i" -gt 90 ]; then break; fi',
+      '    sleep 2',
+      '  done',
+      '}',
+      'wait_dpkg_lock',
+      '',
+    ].join('\n');
+
+    const proc = spawn('/bin/bash', ['-c', `${safePreamble}${script}`], {
       env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
     });
 

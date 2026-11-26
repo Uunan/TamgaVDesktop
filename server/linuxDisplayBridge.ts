@@ -988,7 +988,10 @@ export class LinuxAppSession {
           continue;
         }
 
-        view.lastFrame = frame;
+        // Only cache full keyframes (0x01) as lastFrame so newly joining clients never start with a partial delta tile
+        if (frame[0] === 0x01) {
+          view.lastFrame = frame;
+        }
 
         if (view.subscribers.size === 0) {
           if (proc.stdin?.writable) {
@@ -1010,7 +1013,7 @@ export class LinuxAppSession {
         for (const sub of view.subscribers) {
           sub.onVideoFrame(frame, sendAckOnce);
         }
-        setTimeout(sendAckOnce, 180).unref();
+        setTimeout(sendAckOnce, 120).unref();
       }
     });
 
@@ -1071,7 +1074,10 @@ export class LinuxAppSession {
           if (start > 0) acc = acc.subarray(start);
           break;
         }
-        const frame = Buffer.from(acc.subarray(start, end + 2));
+        const jpegSlice = acc.subarray(start, end + 2);
+        const frame = Buffer.allocUnsafe(1 + jpegSlice.length);
+        frame[0] = 0x01;
+        jpegSlice.copy(frame, 1);
         acc = acc.subarray(end + 2);
         if (!view.hasGeometry) continue;
         if (view.lastFrame && view.lastFrame.length === frame.length && view.lastFrame.equals(frame)) {
@@ -1116,6 +1122,15 @@ export class LinuxAppSession {
     view.subscribers.clear();
   }
 
+  public requestRefresh(viewId = 'main'): void {
+    const view = this.views.get(viewId || 'main') || this.views.get('main');
+    if (view && view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
+      try {
+        view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
+      } catch {}
+    }
+  }
+
   public subscribeView(viewId: string, sub: LinuxAppSubscriber): () => void {
     const view = this.views.get(viewId || 'main') || this.views.get('main');
     if (!view) {
@@ -1135,11 +1150,9 @@ export class LinuxAppSession {
     }
     if (view.lastFrame && view.hasGeometry) {
       sub.onVideoFrame(view.lastFrame);
-    } else if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
-      try {
-        view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
-      } catch {}
     }
+    // Always request a fresh keyframe so newly attached viewers get exact current pixels before any delta tiles arrive
+    this.requestRefresh(view.viewId);
     return () => {
       view.subscribers.delete(sub);
     };

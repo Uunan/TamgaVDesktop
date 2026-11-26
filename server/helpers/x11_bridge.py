@@ -727,15 +727,40 @@ def main() -> None:
             return True
         return False
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except Exception:
-            continue
+    in_fd = sys.stdin.fileno()
+    in_buf = b""
 
+    def next_messages():
+        nonlocal in_buf
+        while True:
+            if b"\n" not in in_buf:
+                chunk = os.read(in_fd, 8192)
+                if not chunk:
+                    return
+                in_buf += chunk
+                continue
+            lines = in_buf.split(b"\n")
+            in_buf = lines.pop()
+            parsed = []
+            for raw_line in lines:
+                s = raw_line.strip()
+                if not s:
+                    continue
+                try:
+                    parsed.append(json.loads(s.decode("utf-8")))
+                except Exception:
+                    continue
+            # Coalesce consecutive mousemove events in the same read burst -> zero cursor rubber-band lag
+            coalesced = []
+            for m in parsed:
+                if m.get("type") == "mousemove" and coalesced and coalesced[-1].get("type") == "mousemove":
+                    coalesced[-1] = m
+                else:
+                    coalesced.append(m)
+            for m in coalesced:
+                yield m
+
+    for msg in next_messages():
         mtype = msg.get("type")
         view = str(msg.get("view") or "main")
         try:
@@ -775,7 +800,7 @@ def main() -> None:
                             libXtst.XTestFakeKeyEvent(dpy, alt_kc, 1, 0)
                         if abs(dy) > 0:
                             btn = 5 if dy > 0 else 4
-                            ticks = 1 if want_ctrl else max(1, min(4, int(round(abs(dy) / 90)) or 1))
+                            ticks = 1 if want_ctrl else max(1, min(6, int(round(abs(dy) / 68)) or 1))
                             for _ in range(ticks):
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)

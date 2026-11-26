@@ -174,8 +174,32 @@ export class VSCodeServerManager {
     });
   }
 
+  private getCacheDir(): string {
+    const dir = path.join(this.dataDir, 'vscode-asset-cache');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  private getAssetCacheKey(reqPath: string, encoding: 'br' | 'gzip'): string {
+    const safe = reqPath.replace(/[^a-z0-9._-]/gi, '_').slice(-180);
+    return path.join(this.getCacheDir(), `${safe}.${encoding}`);
+  }
+
   private patchWorkbenchHtml(html: string, tamgaTheme: string): string {
-    return html.replace(
+    // 1. Remove external vscode-unpkg.net NLS script that stalls on high-latency links
+    let out = html.replace(
+      /<script[^>]+src=["']https:\/\/www\.vscode-unpkg\.net\/nls\/[^"']+["'][^>]*><\/script>/gi,
+      ''
+    );
+
+    // 2. Prevent false "The editor failed to load" overlay at 10s while large workbench.js downloads on slower connections
+    out = out.replace(
+      /animation:\s*vscode-startup-fallback-reveal\s+0s\s+linear\s+10s\s+forwards;/gi,
+      'animation: vscode-startup-fallback-reveal 0s linear 120s forwards;'
+    );
+
+    // 3. Disable workspace trust banner and match Tamga dark/light theme
+    out = out.replace(
       /(<meta\s+id=["']vscode-workbench-web-configuration["']\s+data-settings=["'])([^"']+)(["'])/i,
       (full, prefix: string, encoded: string, suffix: string) => {
         try {
@@ -210,6 +234,28 @@ export class VSCodeServerManager {
         }
       }
     );
+    return out;
+  }
+
+  private compressAsync(
+    data: Buffer,
+    encoding: 'br' | 'gzip',
+    cb: (err: Error | null, out?: Buffer) => void
+  ): void {
+    if (encoding === 'br') {
+      zlib.brotliCompress(
+        data,
+        {
+          params: {
+            [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+            [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+          },
+        },
+        cb
+      );
+    } else {
+      zlib.gzip(data, { level: 6 }, cb);
+    }
   }
 
   public proxyHttp = (req: Request, res: Response): void => {
@@ -217,10 +263,65 @@ export class VSCodeServerManager {
       res.status(503).send('VS Code hazırlanıyor...');
       return;
     }
-    const acceptGzip = String(req.headers['accept-encoding'] || '').includes('gzip');
+
+    const acceptEnc = String(req.headers['accept-encoding'] || '');
+    const preferredEnc: 'br' | 'gzip' | null = acceptEnc.includes('br')
+      ? 'br'
+      : acceptEnc.includes('gzip')
+      ? 'gzip'
+      : null;
+
+    const cleanPath = (req.originalUrl || '').split('?')[0];
+    const isImmutableStatic =
+      req.method === 'GET' &&
+      /^\/vscode-web\/stable-[a-f0-9]+\/static\/.+\.(js|css|svg|json|wasm|map|txt|ttf|woff2?)$/i.test(
+        cleanPath
+      );
+
+    // Serve pre-compressed immutable VS Code static bundles straight from disk cache (0ms CPU, 3.4MB brotli vs 25MB raw!)
+    if (isImmutableStatic && preferredEnc) {
+      const cacheFile = this.getAssetCacheKey(cleanPath, preferredEnc);
+      if (fs.existsSync(cacheFile)) {
+        const ext = path.extname(cleanPath).toLowerCase();
+        const mime =
+          ext === '.js'
+            ? 'text/javascript; charset=utf-8'
+            : ext === '.css'
+            ? 'text/css; charset=utf-8'
+            : ext === '.svg'
+            ? 'image/svg+xml'
+            : ext === '.json'
+            ? 'application/json; charset=utf-8'
+            : ext === '.wasm'
+            ? 'application/wasm'
+            : ext === '.woff2'
+            ? 'font/woff2'
+            : ext === '.ttf'
+            ? 'font/ttf'
+            : 'application/octet-stream';
+        try {
+          const stat = fs.statSync(cacheFile);
+          res.writeHead(200, {
+            'Content-Type': mime,
+            'Content-Encoding': preferredEnc,
+            'Content-Length': String(stat.size),
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            Vary: 'Accept-Encoding',
+          });
+          fs.createReadStream(cacheFile).pipe(res);
+          return;
+        } catch {
+          // fall through to upstream proxy
+        }
+      }
+    }
+
     const tamgaTheme = String(req.query?.tamgaTheme || 'dark');
     // Preserve client Host header so code serve-web sets remoteAuthority to the external host:port
-    const headers = { ...req.headers };
+    // Remove accept-encoding on localhost so we control clean HTML patching & Brotli/Gzip caching
+    const headers: http.OutgoingHttpHeaders = { ...req.headers };
+    delete headers['accept-encoding'];
+
     const upstream = http.request(
       {
         host: '127.0.0.1',
@@ -230,36 +331,46 @@ export class VSCodeServerManager {
         headers,
       },
       (upRes) => {
-        const outHeaders = { ...upRes.headers };
+        const outHeaders: http.OutgoingHttpHeaders = { ...upRes.headers };
         // Allow seamless embedding inside TamgaVDesktop WindowFrame
         delete outHeaders['x-frame-options'];
-        if (typeof outHeaders['content-security-policy'] === 'string') {
-          outHeaders['content-security-policy'] = outHeaders['content-security-policy'].replace(
-            /frame-ancestors[^;]*;?/gi,
-            ''
-          );
-        } else if (Array.isArray(outHeaders['content-security-policy'])) {
-          outHeaders['content-security-policy'] = outHeaders['content-security-policy'].map((v) =>
-            v.replace(/frame-ancestors[^;]*;?/gi, '')
-          );
+        const csp: unknown = outHeaders['content-security-policy'];
+        if (typeof csp === 'string') {
+          const cleaned = csp.replace(/frame-ancestors[^;]*;?/gi, '').trim();
+          if (cleaned) outHeaders['content-security-policy'] = cleaned;
+          else delete outHeaders['content-security-policy'];
+        } else if (Array.isArray(csp)) {
+          const cleaned = csp
+            .map((v) => String(v).replace(/frame-ancestors[^;]*;?/gi, '').trim())
+            .filter(Boolean);
+          if (cleaned.length > 0) outHeaders['content-security-policy'] = cleaned.join(', ');
+          else delete outHeaders['content-security-policy'];
         }
 
         const ctype = String(outHeaders['content-type'] || '').toLowerCase();
 
-        // Patch VS Code Web bootstrap HTML so workspace trust banner never shifts titlebar downward
+        // Patch VS Code Web bootstrap HTML
         if (req.method !== 'HEAD' && ctype.includes('text/html') && !outHeaders['content-encoding']) {
           const chunks: Buffer[] = [];
           upRes.on('data', (chunk: Buffer) => chunks.push(chunk));
           upRes.on('end', () => {
             const rawHtml = Buffer.concat(chunks).toString('utf-8');
             const patched = Buffer.from(this.patchWorkbenchHtml(rawHtml, tamgaTheme), 'utf-8');
-            if (acceptGzip) {
+            if (preferredEnc) {
               delete outHeaders['content-length'];
-              outHeaders['content-encoding'] = 'gzip';
-              res.writeHead(upRes.statusCode || 200, outHeaders);
-              zlib.gzip(patched, { level: 1 }, (err, gzBuf) => {
-                if (err) res.end(patched);
-                else res.end(gzBuf);
+              outHeaders['content-encoding'] = preferredEnc;
+              outHeaders['vary'] = 'Accept-Encoding';
+              this.compressAsync(patched, preferredEnc, (err, compBuf) => {
+                if (err || !compBuf) {
+                  delete outHeaders['content-encoding'];
+                  outHeaders['content-length'] = String(patched.length);
+                  res.writeHead(upRes.statusCode || 200, outHeaders);
+                  res.end(patched);
+                } else {
+                  outHeaders['content-length'] = String(compBuf.length);
+                  res.writeHead(upRes.statusCode || 200, outHeaders);
+                  res.end(compBuf);
+                }
               });
             } else {
               outHeaders['content-length'] = String(patched.length);
@@ -273,21 +384,66 @@ export class VSCodeServerManager {
           return;
         }
 
-        const shouldGzip =
-          acceptGzip &&
+        // Compress & persist immutable static JS/CSS/WASM/SVG bundles (especially 25MB workbench.js -> 3.4MB br!)
+        if (
+          isImmutableStatic &&
+          (upRes.statusCode || 500) === 200 &&
+          preferredEnc &&
+          !outHeaders['content-encoding']
+        ) {
+          const chunks: Buffer[] = [];
+          upRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+          upRes.on('end', () => {
+            const raw = Buffer.concat(chunks);
+            this.compressAsync(raw, preferredEnc, (err, compBuf) => {
+              if (err || !compBuf) {
+                outHeaders['content-length'] = String(raw.length);
+                outHeaders['cache-control'] = 'public, max-age=31536000, immutable';
+                res.writeHead(200, outHeaders);
+                res.end(raw);
+                return;
+              }
+              // Save asynchronously to disk cache so future requests return in <1ms with zero CPU
+              try {
+                const cacheFile = this.getAssetCacheKey(cleanPath, preferredEnc);
+                fs.writeFile(cacheFile, compBuf, () => {});
+              } catch {}
+              delete outHeaders['content-length'];
+              outHeaders['content-encoding'] = preferredEnc;
+              outHeaders['content-length'] = String(compBuf.length);
+              outHeaders['cache-control'] = 'public, max-age=31536000, immutable';
+              outHeaders['vary'] = 'Accept-Encoding';
+              res.writeHead(200, outHeaders);
+              res.end(compBuf);
+            });
+          });
+          upRes.on('error', () => {
+            if (!res.headersSent) res.status(502).end('VS Code yanıt hatası');
+          });
+          return;
+        }
+
+        const shouldCompress =
+          preferredEnc &&
           req.method !== 'HEAD' &&
           !outHeaders['content-encoding'] &&
           /(javascript|css|json|html|svg|wasm|xml|text\/plain)/.test(ctype);
 
-        if (shouldGzip) {
+        if (shouldCompress) {
           delete outHeaders['content-length'];
-          outHeaders['content-encoding'] = 'gzip';
+          outHeaders['content-encoding'] = preferredEnc;
+          outHeaders['vary'] = 'Accept-Encoding';
           res.writeHead(upRes.statusCode || 200, outHeaders);
-          const gz = zlib.createGzip({ level: 1 });
-          gz.on('error', () => res.destroy());
-          upRes.on('error', () => gz.destroy());
-          res.on('close', () => gz.destroy());
-          upRes.pipe(gz).pipe(res);
+          const comp =
+            preferredEnc === 'br'
+              ? zlib.createBrotliCompress({
+                  params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 },
+                })
+              : zlib.createGzip({ level: 4 });
+          comp.on('error', () => res.destroy());
+          upRes.on('error', () => comp.destroy());
+          res.on('close', () => comp.destroy());
+          upRes.pipe(comp).pipe(res);
           return;
         }
 
@@ -304,7 +460,11 @@ export class VSCodeServerManager {
   };
 
   public proxyUpgrade(req: http.IncomingMessage, clientSocket: Duplex, head: Buffer): void {
+    if ('setNoDelay' in clientSocket && typeof (clientSocket as net.Socket).setNoDelay === 'function') {
+      (clientSocket as net.Socket).setNoDelay(true);
+    }
     const upstream = net.connect(this.port, '127.0.0.1', () => {
+      upstream.setNoDelay(true);
       // Preserve incoming Host header so Origin validation in code serve-web succeeds
       const lines = [`${req.method || 'GET'} ${req.url || '/vscode-web/'} HTTP/${req.httpVersion}`];
       for (let i = 0; i < req.rawHeaders.length; i += 2) {

@@ -203,7 +203,7 @@ function computeAnchoredFlyoutStyle(
   return { bottom: Math.round(vh - anchor.top + gap), left };
 }
 
-/* Smooth macOS cosine-wave Dock icon magnifier */
+/* Smooth macOS cosine-wave Dock icon magnifier that expands layout spacing so the Dock container itself breathes & stretches smoothly */
 const DockMagnifySlot: React.FC<{
   enabled: boolean;
   maxScale: number;
@@ -212,23 +212,45 @@ const DockMagnifySlot: React.FC<{
   children: React.ReactNode;
 }> = ({ enabled, maxScale, pointer, pos, children }) => {
   const slotRef = useRef<HTMLDivElement>(null);
+  const baseMetricsRef = useRef<{ center: number; size: number } | null>(null);
+  const isVert = pos === 'left' || pos === 'right';
+
+  if (!pointer || !enabled) {
+    baseMetricsRef.current = null;
+  } else if (!baseMetricsRef.current && slotRef.current) {
+    const rect = slotRef.current.getBoundingClientRect();
+    baseMetricsRef.current = {
+      center: isVert ? rect.top + rect.height / 2 : rect.left + rect.width / 2,
+      size: isVert ? rect.height : rect.width,
+    };
+  }
 
   let scale = 1;
   let lift = 0;
+  let extraMargin = 0;
 
-  if (enabled && pointer && slotRef.current) {
-    const rect = slotRef.current.getBoundingClientRect();
-    const isVert = pos === 'left' || pos === 'right';
-    const center = isVert ? rect.top + rect.height / 2 : rect.left + rect.width / 2;
+  if (enabled && pointer && baseMetricsRef.current) {
+    const { center, size } = baseMetricsRef.current;
     const cursor = isVert ? pointer.y : pointer.x;
     const dist = Math.abs(cursor - center);
-    const radius = 115;
+    const radius = 128;
     if (dist < radius) {
       const influence = Math.cos((dist / radius) * (Math.PI / 2));
-      scale = 1 + (Math.max(1.05, Math.min(2, maxScale)) - 1) * influence;
-      lift = (scale - 1) * 20;
+      const clampedMax = Math.max(1.05, Math.min(2, maxScale));
+      scale = 1 + (clampedMax - 1) * influence;
+      lift = (scale - 1) * 14;
+      extraMargin = Number((((scale - 1) * Math.max(32, Math.min(size, 64))) * 0.46).toFixed(1));
     }
   }
+
+  const transformOrigin =
+    pos === 'top'
+      ? 'center top'
+      : pos === 'left'
+      ? 'left center'
+      : pos === 'right'
+      ? 'right center'
+      : 'center bottom';
 
   const transform =
     scale > 1.005
@@ -246,7 +268,13 @@ const DockMagnifySlot: React.FC<{
       ref={slotRef}
       style={{
         transform,
-        transition: 'transform 95ms cubic-bezier(0.22, 1, 0.36, 1)',
+        transformOrigin,
+        marginLeft: !isVert ? `${extraMargin}px` : undefined,
+        marginRight: !isVert ? `${extraMargin}px` : undefined,
+        marginTop: isVert ? `${extraMargin}px` : undefined,
+        marginBottom: isVert ? `${extraMargin}px` : undefined,
+        transition:
+          'transform 115ms cubic-bezier(0.22, 1, 0.36, 1), margin 115ms cubic-bezier(0.22, 1, 0.36, 1)',
         zIndex: scale > 1.08 ? 20 : 1,
       }}
       className="relative shrink-0 will-change-transform"
@@ -602,6 +630,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     );
   };
 
+  const dockHoverExpand = magEnabled && Boolean(dockPointer);
   const dockStyleObj: React.CSSProperties = {
     backgroundColor: palette.backgroundColor,
     borderColor: palette.borderColor,
@@ -609,6 +638,12 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     backdropFilter: `blur(${dock.blur ?? 18}px)`,
     WebkitBackdropFilter: `blur(${dock.blur ?? 18}px)`,
     boxShadow: styleMode === 'full' ? 'none' : 'var(--os-dock-shadow)',
+    paddingLeft: !isVertical && dockHoverExpand ? '18px' : undefined,
+    paddingRight: !isVertical && dockHoverExpand ? '18px' : undefined,
+    paddingTop: isVertical && dockHoverExpand ? '16px' : undefined,
+    paddingBottom: isVertical && dockHoverExpand ? '16px' : undefined,
+    transition:
+      'padding 130ms cubic-bezier(0.22, 1, 0.36, 1), background-color 220ms ease, border-color 220ms ease',
   };
 
   const btnShapeClass = styleMode === 'minimal' ? 'rounded-full' : 'rounded-xl';

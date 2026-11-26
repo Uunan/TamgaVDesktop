@@ -66,6 +66,44 @@ function readInitialDesktopId(): string {
   return params.get('desktop') || 'main';
 }
 
+function loadCachedMeta(desktopId: string): { meta: DesktopMeta; fromCache: boolean } {
+  if (typeof window === 'undefined') return { meta: DEFAULT_META, fromCache: false };
+  try {
+    const raw = localStorage.getItem(`tamga_prefs_v1_${desktopId}`);
+    if (!raw) return { meta: DEFAULT_META, fromCache: false };
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== 'object') return { meta: DEFAULT_META, fromCache: false };
+    return {
+      fromCache: true,
+      meta: {
+        ...DEFAULT_META,
+        preferences: {
+          ...DEFAULT_META.preferences,
+          wallpaper: typeof p.wallpaper === 'string' ? p.wallpaper : DEFAULT_META.preferences.wallpaper,
+          customWallpaper: typeof p.customWallpaper === 'string' ? p.customWallpaper : undefined,
+          theme: p.theme === 'light' ? 'light' : 'dark',
+          iconSize: p.iconSize || DEFAULT_META.preferences.iconSize,
+          autoArrange: Boolean(p.autoArrange),
+          sortBy: p.sortBy || DEFAULT_META.preferences.sortBy,
+          stream: { ...DEFAULT_STREAM_PREFERENCES, ...(p.stream || {}) },
+          browser: { ...DEFAULT_BROWSER_PREFERENCES, ...(p.browser || {}) },
+          terminal: { ...DEFAULT_TERMINAL_PREFERENCES, ...(p.terminal || {}) },
+          ui: { ...DEFAULT_UI_PREFERENCES, ...(p.ui || {}) },
+          dock: { ...DEFAULT_DOCK_PREFERENCES, ...(p.dock || {}) },
+        },
+      },
+    };
+  } catch {
+    return { meta: DEFAULT_META, fromCache: false };
+  }
+}
+
+function saveCachedPrefs(desktopId: string, prefs: DesktopMeta['preferences']): void {
+  try {
+    localStorage.setItem(`tamga_prefs_v1_${desktopId}`, JSON.stringify(prefs));
+  } catch {}
+}
+
 export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>({
@@ -94,7 +132,9 @@ export default function App() {
   const [lockClock, setLockClock] = useState(() => new Date());
 
   const [allNodes, setAllNodes] = useState<VFSNode[]>([]);
-  const [meta, setMeta] = useState<DesktopMeta>(DEFAULT_META);
+  const initialHydration = useMemo(() => loadCachedMeta(desktopId), []);
+  const [meta, setMeta] = useState<DesktopMeta>(() => initialHydration.meta);
+  const [prefsReady, setPrefsReady] = useState<boolean>(() => initialHydration.fromCache);
   const [selectedDesktopPaths, setSelectedDesktopPaths] = useState<string[]>([]);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
@@ -188,12 +228,20 @@ export default function App() {
       const snap = await vfsApi.getSnapshot();
       setAllNodes(snap.nodes);
       setMeta(snap.meta);
+      saveCachedPrefs(desktopId, snap.meta.preferences);
+      setPrefsReady(true);
       if (snap.desktop) setCurrentDesktop(snap.desktop);
       if (snap.desktops) setDesktops(snap.desktops);
     } catch {
-      // retry via WS
+      setPrefsReady(true);
     }
-  }, []);
+  }, [desktopId]);
+
+  useEffect(() => {
+    if (prefsReady) {
+      saveCachedPrefs(desktopId, meta.preferences);
+    }
+  }, [desktopId, meta.preferences, prefsReady]);
 
   const refreshApps = useCallback(async () => {
     try {
@@ -220,6 +268,11 @@ export default function App() {
 
   useEffect(() => {
     setBridgeDesktopId(desktopId);
+    const cached = loadCachedMeta(desktopId);
+    if (cached.fromCache) {
+      setMeta((prev) => ({ ...prev, preferences: cached.meta.preferences }));
+      setPrefsReady(true);
+    }
     const url = new URL(window.location.href);
     if (desktopId === 'main') {
       url.searchParams.delete('desktop');
@@ -1288,6 +1341,10 @@ export default function App() {
         }
       />
     );
+  }
+
+  if (!prefsReady) {
+    return <div className="w-screen h-screen bg-[var(--os-bg)]" />;
   }
 
   return (
