@@ -257,6 +257,14 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
     };
   }, [sendWs, hasActiveTab]);
 
+  // Notify server when Chromium window mounts/unmounts so background screencast stops at 0% CPU when closed
+  useEffect(() => {
+    sendWs({ type: 'browser_visibility', visible: true });
+    return () => {
+      sendWs({ type: 'browser_visibility', visible: false });
+    };
+  }, [sendWs]);
+
   const localNode =
     activeTab?.mode === 'file' ? allNodes.find((n) => n.path === activeTab.filePath) : undefined;
 

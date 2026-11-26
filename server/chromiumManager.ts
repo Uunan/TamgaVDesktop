@@ -56,6 +56,7 @@ interface InternalTab {
   suppressSettleUntil?: number;
   lastUserInputAt?: number;
   lastPngAt?: number;
+  capturingPng?: boolean;
 }
 
 export type JsonEventCallback = (msg: Record<string, unknown>) => void;
@@ -596,6 +597,7 @@ export class ChromiumDesktopSession {
   private frameCounter = 0;
   private lastFpsCheck = Date.now();
   public currentFps = 0;
+  private viewerVisible = true;
 
   constructor(desktopId: string, vfs: VFSManager, cluster: ChromiumCluster) {
     this.desktopId = desktopId;
@@ -612,6 +614,23 @@ export class ChromiumDesktopSession {
     };
   }
 
+  public async setViewerVisible(visible: boolean) {
+    this.viewerVisible = visible;
+    const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
+    if (!visible) {
+      for (const tab of this.tabs.values()) {
+        await this.stopScreencast(tab);
+      }
+      return;
+    }
+    if (this.binaryListeners.size > 0 && active?.mode === 'web' && active.page && !active.page.isClosed()) {
+      if (active.lastFrameBuffer) {
+        this.broadcastBinary(active.lastFrameBuffer);
+      }
+      await this.startScreencast(active);
+    }
+  }
+
   public subscribe(onJson: JsonEventCallback, onBinary: BinaryEventCallback): () => void {
     this.jsonListeners.add(onJson);
     this.binaryListeners.add(onBinary);
@@ -623,13 +642,23 @@ export class ChromiumDesktopSession {
     });
 
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
-    if (active?.mode === 'web' && active.lastFrameBuffer) {
-      onBinary(active.lastFrameBuffer);
+    if (active?.mode === 'web') {
+      if (active.lastFrameBuffer) {
+        onBinary(active.lastFrameBuffer);
+      }
+      if (this.viewerVisible && active.page && !active.page.isClosed() && !active.streaming) {
+        this.startScreencast(active).catch(() => {});
+      }
     }
 
     return () => {
       this.jsonListeners.delete(onJson);
       this.binaryListeners.delete(onBinary);
+      if (this.binaryListeners.size === 0) {
+        for (const tab of this.tabs.values()) {
+          this.stopScreencast(tab).catch(() => {});
+        }
+      }
     };
   }
 
@@ -885,6 +914,11 @@ export class ChromiumDesktopSession {
     cdp.on('Page.screencastFrame', (payload) => {
       cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => {});
 
+      if (this.binaryListeners.size === 0 || !this.viewerVisible) {
+        this.stopScreencast(tab).catch(() => {});
+        return;
+      }
+
       const now = Date.now();
       if (payload.data === tab.lastScreencastData) {
         return;
@@ -909,10 +943,10 @@ export class ChromiumDesktopSession {
         // Send a lossless PNG frame shortly after motion settles for native Retina text clarity
         if (tab.settleTimer) clearTimeout(tab.settleTimer);
         tab.settleTimer = setTimeout(() => {
-          if (this.activeTabId === tab.id && tab.mode === 'web') {
+          if (this.activeTabId === tab.id && tab.mode === 'web' && this.binaryListeners.size > 0 && this.viewerVisible) {
             this.captureImmediateFrame(tab).catch(() => {});
           }
-        }, 220);
+        }, 280);
       }
     });
 
@@ -1006,10 +1040,11 @@ export class ChromiumDesktopSession {
 
   private async startScreencast(tab: InternalTab) {
     if (!tab.cdp || tab.streaming || tab.mode !== 'web') return;
+    if (this.binaryListeners.size === 0 || !this.viewerVisible) return;
     try {
       await tab.cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 92,
+        quality: 84,
         maxWidth: Math.round(this.viewport.width * this.dpr),
         maxHeight: Math.round(this.viewport.height * this.dpr),
         everyNthFrame: 1,
@@ -1034,8 +1069,10 @@ export class ChromiumDesktopSession {
 
   private async captureImmediateFrame(tab: InternalTab) {
     if (!tab.page || tab.page.isClosed() || tab.mode !== 'web') return;
+    if (tab.capturingPng) return;
+    tab.capturingPng = true;
     try {
-      tab.suppressSettleUntil = Date.now() + 900;
+      tab.suppressSettleUntil = Date.now() + 1200;
       let pngBuf: Buffer;
       if (tab.cdp) {
         const res = await tab.cdp.send('Page.captureScreenshot', {
@@ -1047,7 +1084,7 @@ export class ChromiumDesktopSession {
         pngBuf = await tab.page.screenshot({ type: 'png', scale: 'device' });
       }
       tab.lastPngAt = Date.now();
-      tab.suppressSettleUntil = tab.lastPngAt + 550;
+      tab.suppressSettleUntil = tab.lastPngAt + 950;
       const packet = Buffer.allocUnsafe(1 + pngBuf.length);
       packet[0] = PACKET_VIDEO_JPEG;
       pngBuf.copy(packet, 1);
@@ -1058,7 +1095,11 @@ export class ChromiumDesktopSession {
       if (this.activeTabId === tab.id) {
         this.broadcastBinary(packet);
       }
-    } catch {}
+    } catch {
+      // ignore transient capture errors
+    } finally {
+      tab.capturingPng = false;
+    }
   }
 
   public async navigate(tabId: string, rawInput: string): Promise<void> {

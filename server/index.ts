@@ -21,7 +21,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.2.5';
+export const TAMGA_VERSION = '1.2.6';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -820,6 +820,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
             break;
           case 'browser_input':
             browserSession.handleInput(msg);
+            break;
+          case 'browser_visibility':
+            await browserSession.setViewerVisible(Boolean(msg.visible));
             break;
         }
       } catch {
