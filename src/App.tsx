@@ -1105,6 +1105,7 @@ export default function App() {
             }
             minWidth={win.kind === 'properties' ? 340 : 480}
             minHeight={win.kind === 'properties' ? 340 : 320}
+            overlayTitlebar={win.kind === 'vscode'}
             headerContent={
               win.kind === 'browser' ? (
                 <ChromiumTabStrip tabs={tabs} activeTabId={activeTabId} sendWs={sendWs} />
