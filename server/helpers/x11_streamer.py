@@ -243,12 +243,14 @@ ZPIXMAP = 2
 ALL_PLANES = 0xFFFFFFFFFFFFFFFF
 XDAMAGE_REPORT_NON_EMPTY = 1
 TJPF_BGRX = 3
+TJSAMP_444 = 0
 TJSAMP_422 = 1
 TJSAMP_420 = 2
 TJFLAG_FASTDCT = 2048
 
 PACKET_FULL_JPEG = 0x01
 PACKET_RECT_JPEG = 0x03
+PACKET_MULTI_RECT = 0x04
 
 last_x_error = 0
 
@@ -295,7 +297,7 @@ def query_drawable_size(dpy, drawable: int) -> tuple[int, int]:
     return int(w_out.value), int(h_out.value)
 
 
-def write_all(fd: int, data: bytes) -> None:
+def write_all(fd: int, data: bytes | bytearray | memoryview) -> None:
     mv = memoryview(data)
     total = len(mv)
     sent = 0
@@ -446,14 +448,75 @@ def union_rects(
     return x0, y0, x1 - x0, y1 - y0
 
 
+def cluster_dirty_rects(
+    raw_rects: list[tuple[int, int, int, int]], max_clusters: int = 4
+) -> list[tuple[int, int, int, int]]:
+    """Coalesce nearby XDamage rects greedily so sparse multi-corner UI changes avoid full-frame re-encodes."""
+    if len(raw_rects) <= 1:
+        return raw_rects
+    clusters = list(raw_rects)
+    changed = True
+    while changed and len(clusters) > 1:
+        changed = False
+        best_i = -1
+        best_j = -1
+        best_waste = 1 << 60
+        for i in range(len(clusters)):
+            ax, ay, aw, ah = clusters[i]
+            aa = aw * ah
+            for j in range(i + 1, len(clusters)):
+                bx, by, bw, bh = clusters[j]
+                ux0 = min(ax, bx)
+                uy0 = min(ay, by)
+                ux1 = max(ax + aw, bx + bw)
+                uy1 = max(ay + ah, by + bh)
+                uw = ux1 - ux0
+                uh = uy1 - uy0
+                ua = uw * uh
+                gap_x = max(0, max(ax, bx) - min(ax + aw, bx + bw))
+                gap_y = max(0, max(ay, by) - min(ay + ah, by + bh))
+                area_sum = aa + bw * bh
+                # Merge overlapping / close rects, or force-merge lowest-waste pair if over max_clusters
+                if (gap_x <= 24 and gap_y <= 24) or ua <= int(area_sum * 1.35) + 4096:
+                    waste = ua - area_sum
+                    if waste < best_waste:
+                        best_waste = waste
+                        best_i, best_j = i, j
+        if best_i >= 0:
+            merged = union_rects(clusters[best_i], clusters[best_j])
+            clusters.pop(best_j)
+            clusters[best_i] = merged  # type: ignore[assignment]
+            changed = True
+        elif len(clusters) > max_clusters:
+            # Force-merge minimum-area-overhead pair to stay strictly within max_clusters
+            for i in range(len(clusters)):
+                ax, ay, aw, ah = clusters[i]
+                aa = aw * ah
+                for j in range(i + 1, len(clusters)):
+                    bx, by, bw, bh = clusters[j]
+                    ua = (max(ax + aw, bx + bw) - min(ax, bx)) * (
+                        max(ay + ah, by + bh) - min(ay, by)
+                    )
+                    waste = ua - (aa + bw * bh)
+                    if waste < best_waste:
+                        best_waste = waste
+                        best_i, best_j = i, j
+            if best_i >= 0:
+                merged = union_rects(clusters[best_i], clusters[best_j])
+                clusters.pop(best_j)
+                clusters[best_i] = merged  # type: ignore[assignment]
+                changed = True
+    return clusters
+
+
 def main() -> None:
     global last_x_error
     libX11.XSetErrorHandler(track_x_error)
     display_str = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DISPLAY", ":100")
     width = max(240, min(1920, int(sys.argv[2]) if len(sys.argv) > 2 else 1100))
     height = max(180, min(1080, int(sys.argv[3]) if len(sys.argv) > 3 else 680))
-    max_fps = max(8, min(40, int(sys.argv[4]) if len(sys.argv) > 4 else 30))
-    quality = max(45, min(95, int(sys.argv[5]) if len(sys.argv) > 5 else 82))
+    max_fps = max(8, min(60, int(sys.argv[4]) if len(sys.argv) > 4 else 45))
+    quality = max(45, min(95, int(sys.argv[5]) if len(sys.argv) > 5 else 86))
     off_x = max(0, int(sys.argv[6]) if len(sys.argv) > 6 else 0)
     off_y = max(0, int(sys.argv[7]) if len(sys.argv) > 7 else 0)
     target_wid = parse_wid(sys.argv[8]) if len(sys.argv) > 8 else 0
@@ -514,11 +577,14 @@ def main() -> None:
     out_fd = sys.stdout.fileno()
 
     min_interval = 1.0 / float(max_fps)
-    max_in_flight = 3
+    micro_interval = min(min_interval, 1.0 / 60.0)
+    max_in_flight = 4
     dirty = True
     force_full = True
     has_sent_full = False
     in_flight = 0
+    in_flight_since = 0.0
+    use_client_ack = False
     last_sent = 0.0
     stdin_buf = b""
     ev = XEvent()
@@ -533,31 +599,97 @@ def main() -> None:
         full_h: int,
         qual: int,
         subsamp: int,
-        rect: tuple[int, int, int, int] | None,
+        rects: list[tuple[int, int, int, int]] | None,
         destroy_img: bool,
     ) -> bool:
         try:
             img = img_ptr.contents
             bpp = max(1, int(img.bits_per_pixel) // 8)
             stride = int(img.bytes_per_line)
+            base_data = int(img.data)
 
-            if rect is not None:
-                rx, ry, rw, rh = rect
-                src_ptr = ctypes.c_void_p(int(img.data) + ry * stride + rx * bpp)
-                enc_w, enc_h = rw, rh
-            else:
-                rx, ry, rw, rh = 0, 0, full_w, full_h
-                src_ptr = img.data
-                enc_w, enc_h = full_w, full_h
+            if rects and len(rects) == 1:
+                rx, ry, rw, rh = rects[0]
+                src_ptr = ctypes.c_void_p(base_data + ry * stride + rx * bpp)
+                jpeg_ptr = ctypes.c_void_p()
+                jpeg_len = ctypes.c_ulong(0)
+                rc = libtj.tjCompress2(
+                    tj,
+                    src_ptr,
+                    rw,
+                    stride,
+                    rh,
+                    TJPF_BGRX,
+                    ctypes.byref(jpeg_ptr),
+                    ctypes.byref(jpeg_len),
+                    subsamp,
+                    qual,
+                    TJFLAG_FASTDCT,
+                )
+                if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
+                    return False
+                try:
+                    jlen = int(jpeg_len.value)
+                    pkt = bytearray(17 + jlen)
+                    struct.pack_into(">IBHHHHHH", pkt, 0, 13 + jlen, PACKET_RECT_JPEG, rx, ry, rw, rh, full_w, full_h)
+                    ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 17), jpeg_ptr.value, jlen)
+                    write_all(out_fd, pkt)
+                    return True
+                finally:
+                    libtj.tjFree(jpeg_ptr)
+
+            if rects and len(rects) > 1:
+                # Pack multiple sparse dirty rectangles atomically into ONE 0x04 packet
+                encoded_items: list[tuple[int, int, int, int, bytes]] = []
+                total_payload = 7  # u8 type + u16 count + u16 fullW + u16 fullH
+                for rx, ry, rw, rh in rects:
+                    src_ptr = ctypes.c_void_p(base_data + ry * stride + rx * bpp)
+                    jpeg_ptr = ctypes.c_void_p()
+                    jpeg_len = ctypes.c_ulong(0)
+                    rc = libtj.tjCompress2(
+                        tj,
+                        src_ptr,
+                        rw,
+                        stride,
+                        rh,
+                        TJPF_BGRX,
+                        ctypes.byref(jpeg_ptr),
+                        ctypes.byref(jpeg_len),
+                        subsamp,
+                        qual,
+                        TJFLAG_FASTDCT,
+                    )
+                    if rc == 0 and jpeg_ptr.value and jpeg_len.value > 0:
+                        try:
+                            jb = ctypes.string_at(jpeg_ptr.value, jpeg_len.value)
+                            encoded_items.append((rx, ry, rw, rh, jb))
+                            total_payload += 12 + len(jb)
+                        finally:
+                            libtj.tjFree(jpeg_ptr)
+                if not encoded_items:
+                    return False
+                pkt = bytearray(4 + total_payload)
+                struct.pack_into(
+                    ">IBHHH", pkt, 0, total_payload, PACKET_MULTI_RECT, len(encoded_items), full_w, full_h
+                )
+                pos = 11
+                for rx, ry, rw, rh, jb in encoded_items:
+                    jlen = len(jb)
+                    struct.pack_into(">HHHHI", pkt, pos, rx, ry, rw, rh, jlen)
+                    pos += 12
+                    pkt[pos : pos + jlen] = jb
+                    pos += jlen
+                write_all(out_fd, pkt)
+                return True
 
             jpeg_ptr = ctypes.c_void_p()
             jpeg_len = ctypes.c_ulong(0)
             rc = libtj.tjCompress2(
                 tj,
-                src_ptr,
-                enc_w,
+                img.data,
+                full_w,
                 stride,
-                enc_h,
+                full_h,
                 TJPF_BGRX,
                 ctypes.byref(jpeg_ptr),
                 ctypes.byref(jpeg_len),
@@ -568,24 +700,10 @@ def main() -> None:
             if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
                 return False
             try:
-                jpeg_bytes = ctypes.string_at(jpeg_ptr.value, jpeg_len.value)
-                if rect is not None:
-                    pkt = (
-                        struct.pack(
-                            ">IBHHHHHH",
-                            13 + len(jpeg_bytes),
-                            PACKET_RECT_JPEG,
-                            rx,
-                            ry,
-                            rw,
-                            rh,
-                            full_w,
-                            full_h,
-                        )
-                        + jpeg_bytes
-                    )
-                else:
-                    pkt = struct.pack(">IB", 1 + len(jpeg_bytes), PACKET_FULL_JPEG) + jpeg_bytes
+                jlen = int(jpeg_len.value)
+                pkt = bytearray(5 + jlen)
+                struct.pack_into(">IB", pkt, 0, 1 + jlen, PACKET_FULL_JPEG)
+                ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 5), jpeg_ptr.value, jlen)
                 write_all(out_fd, pkt)
                 return True
             finally:
@@ -594,23 +712,46 @@ def main() -> None:
             if destroy_img:
                 libX11.XDestroyImage(img_ptr)
 
-    def fetch_damage_bounds(grab_w: int, grab_h: int) -> tuple[int, int, int, int] | None:
+    def fetch_damage_clusters(
+        grab_w: int, grab_h: int
+    ) -> tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None]:
         if not damage:
-            return None
+            return None, None
         if not damage_region or libXfixes is None:
             libXdamage.XDamageSubtract(dpy, damage, 0, 0)
-            return None
+            return None, None
         libXdamage.XDamageSubtract(dpy, damage, 0, damage_region)
         nrects = ctypes.c_int(0)
         bounds = XRectangle()
         rects_ptr = libXfixes.XFixesFetchRegionAndBounds(
             dpy, damage_region, ctypes.byref(nrects), ctypes.byref(bounds)
         )
-        if rects_ptr:
-            libX11.XFree(rects_ptr)
+        raw_list: list[tuple[int, int, int, int]] = []
+        try:
+            cnt = int(nrects.value)
+            if rects_ptr and 1 < cnt <= 48:
+                arr_ptr = ctypes.cast(rects_ptr, ctypes.POINTER(XRectangle))
+                for idx in range(cnt):
+                    r = arr_ptr[idx]
+                    lx = int(r.x) - off_x
+                    ly = int(r.y) - off_y
+                    lw = int(r.width)
+                    lh = int(r.height)
+                    if lx < 0:
+                        lw += lx
+                        lx = 0
+                    if ly < 0:
+                        lh += ly
+                        ly = 0
+                    aligned = clamp_align_rect(lx, ly, lw, lh, grab_w, grab_h)
+                    if aligned:
+                        raw_list.append(aligned)
+        finally:
+            if rects_ptr:
+                libX11.XFree(rects_ptr)
+
         if nrects.value <= 0 or bounds.width == 0 or bounds.height == 0:
-            return None
-        # Translate root-relative bounds into viewport-local coordinates
+            return None, None
         lx = int(bounds.x) - off_x
         ly = int(bounds.y) - off_y
         lw = int(bounds.width)
@@ -621,13 +762,16 @@ def main() -> None:
         if ly < 0:
             lh += ly
             ly = 0
-        return clamp_align_rect(lx, ly, lw, lh, grab_w, grab_h)
+        bbox = clamp_align_rect(lx, ly, lw, lh, grab_w, grab_h)
+        clusters = cluster_dirty_rects(raw_list, max_clusters=4) if len(raw_list) > 1 else None
+        return bbox, clusters
 
     def grab_and_send(
         qual: int,
         subsamp: int,
         explicit_rect: tuple[int, int, int, int] | None,
         allow_partial: bool,
+        prefetched: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None,
     ) -> tuple[bool, tuple[int, int, int, int] | None]:
         nonlocal root_w, root_h, last_geom_check, has_sent_full
         global last_x_error
@@ -644,6 +788,13 @@ def main() -> None:
                     grab_w = min(width, pw) if pw > 0 else 0
                     grab_h = min(height, ph) if ph > 0 else 0
                     if grab_w >= 2 and grab_h >= 2:
+                        # Use fast zero-copy MIT-SHM on XComposite off-screen pixmaps (~0.5ms vs ~14ms XGetImage)
+                        shm_pix = shm.grab(pix, 0, 0, grab_w, grab_h)
+                        if shm_pix is not None:
+                            ok = encode_and_emit(shm_pix, grab_w, grab_h, qual, subsamp, None, False)
+                            if ok:
+                                has_sent_full = True
+                            return ok, None
                         img_ptr = libX11.XGetImage(
                             dpy, pix, 0, 0, grab_w, grab_h, ALL_PLANES, ZPIXMAP
                         )
@@ -668,13 +819,25 @@ def main() -> None:
         if grab_w < 2 or grab_h < 2:
             return False, None
 
-        dirty_rect = explicit_rect if explicit_rect is not None else fetch_damage_bounds(grab_w, grab_h)
+        if explicit_rect is not None:
+            dirty_bbox = explicit_rect
+            clusters = None
+        elif prefetched is not None:
+            dirty_bbox, clusters = prefetched
+        else:
+            dirty_bbox, clusters = fetch_damage_clusters(grab_w, grab_h)
 
-        use_partial = False
-        if allow_partial and has_sent_full and dirty_rect is not None:
-            rx, ry, rw, rh = dirty_rect
-            if (rw * rh) < (grab_w * grab_h * 0.55):
-                use_partial = True
+        viewport_area = grab_w * grab_h
+        selected_rects: list[tuple[int, int, int, int]] | None = None
+        if allow_partial and has_sent_full and dirty_bbox is not None:
+            bx, by, bw, bh = dirty_bbox
+            bbox_area = bw * bh
+            if clusters and len(clusters) > 1:
+                cluster_area = sum(rw * rh for _rx, _ry, rw, rh in clusters)
+                if cluster_area < bbox_area * 0.60 and cluster_area < viewport_area * 0.50:
+                    selected_rects = clusters
+            if selected_rects is None and bbox_area < viewport_area * 0.55:
+                selected_rects = [dirty_bbox]
 
         # Zero-copy MIT-SHM grab (~0.5ms) with seamless fallback to XGetImage
         shm_ptr = shm.grab(root, off_x, off_y, grab_w, grab_h)
@@ -685,22 +848,21 @@ def main() -> None:
                 grab_h,
                 qual,
                 subsamp,
-                dirty_rect if use_partial else None,
+                selected_rects,
                 False,
             )
-            if ok and not use_partial:
+            if ok and selected_rects is None:
                 has_sent_full = True
-            return ok, (dirty_rect if use_partial else (0, 0, grab_w, grab_h))
+            return ok, (dirty_bbox if selected_rects is not None else (0, 0, grab_w, grab_h))
 
-        # Fallback: XGetImage (grab only dirty sub-rect when partial!)
-        if use_partial and dirty_rect is not None:
-            rx, ry, rw, rh = dirty_rect
+        # Fallback: XGetImage (grab only dirty sub-rect when single partial)
+        if selected_rects is not None and len(selected_rects) == 1:
+            rx, ry, rw, rh = selected_rects[0]
             img_ptr = libX11.XGetImage(
                 dpy, root, off_x + rx, off_y + ry, rw, rh, ALL_PLANES, ZPIXMAP
             )
             if not img_ptr:
                 return False, None
-            # For cropped XGetImage, data starts at (0,0) of the patch -> pass custom header
             img = img_ptr.contents
             jpeg_ptr = ctypes.c_void_p()
             jpeg_len = ctypes.c_ulong(0)
@@ -721,15 +883,14 @@ def main() -> None:
                 if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
                     return False, None
                 try:
-                    jb = ctypes.string_at(jpeg_ptr.value, jpeg_len.value)
-                    pkt = (
-                        struct.pack(
-                            ">IBHHHHHH", 13 + len(jb), PACKET_RECT_JPEG, rx, ry, rw, rh, grab_w, grab_h
-                        )
-                        + jb
+                    jlen = int(jpeg_len.value)
+                    pkt = bytearray(17 + jlen)
+                    struct.pack_into(
+                        ">IBHHHHHH", pkt, 0, 13 + jlen, PACKET_RECT_JPEG, rx, ry, rw, rh, grab_w, grab_h
                     )
+                    ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 17), jpeg_ptr.value, jlen)
                     write_all(out_fd, pkt)
-                    return True, dirty_rect
+                    return True, selected_rects[0]
                 finally:
                     libtj.tjFree(jpeg_ptr)
             finally:
@@ -745,29 +906,41 @@ def main() -> None:
             has_sent_full = True
         return ok, (0, 0, grab_w, grab_h)
 
-    # Adaptive quality state (GeForce NOW-style motion drop + targeted crisp settle)
+    # Adaptive quality state (GeForce NOW-style motion drop + crisp TJSAMP_444 settle)
     max_quality = quality
-    motion_quality = max(30, min(max_quality, max_quality - 22))
+    motion_quality = max(30, min(max_quality, max_quality - 24))
     dynamic_drop = True
-    settle_sec = 0.26
+    settle_sec = 0.18
     needs_settle = False
     settle_rect: tuple[int, int, int, int] | None = None
     last_motion_at = 0.0
+    pending_damage: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None
 
     # Gentle initial settle window while the X11 app first paints its window
-    startup_until = time.monotonic() + 2.8
+    startup_until = time.monotonic() + 2.4
 
     while True:
         now = time.monotonic()
+        # Prevent permanent deadlock if a client browser tab goes backgrounded without acking
+        if in_flight > 0 and (now - in_flight_since) > 0.35:
+            in_flight = max(0, in_flight - 1)
+            in_flight_since = now
+
+        active_interval = min_interval
+        if pending_damage and has_sent_full and not force_full:
+            pb = pending_damage[0]
+            if pb is not None and (pb[2] * pb[3]) <= int(width * height * 0.22):
+                active_interval = micro_interval
+
         wait_timeout = 1.5
         if dirty and in_flight < max_in_flight:
             elapsed = now - last_sent
-            wait_timeout = max(0.0, min_interval - elapsed)
+            wait_timeout = max(0.0, active_interval - elapsed)
         elif needs_settle and in_flight < max_in_flight:
             rem = settle_sec - (now - last_motion_at)
             wait_timeout = max(0.0, rem)
         elif now < startup_until:
-            wait_timeout = 0.22
+            wait_timeout = 0.20
 
         if libX11.XPending(dpy) == 0 and wait_timeout > 0:
             try:
@@ -794,8 +967,14 @@ def main() -> None:
                     s = line.strip()
                     if not s:
                         continue
-                    if s == b"a":
+                    if s == b"k":
+                        use_client_ack = True
                         in_flight = max(0, in_flight - 1)
+                        in_flight_since = time.monotonic()
+                    elif s == b"a":
+                        if not use_client_ack:
+                            in_flight = max(0, in_flight - 1)
+                            in_flight_since = time.monotonic()
                     elif s.startswith(b"{"):
                         try:
                             cmd = json.loads(s.decode("utf-8"))
@@ -804,6 +983,7 @@ def main() -> None:
                                 width = max(240, min(1920, int(cmd.get("width", width))))
                                 height = max(180, min(1080, int(cmd.get("height", height))))
                                 force_full = True
+                                pending_damage = None
                                 dirty = True
                             elif ctype == "target":
                                 req_mode = cmd.get("mode", capture_mode)
@@ -826,11 +1006,13 @@ def main() -> None:
                                     target_wid if (capture_mode == "pixmap" and target_wid) else root
                                 )
                                 force_full = True
+                                pending_damage = None
                                 dirty = True
                             elif ctype == "stream_config":
                                 if "fps" in cmd and cmd["fps"]:
-                                    max_fps = max(8, min(40, int(cmd["fps"])))
+                                    max_fps = max(8, min(60, int(cmd["fps"])))
                                     min_interval = 1.0 / float(max_fps)
+                                    micro_interval = min(min_interval, 1.0 / 60.0)
                                 if "max_quality" in cmd and cmd["max_quality"]:
                                     max_quality = max(45, min(95, int(cmd["max_quality"])))
                                 if "motion_quality" in cmd and cmd["motion_quality"]:
@@ -838,42 +1020,91 @@ def main() -> None:
                                 if "dynamic_drop" in cmd:
                                     dynamic_drop = bool(cmd["dynamic_drop"])
                                 if "settle_ms" in cmd and cmd["settle_ms"]:
-                                    settle_sec = max(0.12, min(1.2, float(cmd["settle_ms"]) / 1000.0))
+                                    settle_sec = max(0.10, min(1.2, float(cmd["settle_ms"]) / 1000.0))
                                 force_full = True
+                                pending_damage = None
                                 needs_settle = False
                                 settle_rect = None
                                 dirty = True
                             elif ctype == "refresh":
                                 force_full = True
+                                pending_damage = None
                                 dirty = True
                         except Exception:
                             pass
             except OSError:
                 break
 
+        got_new_damage = False
         while libX11.XPending(dpy) > 0:
             libX11.XNextEvent(dpy, ctypes.byref(ev))
             if ev.type == dmg_ev_base.value:
                 dirty = True
+                got_new_damage = True
+
+        # Accumulate damage bounds while throttled so micro_interval knows exact dirty area before next tick
+        if got_new_damage and capture_mode == "root" and has_sent_full and not force_full:
+            grab_w = min(width, max(2, root_w - off_x))
+            grab_h = min(height, max(2, root_h - off_y))
+            b2, c2 = fetch_damage_clusters(grab_w, grab_h)
+            if b2 is not None:
+                if pending_damage is None:
+                    pending_damage = (b2, c2)
+                else:
+                    prev_b, prev_c = pending_damage
+                    merged_b = union_rects(prev_b, b2)
+                    merged_list: list[tuple[int, int, int, int]] = []
+                    if prev_c:
+                        merged_list.extend(prev_c)
+                    elif prev_b:
+                        merged_list.append(prev_b)
+                    if c2:
+                        merged_list.extend(c2)
+                    else:
+                        merged_list.append(b2)
+                    pending_damage = (
+                        merged_b,
+                        cluster_dirty_rects(merged_list, max_clusters=4) if len(merged_list) > 1 else None,
+                    )
 
         now = time.monotonic()
-        if now < startup_until and (now - last_sent) > 0.30:
+        if now < startup_until and (now - last_sent) > 0.25:
             force_full = True
+            pending_damage = None
             dirty = True
 
-        if dirty and in_flight < max_in_flight and (now - last_sent) >= min_interval:
+        active_interval = min_interval
+        if pending_damage and has_sent_full and not force_full:
+            pb = pending_damage[0]
+            if pb is not None and (pb[2] * pb[3]) <= int(width * height * 0.22):
+                active_interval = micro_interval
+
+        if dirty and in_flight < max_in_flight and (now - last_sent) >= active_interval:
             is_rapid_motion = (
-                dynamic_drop and not force_full and (now - last_sent) < max(0.24, min_interval * 3.0)
+                dynamic_drop and not force_full and (now - last_sent) < max(0.20, min_interval * 3.0)
             )
-            send_qual = motion_quality if is_rapid_motion else max_quality
-            subsamp = TJSAMP_420 if is_rapid_motion else TJSAMP_422
-            ok, sent_rect = grab_and_send(send_qual, subsamp, None, allow_partial=not force_full)
+            congestion_drop = 8 if in_flight >= (max_in_flight - 1) else 0
+            send_qual = (
+                max(30, motion_quality - congestion_drop)
+                if is_rapid_motion
+                else max(45, max_quality - (congestion_drop if is_rapid_motion else 0))
+            )
+            subsamp = TJSAMP_420 if is_rapid_motion else (TJSAMP_444 if not force_full else TJSAMP_422)
+            ok, sent_rect = grab_and_send(
+                send_qual,
+                subsamp,
+                None,
+                allow_partial=not force_full,
+                prefetched=pending_damage,
+            )
+            pending_damage = None
             if ok:
                 dirty = False
                 force_full = False
                 in_flight += 1
-                last_sent = time.monotonic()
-                if is_rapid_motion and motion_quality < max_quality:
+                in_flight_since = time.monotonic()
+                last_sent = in_flight_since
+                if is_rapid_motion and send_qual < max_quality:
                     needs_settle = True
                     settle_rect = union_rects(settle_rect, sent_rect)
                     last_motion_at = last_sent
@@ -886,11 +1117,12 @@ def main() -> None:
             and in_flight < max_in_flight
             and (now - last_motion_at) >= settle_sec
         ):
-            # Sharpen ONLY the region that actually moved during rapid motion!
-            ok, _ = grab_and_send(max_quality, TJSAMP_422, settle_rect, allow_partial=True)
+            # Sharpen ONLY the region that actually moved using lossless-chroma 4:4:4!
+            ok, _ = grab_and_send(max_quality, TJSAMP_444, settle_rect, allow_partial=True)
             if ok:
                 in_flight += 1
-                last_sent = time.monotonic()
+                in_flight_since = time.monotonic()
+                last_sent = in_flight_since
                 needs_settle = False
                 settle_rect = None
 

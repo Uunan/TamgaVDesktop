@@ -1,8 +1,150 @@
 import fs from 'node:fs';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { resolveHelperPath } from './terminalManager';
+
+let ipv6ProbePromise: Promise<boolean> | null = null;
+let googleIpv6Blocked = false;
+
+function probeHostHttpCode(hostname: string, family: 4 | 6, timeoutMs = 2400): Promise<number> {
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname,
+        port: 443,
+        path: '/',
+        method: 'HEAD',
+        family,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode || 0);
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(0);
+    });
+    req.on('error', () => {
+      resolve(0);
+    });
+    req.end();
+  });
+}
+
+function patchGaiConfPreferIpv4(): void {
+  const gaiPath = '/etc/gai.conf';
+  try {
+    if (!fs.existsSync(gaiPath)) return;
+    const content = fs.readFileSync(gaiPath, 'utf-8');
+    const hasActiveRule = content
+      .split(/\r?\n/)
+      .some((line) => /^\s*precedence\s+::ffff:0:0\/96\s+100\b/.test(line));
+    if (hasActiveRule) return;
+    fs.appendFileSync(gaiPath, '\n# TamgaVDesktop: prefer IPv4 when host IPv6 is blocked\nprecedence ::ffff:0:0/96  100\n', 'utf-8');
+  } catch {
+    // Non-root installs can still rely on GODEBUG/NODE_OPTIONS env preferences
+  }
+}
+
+/**
+ * Probes Google API endpoints over IPv6 vs IPv4 once at startup. If IPv6 is 403-blocked
+ * (common on VPS IPv6 prefixes), enables system/glibc IPv4 precedence cleanly so Antigravity
+ * language_server and Electron apps never hit Error 403 (Forbidden)!!1 on IPv6.
+ */
+export async function ensureGoogleApiIpv4Preference(): Promise<boolean> {
+  if (process.platform !== 'linux') return false;
+  if (!ipv6ProbePromise) {
+    ipv6ProbePromise = (async () => {
+      const [v6Code, v4Code] = await Promise.all([
+        probeHostHttpCode('daily-cloudcode-pa.googleapis.com', 6),
+        probeHostHttpCode('daily-cloudcode-pa.googleapis.com', 4),
+      ]);
+      const v4Ok = v4Code > 0 && v4Code !== 403 && v4Code < 500;
+      const v6Bad = v6Code === 403 || v6Code === 0;
+      if (v4Ok && v6Bad) {
+        googleIpv6Blocked = true;
+        patchGaiConfPreferIpv4();
+      }
+      return googleIpv6Blocked;
+    })();
+  }
+  return ipv6ProbePromise;
+}
+
+export function applyIpv4PreferenceToEnv<T extends Record<string, string | undefined>>(env: T): T {
+  if (process.platform !== 'linux') return env;
+  if (!googleIpv6Blocked) {
+    try {
+      if (fs.existsSync('/etc/gai.conf')) {
+        const txt = fs.readFileSync('/etc/gai.conf', 'utf-8');
+        if (txt.split(/\r?\n/).some((l) => /^\s*precedence\s+::ffff:0:0\/96\s+100\b/.test(l))) {
+          googleIpv6Blocked = true;
+        }
+      }
+    } catch {}
+  }
+  const mut = env as Record<string, string | undefined>;
+  const existingGodebug = String(mut.GODEBUG || '');
+  if (!/\bnetdns=/.test(existingGodebug)) {
+    mut.GODEBUG = existingGodebug ? `${existingGodebug},netdns=cgo` : 'netdns=cgo';
+  }
+  const existingNodeOpts = String(mut.NODE_OPTIONS || '');
+  if (!existingNodeOpts.includes('--dns-result-order=')) {
+    mut.NODE_OPTIONS = existingNodeOpts
+      ? `${existingNodeOpts} --dns-result-order=ipv4first`
+      : '--dns-result-order=ipv4first';
+  }
+  return env;
+}
+
+let cachedDevShmOk: boolean | null = null;
+function hasSufficientDevShm(): boolean {
+  if (cachedDevShmOk !== null) return cachedDevShmOk;
+  try {
+    const stat = fs.statfsSync('/dev/shm');
+    const freeBytes = Number(stat.bavail) * Number(stat.bsize);
+    cachedDevShmOk = freeBytes >= 256 * 1024 * 1024;
+  } catch {
+    cachedDevShmOk = false;
+  }
+  return cachedDevShmOk;
+}
+
+function buildChromiumRuntimeFlags(
+  isRoot: boolean,
+  isBrowser: boolean,
+  alreadyHas: (flag: string) => boolean
+): string[] {
+  const flags: string[] = [];
+  if (isRoot && !alreadyHas('--no-sandbox')) flags.push('--no-sandbox');
+  if (isBrowser) {
+    if (!alreadyHas('--test-type')) flags.push('--test-type');
+    if (!alreadyHas('--no-first-run')) flags.push('--no-first-run');
+    if (!alreadyHas('--no-default-browser-check')) flags.push('--no-default-browser-check');
+    if (!alreadyHas('--disable-background-networking')) flags.push('--disable-background-networking');
+    if (!alreadyHas('--disable-sync')) flags.push('--disable-sync');
+    if (!alreadyHas('--metrics-recording-only')) flags.push('--metrics-recording-only');
+    if (!alreadyHas('--no-pings')) flags.push('--no-pings');
+  }
+  if (!alreadyHas('--disable-gpu')) flags.push('--disable-gpu');
+  if (!alreadyHas('--disable-gpu-compositing')) flags.push('--disable-gpu-compositing');
+  if (!alreadyHas('--disable-gpu-vsync')) flags.push('--disable-gpu-vsync');
+  if (!alreadyHas('--num-raster-threads')) flags.push('--num-raster-threads=2');
+  if (!alreadyHas('--disable-smooth-scrolling')) flags.push('--disable-smooth-scrolling');
+  if (!alreadyHas('--disable-features')) {
+    flags.push(
+      '--disable-features=UseChromeOSDirectVideoDecoder,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion'
+    );
+  }
+  if (!hasSufficientDevShm() && !alreadyHas('--disable-dev-shm-usage')) {
+    flags.push('--disable-dev-shm-usage');
+  }
+  return flags;
+}
 
 export interface X11StreamConfig {
   fps?: number;
@@ -255,6 +397,7 @@ interface ViewStream {
   streamerProc: ChildProcess | null;
   streamerMode: 'xdamage' | 'ffmpeg';
   resizeTimer: ReturnType<typeof setTimeout> | null;
+  clientAckActive: boolean;
   subscribers: Set<LinuxAppSubscriber>;
 }
 
@@ -398,12 +541,12 @@ export class LinuxAppSession {
     const dims = clampDim(opts.width || 720, opts.height || 480, this.screenWidth, this.screenHeight);
     this.width = dims.width;
     this.height = dims.height;
-    this.fps = Math.max(8, Math.min(35, opts.fps || 30));
+    this.fps = Math.max(8, Math.min(60, opts.fps || 45));
     this.quality = Math.max(2, Math.min(10, opts.quality || 4));
     this.maxQuality = Math.max(45, Math.min(95, opts.maxQuality ?? Math.max(60, Math.min(88, 92 - this.quality * 4))));
     this.motionQuality = Math.max(30, Math.min(this.maxQuality, opts.motionQuality ?? Math.max(40, this.maxQuality - 24)));
     this.dynamicDrop = opts.dynamicDrop ?? true;
-    this.settleMs = Math.max(120, Math.min(1200, opts.settleMs ?? 300));
+    this.settleMs = Math.max(100, Math.min(1200, opts.settleMs ?? 200));
     this.enableAudio = opts.enableAudio ?? true;
     this.tempDir = path.join(
       os.tmpdir(),
@@ -427,13 +570,14 @@ export class LinuxAppSession {
       streamerProc: null,
       streamerMode: 'xdamage',
       resizeTimer: null,
+      clientAckActive: false,
       subscribers: new Set(),
     });
   }
 
   public updateStreamConfig(cfg: X11StreamConfig): void {
     if (typeof cfg.fps === 'number' && Number.isFinite(cfg.fps)) {
-      this.fps = Math.max(8, Math.min(35, Math.round(cfg.fps)));
+      this.fps = Math.max(8, Math.min(60, Math.round(cfg.fps)));
     }
     if (typeof cfg.maxQuality === 'number' && Number.isFinite(cfg.maxQuality)) {
       this.maxQuality = Math.max(45, Math.min(95, Math.round(cfg.maxQuality)));
@@ -445,7 +589,7 @@ export class LinuxAppSession {
       this.dynamicDrop = cfg.dynamicDrop;
     }
     if (typeof cfg.settleMs === 'number' && Number.isFinite(cfg.settleMs)) {
-      this.settleMs = Math.max(120, Math.min(1200, Math.round(cfg.settleMs)));
+      this.settleMs = Math.max(100, Math.min(1200, Math.round(cfg.settleMs)));
     }
     const payload =
       JSON.stringify({
@@ -470,34 +614,43 @@ export class LinuxAppSession {
     const obRcPath = path.join(this.tempDir, 'rc.xml');
     fs.writeFileSync(obRcPath, buildOpenboxRcXml(), 'utf-8');
 
-    // 1. Start lightweight Xvfb sized to desktop viewport with XComposite for occluded views
-    this.xvfbProc = spawn(
-      'Xvfb',
-      [
-        this.displayStr,
-        '-screen',
-        '0',
-        `${this.screenWidth}x${this.screenHeight}x24`,
-        '-ac',
-        '+extension',
-        'RANDR',
-        '+extension',
-        'DAMAGE',
-        '+extension',
-        'XFIXES',
-        '+extension',
-        'Composite',
-        '+render',
-        '-noreset',
-      ],
-      { stdio: 'ignore' }
-    );
+    // Run IPv6/IPv4 Google API check + start Xvfb concurrently so first launch pays zero extra latency
+    const [, ] = await Promise.all([
+      ensureGoogleApiIpv4Preference(),
+      (async () => {
+        this.xvfbProc = spawn(
+          'Xvfb',
+          [
+            this.displayStr,
+            '-screen',
+            '0',
+            `${this.screenWidth}x${this.screenHeight}x24`,
+            '-dpi',
+            '96',
+            '-nolisten',
+            'tcp',
+            '-ac',
+            '+extension',
+            'RANDR',
+            '+extension',
+            'DAMAGE',
+            '+extension',
+            'XFIXES',
+            '+extension',
+            'Composite',
+            '+render',
+            '-noreset',
+          ],
+          { stdio: 'ignore' }
+        );
 
-    const xSocket = `/tmp/.X11-unix/X${this.displayNum}`;
-    for (let i = 0; i < 40; i++) {
-      if (fs.existsSync(xSocket)) break;
-      await new Promise((r) => setTimeout(r, 60));
-    }
+        const xSocket = `/tmp/.X11-unix/X${this.displayNum}`;
+        for (let i = 0; i < 60; i++) {
+          if (fs.existsSync(xSocket)) break;
+          await new Promise((r) => setTimeout(r, 35));
+        }
+      })(),
+    ]);
 
     const { binDir, xdgConfigHome, xdgDataHome } = ensureDesktopUrlHandlerShims(
       this.desktopDataRoot,
@@ -507,7 +660,7 @@ export class LinuxAppSession {
     const sysPath =
       process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
-    const baseEnv: NodeJS.ProcessEnv = {
+    const baseEnv: NodeJS.ProcessEnv = applyIpv4PreferenceToEnv({
       ...process.env,
       PATH: `${binDir}:${sysPath}`,
       BROWSER: path.join(binDir, 'tamga-open-url'),
@@ -533,7 +686,7 @@ export class LinuxAppSession {
       GTK_CSD: '0',
       NO_AT_BRIDGE: '1',
       XCURSOR_THEME: 'DMZ-White',
-    };
+    });
     delete baseEnv.DBUS_SESSION_BUS_ADDRESS;
     this.baseEnv = baseEnv;
 
@@ -717,6 +870,7 @@ export class LinuxAppSession {
           streamerProc: null,
           streamerMode: 'xdamage',
           resizeTimer: null,
+          clientAckActive: false,
           subscribers: new Set(),
         };
         this.views.set(msg.view, view);
@@ -859,7 +1013,7 @@ export class LinuxAppSession {
     fs.mkdirSync(path.join(xdgConfigHome, 'gtk-3.0'), { recursive: true });
     fs.mkdirSync(path.join(xdgConfigHome, 'gtk-4.0'), { recursive: true });
 
-    const gtkIni = '[Settings]\ngtk-decoration-layout=:\ngtk-dialogs-use-header=0\n';
+    const gtkIni = '[Settings]\ngtk-decoration-layout=:\ngtk-dialogs-use-header=0\ngtk-enable-animations=0\n';
     try {
       fs.writeFileSync(path.join(xdgConfigHome, 'gtk-3.0', 'settings.ini'), gtkIni, 'utf-8');
       fs.writeFileSync(path.join(xdgConfigHome, 'gtk-4.0', 'settings.ini'), gtkIni, 'utf-8');
@@ -1039,31 +1193,16 @@ export class LinuxAppSession {
         } catch {}
       }
 
-      const extraFlags: string[] = [];
-      if (isRoot && !finalCmd.includes('--no-sandbox')) {
-        extraFlags.push('--no-sandbox');
-      }
-      if (isChromiumBrowser) {
-        if (!finalCmd.includes('--test-type')) {
-          extraFlags.push('--test-type');
-        }
-        if (!finalCmd.includes('--no-first-run')) {
-          extraFlags.push('--no-first-run');
-        }
-        if (!finalCmd.includes('--no-default-browser-check')) {
-          extraFlags.push('--no-default-browser-check');
-        }
-        if (!extraNewWindow && !finalCmd.includes('--window-size')) {
-          extraFlags.push(`--window-size=${this.width},${this.height}`);
-        }
+      const extraFlags = buildChromiumRuntimeFlags(isRoot, isChromiumBrowser, (f) =>
+        finalCmd.includes(f)
+      );
+      if (isChromiumBrowser && !extraNewWindow && !finalCmd.includes('--window-size')) {
+        extraFlags.push(`--window-size=${this.width},${this.height}`);
       }
       const supportsUserDataDir =
         isChromiumBrowser || baseBin === 'code' || baseBin === 'codium';
       if (supportsUserDataDir && !finalCmd.includes('--user-data-dir')) {
         extraFlags.push(`--user-data-dir="${profileDir}"`);
-      }
-      if (!finalCmd.includes('--disable-gpu')) {
-        extraFlags.push('--disable-gpu', '--disable-dev-shm-usage');
       }
       if ((baseBin === 'code' || baseBin === 'codium') && !finalCmd.includes('--verbose')) {
         extraFlags.push('--verbose');
@@ -1171,7 +1310,10 @@ export class LinuxAppSession {
         'microsoft-edge-stable',
       ].includes(baseBin)
     ) {
-      cmd = `${this.command} ${isRoot ? '--no-sandbox' : ''} --test-type --no-first-run --no-default-browser-check --user-data-dir="${profileDir}" --disable-gpu --disable-dev-shm-usage ${safeUrl}`;
+      const chromeFlags = buildChromiumRuntimeFlags(isRoot, true, (f) =>
+        this.command.includes(f)
+      );
+      cmd = `${this.command} ${chromeFlags.join(' ')} --user-data-dir="${profileDir}" ${safeUrl}`;
     }
 
     const child = spawn('/bin/bash', ['-c', cmd], {
@@ -1187,7 +1329,7 @@ export class LinuxAppSession {
       stdio: 'ignore',
     });
     child.unref();
-    setTimeout(() => this.requestRefresh('main'), 250).unref();
+    setTimeout(() => this.requestRefresh('main'), 200).unref();
   }
 
   public deliverUriArgument(uri: string): void {
@@ -1201,14 +1343,11 @@ export class LinuxAppSession {
       this.needsNoSandbox || ['antigravity', 'code', 'codium', 'obsidian', 'discord'].includes(baseBin);
 
     const flags: string[] = [];
-    if (isElectronApp && isRoot) {
-      flags.push('--no-sandbox');
-    }
     if (baseBin === 'code' || baseBin === 'codium') {
       flags.push(`--user-data-dir="${profileDir}"`, '--open-url');
     }
     if (isElectronApp) {
-      flags.push('--disable-gpu', '--disable-dev-shm-usage');
+      flags.push(...buildChromiumRuntimeFlags(isRoot, false, () => false));
     }
 
     const cmd = `${this.command} ${flags.join(' ')} ${safeUri}`.replace(/\s+/g, ' ').trim();
@@ -1225,7 +1364,7 @@ export class LinuxAppSession {
       stdio: 'ignore',
     });
     child.unref();
-    setTimeout(() => this.requestRefresh('main'), 250).unref();
+    setTimeout(() => this.requestRefresh('main'), 200).unref();
   }
 
   public openFiles(realPaths: string[]): void {
@@ -1318,11 +1457,16 @@ export class LinuxAppSession {
       if (msg) console.error(`[x11_streamer ${this.displayStr}/${view.viewId}]`, msg);
     });
 
-    let acc = Buffer.alloc(0);
+    let accChunks: Buffer[] = [];
+    let accLen = 0;
 
     proc.stdout?.on('data', (chunk: Buffer) => {
       if (this.closed || !this.views.has(view.viewId)) return;
-      acc = Buffer.concat([acc, chunk]);
+      if (chunk.length === 0) return;
+
+      let acc = accChunks.length === 0 ? chunk : Buffer.concat([...accChunks, chunk], accLen + chunk.length);
+      accChunks = [];
+      accLen = 0;
 
       while (acc.length >= 4) {
         const frameLen = acc.readUInt32BE(0);
@@ -1333,20 +1477,19 @@ export class LinuxAppSession {
         if (acc.length < 4 + frameLen) {
           break;
         }
-        const frame = Buffer.from(acc.subarray(4, 4 + frameLen));
+        const frame = acc.subarray(4, 4 + frameLen);
         acc = acc.subarray(4 + frameLen);
 
         if (!view.hasGeometry) {
-          // Wait until the X11 app actually maps a window so clients never flash blank black frames
           if (proc.stdin?.writable) {
             try { proc.stdin.write('a\n'); } catch {}
           }
           continue;
         }
 
-        // Only cache full keyframes (0x01) as lastFrame so newly joining clients never start with a partial delta tile
+        // Cache full keyframes (0x01) as a detached copy so joining clients never receive partial rects
         if (frame[0] === 0x01) {
-          view.lastFrame = frame;
+          view.lastFrame = Buffer.from(frame);
         }
 
         if (view.subscribers.size === 0) {
@@ -1360,7 +1503,7 @@ export class LinuxAppSession {
         const sendAckOnce = () => {
           if (!ackSent) {
             ackSent = true;
-            if (!this.closed && proc.stdin?.writable) {
+            if (!this.closed && !view.clientAckActive && proc.stdin?.writable) {
               try { proc.stdin.write('a\n'); } catch {}
             }
           }
@@ -1369,7 +1512,14 @@ export class LinuxAppSession {
         for (const sub of view.subscribers) {
           sub.onVideoFrame(frame, sendAckOnce);
         }
-        setTimeout(sendAckOnce, 120).unref();
+        if (!view.clientAckActive) {
+          setTimeout(sendAckOnce, 120).unref();
+        }
+      }
+
+      if (acc.length > 0) {
+        accChunks = [acc];
+        accLen = acc.length;
       }
     });
 
@@ -1487,6 +1637,16 @@ export class LinuxAppSession {
     }
   }
 
+  public ackVideoFrame(viewId = 'main'): void {
+    if (this.closed) return;
+    const view = this.views.get(viewId || 'main') || this.views.get('main');
+    if (!view || view.streamerMode !== 'xdamage' || !view.streamerProc?.stdin?.writable) return;
+    view.clientAckActive = true;
+    try {
+      view.streamerProc.stdin.write('k\n');
+    } catch {}
+  }
+
   public subscribeView(viewId: string, sub: LinuxAppSubscriber): () => void {
     const view = this.views.get(viewId || 'main') || this.views.get('main');
     if (!view) {
@@ -1511,6 +1671,9 @@ export class LinuxAppSession {
     this.requestRefresh(view.viewId);
     return () => {
       view.subscribers.delete(sub);
+      if (view.subscribers.size === 0) {
+        view.clientAckActive = false;
+      }
     };
   }
 

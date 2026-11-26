@@ -57,6 +57,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const lastMoveTsRef = useRef(0);
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
+  const moveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchStateRef = useRef<{ lastY: number; moved: boolean } | null>(null);
   const dimsRef = useRef({ width: 720, height: 480 });
   const hasGeometryRef = useRef(false);
@@ -137,17 +139,21 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    type QueuedFrame = {
-      kind: 'full' | 'rect';
-      rx: number;
-      ry: number;
+    type PaintPatch = { rx: number; ry: number; bitmap: ImageBitmap };
+    type DecodedSlot = {
+      seq: number;
+      kind: 'full' | 'patches';
       fullW: number;
       fullH: number;
-      bitmapPromise: Promise<ImageBitmap>;
+      patches?: PaintPatch[];
+      failed?: boolean;
     };
 
-    const queue: QueuedFrame[] = [];
-    let draining = false;
+    const readySlots = new Map<number, DecodedSlot>();
+    let nextSeq = 1;
+    let nextPaintSeq = 1;
+    let rafId: number | null = null;
+    let pendingAckCount = 0;
 
     const getCtx = (canvas: HTMLCanvasElement) => {
       if (!ctxRef.current) {
@@ -158,84 +164,184 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       return ctxRef.current;
     };
 
-    const drainQueue = async () => {
-      if (draining) return;
-      draining = true;
-      try {
-        while (queue.length > 0 && !closed) {
-          const item = queue.shift()!;
-          let bitmap: ImageBitmap | null = null;
-          try {
-            bitmap = await item.bitmapPromise;
-            const canvas = canvasRef.current;
-            if (canvas && !closed) {
-              const targetW = item.kind === 'full' ? bitmap.width : item.fullW;
-              const targetH = item.kind === 'full' ? bitmap.height : item.fullH;
-              if (targetW > 0 && targetH > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
-                canvas.width = targetW;
-                canvas.height = targetH;
-                ctxRef.current = null;
-              }
-              const ctx = getCtx(canvas);
-              if (ctx) {
-                if (item.kind === 'full') {
-                  ctx.drawImage(bitmap, 0, 0);
-                } else {
-                  ctx.drawImage(bitmap, item.rx, item.ry);
-                }
-              }
-              if (!readyFiredRef.current) {
-                readyFiredRef.current = true;
-                onReadyRef.current?.();
-              }
-            }
-          } catch {
-            // ignore malformed frame
-          } finally {
-            bitmap?.close();
-          }
+    const disposeSlot = (slot: DecodedSlot) => {
+      if (slot.patches) {
+        for (const p of slot.patches) {
+          try { p.bitmap.close(); } catch {}
         }
-      } finally {
-        draining = false;
+      }
+    };
+
+    const flushAcks = () => {
+      if (pendingAckCount <= 0 || closed || ws.readyState !== WebSocket.OPEN) {
+        pendingAckCount = 0;
+        return;
+      }
+      const count = pendingAckCount;
+      pendingAckCount = 0;
+      for (let i = 0; i < count; i++) {
+        ws.send('{"type":"ack"}');
+      }
+    };
+
+    const paintLoop = () => {
+      rafId = null;
+      if (closed) return;
+      const canvas = canvasRef.current;
+      let paintedAny = false;
+
+      while (readySlots.has(nextPaintSeq)) {
+        const slot = readySlots.get(nextPaintSeq)!;
+        readySlots.delete(nextPaintSeq);
+        nextPaintSeq += 1;
+
+        if (!slot.failed && canvas && slot.patches && slot.patches.length > 0) {
+          const targetW =
+            slot.kind === 'full' ? slot.patches[0].bitmap.width : slot.fullW;
+          const targetH =
+            slot.kind === 'full' ? slot.patches[0].bitmap.height : slot.fullH;
+          if (targetW > 0 && targetH > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
+            canvas.width = targetW;
+            canvas.height = targetH;
+            ctxRef.current = null;
+          }
+          const ctx = getCtx(canvas);
+          if (ctx) {
+            for (const p of slot.patches) {
+              ctx.drawImage(p.bitmap, p.rx, p.ry);
+            }
+          }
+          paintedAny = true;
+        }
+        disposeSlot(slot);
+      }
+
+      if (paintedAny && !readyFiredRef.current) {
+        readyFiredRef.current = true;
+        onReadyRef.current?.();
+      }
+      flushAcks();
+    };
+
+    const schedulePaint = () => {
+      if (rafId === null && !closed) {
+        rafId = window.requestAnimationFrame(paintLoop);
+      }
+    };
+
+    const dropStaleBefore = (minSeq: number) => {
+      if (nextPaintSeq < minSeq) {
+        nextPaintSeq = minSeq;
+      }
+      for (const [k, slot] of readySlots.entries()) {
+        if (k < minSeq) {
+          readySlots.delete(k);
+          disposeSlot(slot);
+        }
       }
     };
 
     const enqueueFullFrame = (bytes: Uint8Array) => {
-      // A newer full keyframe supersedes any older queued frames/patches -> drop stale frames for lowest latency
-      while (queue.length > 0) {
-        const stale = queue.shift()!;
-        stale.bitmapPromise.then((b) => b.close()).catch(() => {});
-      }
+      const seq = nextSeq++;
+      dropStaleBefore(seq);
+      pendingAckCount += 1;
       const blob = new Blob([bytes as BlobPart], { type: 'image/jpeg' });
-      queue.push({
-        kind: 'full',
-        rx: 0,
-        ry: 0,
-        fullW: 0,
-        fullH: 0,
-        bitmapPromise: createImageBitmap(blob),
-      });
-      drainQueue();
+      createImageBitmap(blob)
+        .then((bitmap) => {
+          if (closed || seq < nextPaintSeq) {
+            bitmap.close();
+            flushAcks();
+            return;
+          }
+          readySlots.set(seq, {
+            seq,
+            kind: 'full',
+            fullW: bitmap.width,
+            fullH: bitmap.height,
+            patches: [{ rx: 0, ry: 0, bitmap }],
+          });
+          schedulePaint();
+        })
+        .catch(() => {
+          readySlots.set(seq, { seq, kind: 'full', fullW: 0, fullH: 0, failed: true });
+          schedulePaint();
+        });
     };
 
     const enqueueRectFrame = (buf: ArrayBuffer) => {
       if (buf.byteLength <= 13) return;
+      const seq = nextSeq++;
+      pendingAckCount += 1;
       const dv = new DataView(buf);
       const rx = dv.getUint16(1, false);
       const ry = dv.getUint16(3, false);
       const fullW = dv.getUint16(9, false);
       const fullH = dv.getUint16(11, false);
-      const jpegBytes = new Uint8Array(buf, 13);
-      const blob = new Blob([jpegBytes as BlobPart], { type: 'image/jpeg' });
-      queue.push({
-        kind: 'rect',
-        rx,
-        ry,
-        fullW,
-        fullH,
-        bitmapPromise: createImageBitmap(blob),
-      });
-      drainQueue();
+      const blob = new Blob([new Uint8Array(buf, 13) as BlobPart], { type: 'image/jpeg' });
+      createImageBitmap(blob)
+        .then((bitmap) => {
+          if (closed || seq < nextPaintSeq) {
+            bitmap.close();
+            flushAcks();
+            return;
+          }
+          readySlots.set(seq, {
+            seq,
+            kind: 'patches',
+            fullW,
+            fullH,
+            patches: [{ rx, ry, bitmap }],
+          });
+          schedulePaint();
+        })
+        .catch(() => {
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+          schedulePaint();
+        });
+    };
+
+    const enqueueMultiRectFrame = (buf: ArrayBuffer) => {
+      if (buf.byteLength <= 7) return;
+      const dv = new DataView(buf);
+      const count = dv.getUint16(1, false);
+      const fullW = dv.getUint16(3, false);
+      const fullH = dv.getUint16(5, false);
+      if (count === 0) return;
+
+      const seq = nextSeq++;
+      pendingAckCount += 1;
+      let off = 7;
+      const jobs: Array<Promise<PaintPatch>> = [];
+      for (let i = 0; i < count; i++) {
+        if (off + 12 > buf.byteLength) break;
+        const rx = dv.getUint16(off, false);
+        const ry = dv.getUint16(off + 2, false);
+        const jlen = dv.getUint32(off + 8, false);
+        off += 12;
+        if (jlen <= 0 || off + jlen > buf.byteLength) break;
+        const blob = new Blob([new Uint8Array(buf, off, jlen) as BlobPart], { type: 'image/jpeg' });
+        off += jlen;
+        jobs.push(createImageBitmap(blob).then((bitmap) => ({ rx, ry, bitmap })));
+      }
+      if (jobs.length === 0) {
+        readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+        schedulePaint();
+        return;
+      }
+      Promise.all(jobs)
+        .then((patches) => {
+          if (closed || seq < nextPaintSeq) {
+            for (const p of patches) p.bitmap.close();
+            flushAcks();
+            return;
+          }
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, patches });
+          schedulePaint();
+        })
+        .catch(() => {
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+          schedulePaint();
+        });
     };
 
     ws.onopen = () => {
@@ -255,6 +361,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           enqueueFullFrame(new Uint8Array(buf, 1));
         } else if (header === 0x03) {
           enqueueRectFrame(buf);
+        } else if (header === 0x04) {
+          enqueueMultiRectFrame(buf);
         } else if (header === 0x02) {
           remoteAudio.pushPcm16(buf.slice(1));
         }
@@ -300,9 +408,14 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 
     return () => {
       closed = true;
-      while (queue.length > 0) {
-        const stale = queue.shift()!;
-        stale.bitmapPromise.then((b) => b.close()).catch(() => {});
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      for (const slot of readySlots.values()) {
+        disposeSlot(slot);
+      }
+      readySlots.clear();
+      if (moveTimerRef.current) {
+        clearTimeout(moveTimerRef.current);
+        moveTimerRef.current = null;
       }
       ws.close();
       wsRef.current = null;
@@ -660,6 +773,11 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           remoteAudio.ensureContext();
           focusInputSink();
           sendInput({ type: 'focus' });
+          if (moveTimerRef.current) {
+            clearTimeout(moveTimerRef.current);
+            moveTimerRef.current = null;
+          }
+          pendingMoveRef.current = null;
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch') {
             touchStateRef.current = { lastY: e.clientY, moved: false };
@@ -669,9 +787,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           sendInput({ type: 'mousedown', x, y, button: mapButton(e.button) });
         }}
         onPointerMove={(e) => {
-          const now = performance.now();
-          if (now - lastMoveTsRef.current < 16) return;
-          lastMoveTsRef.current = now;
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch' && touchStateRef.current) {
             const dy = touchStateRef.current.lastY - e.clientY;
@@ -682,10 +797,38 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             }
             return;
           }
-          sendInput({ type: 'mousemove', x, y });
+          const now = performance.now();
+          if (now - lastMoveTsRef.current >= 8) {
+            lastMoveTsRef.current = now;
+            if (moveTimerRef.current) {
+              clearTimeout(moveTimerRef.current);
+              moveTimerRef.current = null;
+            }
+            pendingMoveRef.current = null;
+            sendInput({ type: 'mousemove', x, y });
+          } else {
+            pendingMoveRef.current = { x, y };
+            if (!moveTimerRef.current) {
+              const wait = Math.max(2, 8 - (now - lastMoveTsRef.current));
+              moveTimerRef.current = setTimeout(() => {
+                moveTimerRef.current = null;
+                const next = pendingMoveRef.current;
+                pendingMoveRef.current = null;
+                if (next) {
+                  lastMoveTsRef.current = performance.now();
+                  sendInput({ type: 'mousemove', x: next.x, y: next.y });
+                }
+              }, wait);
+            }
+          }
         }}
         onPointerUp={(e) => {
           focusInputSink();
+          if (moveTimerRef.current) {
+            clearTimeout(moveTimerRef.current);
+            moveTimerRef.current = null;
+          }
+          pendingMoveRef.current = null;
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch' && touchStateRef.current) {
             const wasMoved = touchStateRef.current.moved;

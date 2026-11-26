@@ -22,10 +22,15 @@ import { hashPassword, loadConfig, saveConfig, type TamgaConfig } from './config
 import { AuthManager } from './authManager';
 import { TerminalManager } from './terminalManager';
 import { LinuxAppManager } from './linuxAppManager';
-import { LinuxDisplayBridge, ensureDesktopUrlHandlerShims } from './linuxDisplayBridge';
+import {
+  LinuxDisplayBridge,
+  applyIpv4PreferenceToEnv,
+  ensureDesktopUrlHandlerShims,
+  ensureGoogleApiIpv4Preference,
+} from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.9.0';
+export const TAMGA_VERSION = '2.0.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -131,6 +136,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   linuxDisplayBridge.setClipboardBroadcastCallback((dId, text, sourceSessionId) => {
     broadcastToDesktop(dId, { type: 'desktop_clipboard', text, sourceSessionId });
   });
+  ensureGoogleApiIpv4Preference().catch(() => {});
   const bootStartedAt = Date.now();
 
   const vfsWatchers = new Map<string, fs.FSWatcher[]>();
@@ -369,10 +375,10 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
               viewportHeight: 820,
               fps: streamPrefs?.x11Fps ?? config.linuxApps.fps,
               quality: config.linuxApps.quality,
-              maxQuality: streamPrefs?.x11MaxQuality ?? 85,
+              maxQuality: streamPrefs?.x11MaxQuality ?? 86,
               motionQuality: streamPrefs?.x11MotionQuality ?? 58,
               dynamicDrop: streamPrefs?.dynamicQualityDrop ?? true,
-              settleMs: streamPrefs?.settleDelayMs ?? 300,
+              settleMs: streamPrefs?.settleDelayMs ?? 200,
               enableAudio: (streamPrefs?.audioEnabled ?? config.linuxApps.audio) && runtime.hasAudio,
             });
             broadcastToDesktop(desktopId, {
@@ -544,10 +550,10 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         viewportHeight: Number(req.body?.viewportHeight) || undefined,
         fps: streamPrefs?.x11Fps ?? config.linuxApps.fps,
         quality: config.linuxApps.quality,
-        maxQuality: streamPrefs?.x11MaxQuality ?? 85,
+        maxQuality: streamPrefs?.x11MaxQuality ?? 86,
         motionQuality: streamPrefs?.x11MotionQuality ?? 58,
         dynamicDrop: streamPrefs?.dynamicQualityDrop ?? true,
-        settleMs: streamPrefs?.settleDelayMs ?? 300,
+        settleMs: streamPrefs?.settleDelayMs ?? 200,
         enableAudio: (streamPrefs?.audioEnabled ?? config.linuxApps.audio) && runtime.hasAudio,
       });
 
@@ -1086,7 +1092,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   }
 
   function sendBinary(ws: WebSocket, packet: Buffer, cb?: () => void, onDrop?: () => void) {
-    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 262_144) {
+    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 524_288) {
       ws.send(packet, { binary: true, compress: false }, () => cb?.());
     } else {
       onDrop?.();
@@ -1264,21 +1270,28 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     );
     const sysPath =
       process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-    const session = terminalManager.createSession(sessionId, desktopId, startDir, cols, rows, {
-      PATH: `${binDir}:${sysPath}`,
-      LANG: 'C.UTF-8',
-      LC_ALL: 'C.UTF-8',
-      BROWSER: path.join(binDir, 'tamga-open-url'),
-      TAMGA_DESKTOP_ID: desktopId,
-      TAMGA_SESSION_ID: sessionId,
-      TAMGA_APP_ID: 'terminal',
-      ...(bridgeEndpoint
-        ? {
-            TAMGA_BRIDGE_URL: bridgeEndpoint.url,
-            TAMGA_BRIDGE_TOKEN: bridgeEndpoint.token,
-          }
-        : {}),
-    });
+    const session = terminalManager.createSession(
+      sessionId,
+      desktopId,
+      startDir,
+      cols,
+      rows,
+      applyIpv4PreferenceToEnv({
+        PATH: `${binDir}:${sysPath}`,
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C.UTF-8',
+        BROWSER: path.join(binDir, 'tamga-open-url'),
+        TAMGA_DESKTOP_ID: desktopId,
+        TAMGA_SESSION_ID: sessionId,
+        TAMGA_APP_ID: 'terminal',
+        ...(bridgeEndpoint
+          ? {
+              TAMGA_BRIDGE_URL: bridgeEndpoint.url,
+              TAMGA_BRIDGE_TOKEN: bridgeEndpoint.token,
+            }
+          : {}),
+      })
+    );
 
     const listener = (ev: { type: 'output' | 'exit'; data?: string; code?: number }) => {
       sendJson(ws, ev);
@@ -1305,7 +1318,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     });
   });
 
-  // 3. Real Native Linux GUI App Stream WS (Binary 0x01 Video + 0x02 Audio + JSON Input/Title/Cursor/Window)
+  // 3. Real Native Linux GUI App Stream WS (Binary 0x01/0x03/0x04 Video + 0x02 Audio + JSON Input/Ack/Title/Cursor/Window)
   appWss.on('connection', (ws, req) => {
     const reqUrl = new URL(req.url || '/ws/app', 'http://localhost');
     const sessionId = reqUrl.searchParams.get('sessionId') || '';
@@ -1341,7 +1354,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(raw.toString('utf-8'));
-        if (msg.type === 'resize') {
+        if (msg.type === 'ack') {
+          session.ackVideoFrame(viewId);
+        } else if (msg.type === 'resize') {
           session.resizeView(viewId, Number(msg.width), Number(msg.height));
         } else if (msg.type === 'focus') {
           session.focusView(viewId);

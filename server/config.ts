@@ -110,7 +110,7 @@ export function createDefaultConfig(overrides?: Partial<{
     },
     linuxApps: {
       enabled: process.platform === 'linux',
-      fps: 30,
+      fps: 45,
       quality: 4,
       audio: true,
       allowInstall: true,

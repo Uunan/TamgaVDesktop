@@ -49,7 +49,7 @@ export const STREAM_PRESETS: Record<
 > = {
   performance: {
     label: 'Hız',
-    tag: '1x • Düşük Gecikme',
+    tag: '60 FPS • Düşük Gecikme',
     config: {
       preset: 'performance',
       dynamicQualityDrop: true,
@@ -57,15 +57,15 @@ export const STREAM_PRESETS: Record<
       motionScale: 0.5,
       maxDpr: 1,
       settlePng: false,
-      settleDelayMs: 220,
-      x11Fps: 24,
-      x11MaxQuality: 74,
-      x11MotionQuality: 44,
+      settleDelayMs: 160,
+      x11Fps: 60,
+      x11MaxQuality: 76,
+      x11MotionQuality: 46,
     },
   },
   balanced: {
     label: 'Dengeli',
-    tag: '2x • Akıllı',
+    tag: '45 FPS • Akıllı',
     config: {
       preset: 'balanced',
       dynamicQualityDrop: true,
@@ -73,15 +73,15 @@ export const STREAM_PRESETS: Record<
       motionScale: 0.75,
       maxDpr: 2,
       settlePng: true,
-      settleDelayMs: 300,
-      x11Fps: 30,
-      x11MaxQuality: 85,
+      settleDelayMs: 200,
+      x11Fps: 45,
+      x11MaxQuality: 86,
       x11MotionQuality: 58,
     },
   },
   ultra: {
     label: 'Maksimum',
-    tag: '2x • Kayıpsız',
+    tag: '60 FPS • Kayıpsız',
     config: {
       preset: 'ultra',
       dynamicQualityDrop: false,
@@ -89,8 +89,8 @@ export const STREAM_PRESETS: Record<
       motionScale: 1,
       maxDpr: 2,
       settlePng: true,
-      settleDelayMs: 240,
-      x11Fps: 30,
+      settleDelayMs: 180,
+      x11Fps: 60,
       x11MaxQuality: 92,
       x11MotionQuality: 84,
     },
@@ -553,9 +553,10 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     </div>
                     <input
                       type="range"
-                      min={10}
-                      max={30}
-                      step={2}
+                      data-testid="stream-x11-fps"
+                      min={15}
+                      max={60}
+                      step={5}
                       value={stream.x11Fps}
                       onChange={(e) => updateStream({ x11Fps: Number(e.target.value) })}
                       style={{ accentColor: 'var(--os-accent-bg)' }}
@@ -785,31 +786,97 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 </div>
 
                 <Row
-                  label="Boyut"
+                  label="Hızlı Boyut Şablonu"
+                  tip="Dock yüksekliği ve simge boyutunu tek dokunuşta ayarlamanızı sağlar."
                   right={
                     <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
                       {(
                         [
-                          ['sm', 'Küçük'],
-                          ['md', 'Orta'],
-                          ['lg', 'Büyük'],
+                          { sz: 'sm', label: 'Kompakt (1.0x)', scale: 1.0 },
+                          { sz: 'md', label: 'Varsayılan (1.4x)', scale: 1.4 },
+                          { sz: 'lg', label: 'Geniş (1.65x)', scale: 1.65 },
                         ] as const
-                      ).map(([sz, label]) => (
-                        <button
-                          key={sz}
-                          onClick={() => updateDock({ size: sz })}
-                          className={`px-2.5 py-1 rounded-md text-[11px] ${
-                            dock.size === sz
-                              ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
-                              : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
+                      ).map((item) => {
+                        const isMatch =
+                          Math.abs((dock.barScale ?? 1.4) - item.scale) < 0.04 &&
+                          Math.abs((dock.iconScale ?? 1.4) - item.scale) < 0.04;
+                        return (
+                          <button
+                            key={item.sz}
+                            data-testid={`dock-size-preset-${item.sz}`}
+                            onClick={() =>
+                              updateDock({
+                                size: item.sz,
+                                barScale: item.scale,
+                                iconScale: item.scale,
+                              })
+                            }
+                            className={`px-2 py-1 rounded-md text-[11px] ${
+                              isMatch
+                                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
+                                : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   }
                 />
+
+                <div className="px-4 py-3 grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Dock Büyüklüğü
+                        <InfoTip text="Dock çubuğunun yüksekliğini/kalınlığını ve düğme çerçeve boyutunu bağımsız olarak ayarlar." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {(dock.barScale ?? 1.4).toFixed(2)}x · {Math.round(54 * (dock.barScale ?? 1.4))}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="dock-bar-scale"
+                      min={0.85}
+                      max={1.8}
+                      step={0.05}
+                      value={dock.barScale ?? 1.4}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        updateDock({
+                          barScale: val,
+                          size: val < 1.15 ? 'sm' : val > 1.55 ? 'lg' : 'md',
+                        });
+                      }}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Dock Simge Büyüklüğü
+                        <InfoTip text="Dock içerisindeki uygulama simgelerinin büyüklüğünü bağımsız olarak belirler." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {(dock.iconScale ?? 1.4).toFixed(2)}x · {Math.round(23 * (dock.iconScale ?? 1.4))}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="dock-icon-scale"
+                      min={0.85}
+                      max={1.9}
+                      step={0.05}
+                      value={dock.iconScale ?? 1.4}
+                      onChange={(e) => updateDock({ iconScale: Number(e.target.value) })}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
 
                 <Row
                   label="Uygulama Etiketleri"

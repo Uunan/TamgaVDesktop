@@ -46,13 +46,14 @@ interface WindowFrameProps {
   overlayTitlebar?: boolean;
   hiddenUntilReady?: boolean;
   dockPosition?: 'bottom' | 'top' | 'left' | 'right';
+  dockReserve?: number;
   minWidth?: number;
   minHeight?: number;
   children: React.ReactNode;
 }
 
 const EDGE_PAD = 14;
-const BOTTOM_BAR_RESERVE = 76;
+const BOTTOM_BAR_RESERVE = 96;
 
 export const WindowFrame: React.FC<WindowFrameProps> = ({
   win,
@@ -68,10 +69,12 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
   overlayTitlebar = false,
   hiddenUntilReady = false,
   dockPosition = 'bottom',
+  dockReserve = BOTTOM_BAR_RESERVE,
   minWidth = 380,
   minHeight = 280,
   children,
 }) => {
+  const barReserve = Math.max(64, Math.round(dockReserve || BOTTOM_BAR_RESERVE));
   const frameRef = useRef<HTMLDivElement>(null);
   const [snapPreview, setSnapPreview] = useState<'left' | 'right' | 'max' | null>(null);
   const [isInteracting, setIsInteracting] = useState(false);
@@ -127,7 +130,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
     setIsInteracting(false);
 
     const vw = window.innerWidth;
-    const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
+    const vh = window.innerHeight - barReserve;
     const activeSnap = snapRef.current;
     snapRef.current = null;
     setSnapPreview(null);
@@ -173,7 +176,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         height: Math.round(state.currH),
       });
     }
-  }, [win.id, onUpdateBounds]);
+  }, [win.id, onUpdateBounds, barReserve]);
 
   useEffect(() => {
     const handleMoveCoords = (
@@ -187,7 +190,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
       if (!state || !el) return;
 
       const vw = window.innerWidth;
-      const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
+      const vh = window.innerHeight - barReserve;
       const dx = coordX - state.startX;
       const dy = coordY - state.startY;
 
@@ -303,7 +306,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [minWidth, minHeight, finishInteraction]);
+  }, [minWidth, minHeight, finishInteraction, barReserve]);
 
   const startExternalDrag = useCallback(
     (init: ExternalDragInit) => {
@@ -344,7 +347,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
           const vcx = rect.left + ev.clientX;
           const vcy = rect.top + ev.clientY;
           const vw = window.innerWidth;
-          const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
+          const vh = window.innerHeight - barReserve;
           const dx = ev.screenX - state.startX;
           const dy = ev.screenY - state.startY;
 
@@ -395,7 +398,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         childWin.addEventListener('mouseup', onChildUp, true);
       }
     },
-    [onFocus, finishInteraction]
+    [onFocus, finishInteraction, barReserve]
   );
 
   const setTitlebarMetrics = useCallback((top: number, height: number) => {
@@ -408,7 +411,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
     (contentWidth: number, contentHeight: number, options?: { center?: boolean }) => {
       const w = winRef.current;
       const vw = window.innerWidth;
-      const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
+      const vh = window.innerHeight - barReserve;
       const maxW = Math.max(minWidth, vw - EDGE_PAD * 2);
       const maxH = Math.max(minHeight, vh - EDGE_PAD);
       const chromeH = overlayTitlebar ? 0 : 42;
@@ -429,7 +432,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         height: targetH,
       });
     },
-    [minWidth, minHeight, overlayTitlebar, onUpdateBounds]
+    [minWidth, minHeight, overlayTitlebar, onUpdateBounds, barReserve]
   );
 
   const setMaximized = useCallback(
@@ -455,10 +458,10 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
 
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
   const vh = typeof window !== 'undefined' ? window.innerHeight : 900;
-  const padTop = dockPosition === 'top' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
-  const padBottom = dockPosition === 'bottom' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
-  const padLeft = dockPosition === 'left' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
-  const padRight = dockPosition === 'right' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
+  const padTop = dockPosition === 'top' ? barReserve : EDGE_PAD;
+  const padBottom = dockPosition === 'bottom' ? barReserve : EDGE_PAD;
+  const padLeft = dockPosition === 'left' ? barReserve : EDGE_PAD;
+  const padRight = dockPosition === 'right' ? barReserve : EDGE_PAD;
 
   const computedStyle: React.CSSProperties = win.maximized
     ? {

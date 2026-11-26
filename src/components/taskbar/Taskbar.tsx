@@ -86,6 +86,7 @@ interface TaskbarProps {
   onOpenNode: (node: VFSNode) => void;
   onToggleWindowFromTaskbar: (winId: string) => void;
   onCloseWindow: (winId: string) => void;
+  onUpdateDock?: (partial: Partial<DockPreferences>) => void;
   onLockScreen: () => void;
   onReboot: () => void;
   onLogout?: () => void;
@@ -237,8 +238,8 @@ const DockMagnifySlot: React.FC<{
       const influence = Math.cos((dist / radius) * (Math.PI / 2));
       const clampedMax = Math.max(1.05, Math.min(2, maxScale));
       scale = 1 + (clampedMax - 1) * influence;
-      lift = (scale - 1) * 14;
-      extraMargin = Number((((scale - 1) * Math.max(32, Math.min(size, 64))) * 0.46).toFixed(1));
+      lift = (scale - 1) * 16;
+      extraMargin = Number((((scale - 1) * Math.max(36, Math.min(size, 96))) * 0.46).toFixed(1));
     }
   }
 
@@ -361,6 +362,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onOpenNode,
   onToggleWindowFromTaskbar,
   onCloseWindow,
+  onUpdateDock,
   onLockScreen,
   onReboot,
   onLogout,
@@ -501,10 +503,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     year: 'numeric',
   });
 
-  // Dock layout calculations
+  // Dock layout calculations (1.4x default scaling over legacy 1.0x compact size)
   const pos = dock.position || 'bottom';
   const styleMode = dock.style || 'floating';
   const sizeMode = dock.size || 'md';
+  const legacyScale = sizeMode === 'sm' ? 1.0 : sizeMode === 'lg' ? 1.65 : 1.4;
+  const barScale = Math.max(0.85, Math.min(1.85, Number(dock.barScale ?? legacyScale) || 1.4));
+  const iconScale = Math.max(0.85, Math.min(1.95, Number(dock.iconScale ?? legacyScale) || 1.4));
   const isVertical = pos === 'left' || pos === 'right';
   const isCompactDock = styleMode === 'macos' || styleMode === 'minimal';
   const showTextLabels = !isVertical && Boolean(dock.showLabels) && styleMode !== 'minimal';
@@ -523,71 +528,61 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       : 'flyout-pop-up';
 
   const sizeTokens = useMemo(() => {
-    if (sizeMode === 'sm') {
-      return {
-        icon: 19,
-        btnSize: 'h-8 w-8',
-        btnPill: 'h-8 px-2',
-        barThickH: 'h-[46px]',
-        barThickW: 'w-[50px]',
-        pad: isVertical ? 'py-2 px-1.5' : 'px-2 py-1',
-      };
-    }
-    if (sizeMode === 'lg') {
-      return {
-        icon: 27,
-        btnSize: 'h-12 w-12',
-        btnPill: 'h-12 px-3',
-        barThickH: 'h-[64px]',
-        barThickW: 'w-[68px]',
-        pad: isVertical ? 'py-3 px-2' : 'px-3.5 py-1.5',
-      };
-    }
+    const icon = Math.max(16, Math.round(23 * iconScale));
+    const btnPx = Math.max(Math.round(40 * barScale), icon + 10);
+    const barThickPx = Math.max(Math.round((isVertical ? 58 : 54) * barScale), btnPx + 14);
+    const pillPadX = Math.max(8, Math.round(10 * barScale));
+    const padPx = Math.max(8, Math.round(12 * barScale));
+    const trayIcon = Math.max(14, Math.min(30, Math.round(16 * barScale)));
+    const dotPx = Math.max(5, Math.round(5.5 * barScale));
+    const labelTextCls = barScale >= 1.3 ? 'text-[13px]' : 'text-xs';
     return {
-      icon: 23,
-      btnSize: 'h-10 w-10',
-      btnPill: 'h-10 px-2.5',
-      barThickH: 'h-[54px]',
-      barThickW: 'w-[58px]',
-      pad: isVertical ? 'py-2.5 px-1.5' : 'px-3 py-1',
+      icon,
+      btnPx,
+      barThickPx,
+      pillPadX,
+      padPx,
+      trayIcon,
+      dotPx,
+      labelTextCls,
     };
-  }, [sizeMode, isVertical]);
+  }, [barScale, iconScale, isVertical]);
 
   const dockContainerClass = useMemo(() => {
-    const base = 'fixed z-[9950] border transition-all duration-300 flex items-center gap-1.5';
+    const base = 'fixed z-[9950] border transition-all duration-300 flex items-center gap-2';
     const dir = isVertical ? 'flex-col justify-between' : 'flex-row justify-between';
 
     if (styleMode === 'full') {
-      if (pos === 'top') return `${base} ${dir} top-0 left-0 right-0 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-none border-t-0 border-x-0`;
-      if (pos === 'left') return `${base} ${dir} left-0 top-0 bottom-0 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-none border-l-0 border-y-0`;
-      if (pos === 'right') return `${base} ${dir} right-0 top-0 bottom-0 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-none border-r-0 border-y-0`;
-      return `${base} ${dir} bottom-0 left-0 right-0 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-none border-b-0 border-x-0`;
+      if (pos === 'top') return `${base} ${dir} top-0 left-0 right-0 rounded-none border-t-0 border-x-0`;
+      if (pos === 'left') return `${base} ${dir} left-0 top-0 bottom-0 rounded-none border-l-0 border-y-0`;
+      if (pos === 'right') return `${base} ${dir} right-0 top-0 bottom-0 rounded-none border-r-0 border-y-0`;
+      return `${base} ${dir} bottom-0 left-0 right-0 rounded-none border-b-0 border-x-0`;
     }
 
     if (styleMode === 'macos' || styleMode === 'minimal') {
-      const radius = styleMode === 'minimal' ? 'rounded-full' : 'rounded-[22px]';
+      const radius = styleMode === 'minimal' ? 'rounded-full' : 'rounded-[26px]';
       if (pos === 'top') {
         const edge = styleMode === 'minimal' ? 'top-2.5' : 'top-3';
-        return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${sizeTokens.barThickH} ${sizeTokens.pad} ${radius}`;
+        return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${radius}`;
       }
       if (pos === 'left') {
         const edge = styleMode === 'minimal' ? 'left-2.5' : 'left-3';
-        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${sizeTokens.barThickW} ${sizeTokens.pad} ${radius}`;
+        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${radius}`;
       }
       if (pos === 'right') {
         const edge = styleMode === 'minimal' ? 'right-2.5' : 'right-3';
-        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${sizeTokens.barThickW} ${sizeTokens.pad} ${radius}`;
+        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${radius}`;
       }
       const edge = styleMode === 'minimal' ? 'bottom-2.5' : 'bottom-3';
-      return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${sizeTokens.barThickH} ${sizeTokens.pad} ${radius}`;
+      return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${radius}`;
     }
 
     // Default: floating full-width inset bar
-    if (pos === 'top') return `${base} ${dir} top-3 left-4 right-4 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-2xl`;
-    if (pos === 'left') return `${base} ${dir} left-3 top-4 bottom-4 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-2xl`;
-    if (pos === 'right') return `${base} ${dir} right-3 top-4 bottom-4 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-2xl`;
-    return `${base} ${dir} bottom-3 left-4 right-4 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-2xl`;
-  }, [pos, styleMode, isVertical, sizeTokens]);
+    if (pos === 'top') return `${base} ${dir} top-3 left-4 right-4 rounded-2xl`;
+    if (pos === 'left') return `${base} ${dir} left-3 top-4 bottom-4 rounded-2xl`;
+    if (pos === 'right') return `${base} ${dir} right-3 top-4 bottom-4 rounded-2xl`;
+    return `${base} ${dir} bottom-3 left-4 right-4 rounded-2xl`;
+  }, [pos, styleMode, isVertical]);
 
   const renderIndicator = (active: boolean, launching?: boolean) => {
     const color = active || launching ? palette.indicatorActive : palette.indicatorIdle;
@@ -632,6 +627,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   };
 
   const dockHoverExpand = magEnabled && Boolean(dockPointer);
+  const sidePad = dockHoverExpand ? sizeTokens.padPx + 8 : sizeTokens.padPx;
   const dockStyleObj: React.CSSProperties = {
     backgroundColor: palette.backgroundColor,
     borderColor: palette.borderColor,
@@ -639,15 +635,25 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     backdropFilter: `blur(${dock.blur ?? 18}px)`,
     WebkitBackdropFilter: `blur(${dock.blur ?? 18}px)`,
     boxShadow: styleMode === 'full' ? 'none' : 'var(--os-dock-shadow)',
-    paddingLeft: !isVertical && dockHoverExpand ? '18px' : undefined,
-    paddingRight: !isVertical && dockHoverExpand ? '18px' : undefined,
-    paddingTop: isVertical && dockHoverExpand ? '16px' : undefined,
-    paddingBottom: isVertical && dockHoverExpand ? '16px' : undefined,
+    height: isVertical ? undefined : `${sizeTokens.barThickPx}px`,
+    width: isVertical ? `${sizeTokens.barThickPx}px` : undefined,
+    paddingLeft: !isVertical ? `${sidePad}px` : `${Math.max(4, Math.round(sidePad * 0.45))}px`,
+    paddingRight: !isVertical ? `${sidePad}px` : `${Math.max(4, Math.round(sidePad * 0.45))}px`,
+    paddingTop: isVertical ? `${sidePad}px` : `${Math.max(4, Math.round(sizeTokens.padPx * 0.35))}px`,
+    paddingBottom: isVertical ? `${sidePad}px` : `${Math.max(4, Math.round(sizeTokens.padPx * 0.35))}px`,
     transition:
-      'padding 130ms cubic-bezier(0.22, 1, 0.36, 1), background-color 220ms ease, border-color 220ms ease',
+      'padding 130ms cubic-bezier(0.22, 1, 0.36, 1), height 180ms ease, width 180ms ease, background-color 220ms ease, border-color 220ms ease',
   };
 
-  const btnShapeClass = styleMode === 'minimal' ? 'rounded-full' : 'rounded-xl';
+  const btnShapeClass = styleMode === 'minimal' ? 'rounded-full' : 'rounded-2xl';
+  const squareBtnStyle: React.CSSProperties = {
+    width: `${sizeTokens.btnPx}px`,
+    height: `${sizeTokens.btnPx}px`,
+  };
+  const pillBtnStyle: React.CSSProperties = {
+    height: `${sizeTokens.btnPx}px`,
+    paddingInline: `${sizeTokens.pillPadX}px`,
+  };
 
   return (
     <div ref={containerRef} className="select-none">
@@ -974,10 +980,10 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           key="flyout-controls"
           data-testid="flyout-controls"
           style={{
-            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 344, 490),
+            ...computeAnchoredFlyoutStyle(flyoutAnchor, pos, 344, 540),
             boxShadow: 'var(--os-shadow)',
           }}
-          className={`fixed z-[9980] w-[344px] max-w-[calc(100vw-24px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
+          className={`fixed z-[9980] w-[344px] max-w-[calc(100vw-24px)] max-h-[calc(100vh-115px)] overflow-y-auto rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
           {/* Quick Settings Entry Row */}
           <div className="grid grid-cols-2 gap-1.5">
@@ -1129,6 +1135,53 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               </button>
             </form>
           </div>
+
+          {onUpdateDock && (
+            <div className="space-y-2 pt-2.5 border-t border-[var(--os-border)]">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
+                    <span>Dock Boyutu</span>
+                    <span className="font-mono">{barScale.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="cc-dock-bar-scale"
+                    min={0.85}
+                    max={1.8}
+                    step={0.05}
+                    value={barScale}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      onUpdateDock({
+                        barScale: val,
+                        size: val < 1.15 ? 'sm' : val > 1.55 ? 'lg' : 'md',
+                      });
+                    }}
+                    style={{ accentColor: 'var(--os-accent-bg)' }}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
+                    <span>Simge Boyutu</span>
+                    <span className="font-mono">{iconScale.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="cc-dock-icon-scale"
+                    min={0.85}
+                    max={1.9}
+                    step={0.05}
+                    value={iconScale}
+                    onChange={(e) => onUpdateDock({ iconScale: Number(e.target.value) })}
+                    style={{ accentColor: 'var(--os-accent-bg)' }}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Audio & Brightness */}
           <div className="space-y-2.5 pt-2.5 border-t border-[var(--os-border)]">
@@ -1329,6 +1382,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         data-dock-position={pos}
         data-dock-style={styleMode}
         data-dock-magnification={magEnabled ? 'true' : 'false'}
+        data-dock-bar-scale={barScale.toFixed(2)}
+        data-dock-icon-scale={iconScale.toFixed(2)}
         style={dockStyleObj}
         onPointerMove={(e) => {
           if (magEnabled) setDockPointer({ x: e.clientX, y: e.clientY });
@@ -1338,7 +1393,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       >
         {/* Start Section: Launcher + Core Pinned Apps + Running Windows */}
         <div
-          className={`flex items-center gap-1 min-w-0 ${
+          className={`flex items-center gap-1.5 min-w-0 ${
             isVertical
               ? 'flex-col flex-1'
               : isCompactDock
@@ -1351,22 +1406,23 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               onClick={(e) => toggleFlyout('launcher', e)}
               data-testid="dock-launcher-btn"
               title="Menü"
-              className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
+              style={squareBtnStyle}
+              className={`${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
                 flyout === 'launcher' ? palette.activeBg : palette.hoverBg
               }`}
             >
-              <div className="grid grid-cols-2 gap-1">
-                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
-                <span className="w-1.5 h-1.5 rounded-xs bg-current" />
+              <div className="grid grid-cols-2" style={{ gap: `${Math.max(4, Math.round(sizeTokens.dotPx * 0.55))}px` }}>
+                <span style={{ width: sizeTokens.dotPx, height: sizeTokens.dotPx }} className="rounded-xs bg-current" />
+                <span style={{ width: sizeTokens.dotPx, height: sizeTokens.dotPx }} className="rounded-xs bg-current" />
+                <span style={{ width: sizeTokens.dotPx, height: sizeTokens.dotPx }} className="rounded-xs bg-current" />
+                <span style={{ width: sizeTokens.dotPx, height: sizeTokens.dotPx }} className="rounded-xs bg-current" />
               </div>
             </button>
           </DockMagnifySlot>
 
           <div
             className={`${
-              isVertical ? 'w-5 h-[1px] my-1' : 'h-5 w-[1px] mx-1'
+              isVertical ? 'w-6 h-[1px] my-1' : 'h-7 w-[1px] mx-1'
             } ${palette.dividerBg} shrink-0`}
           />
 
@@ -1388,9 +1444,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               data-testid="dock-browser-btn"
               data-launching={browserWin?.launching ? 'true' : 'false'}
               title={browserWin?.launching ? `${primaryBrowserLabel} açılıyor...` : primaryBrowserLabel}
-              className={`relative ${
-                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+              style={showTextLabels && !isCompactDock ? pillBtnStyle : squareBtnStyle}
+              className={`relative ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
                 browserWin && !browserWin.minimized && focusedWindowId === browserWin.id && !browserWin.launching
                   ? palette.activeBg
                   : palette.hoverBg
@@ -1412,7 +1467,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 )}
               </span>
               {showTextLabels && !isCompactDock && (
-                <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
+                <span className={`${sizeTokens.labelTextCls} font-medium hidden lg:inline`}>{primaryBrowserLabel}</span>
               )}
               {browserWin &&
                 renderIndicator(
@@ -1439,9 +1494,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               }
               data-testid="dock-terminal-btn"
               title="Uç Birim"
-              className={`relative ${
-                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+              style={showTextLabels && !isCompactDock ? pillBtnStyle : squareBtnStyle}
+              className={`relative ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
                 terminalWin && !terminalWin.minimized && focusedWindowId === terminalWin.id
                   ? palette.activeBg
                   : palette.hoverBg
@@ -1449,7 +1503,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             >
               <TerminalAppIcon size={sizeTokens.icon} />
               {showTextLabels && !isCompactDock && (
-                <span className="text-xs font-medium hidden lg:inline">Uç Birim</span>
+                <span className={`${sizeTokens.labelTextCls} font-medium hidden lg:inline`}>Uç Birim</span>
               )}
               {terminalWin &&
                 renderIndicator(!terminalWin.minimized && focusedWindowId === terminalWin.id)}
@@ -1472,9 +1526,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               }
               data-testid="dock-apps-btn"
               title="Uygulamalar"
-              className={`relative ${
-                showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
-              } ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
+              style={showTextLabels && !isCompactDock ? pillBtnStyle : squareBtnStyle}
+              className={`relative ${btnShapeClass} flex items-center justify-center gap-2 transition-colors shrink-0 ${
                 appStoreWin && !appStoreWin.minimized && focusedWindowId === appStoreWin.id
                   ? palette.activeBg
                   : palette.hoverBg
@@ -1482,7 +1535,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             >
               <AppStoreIcon size={sizeTokens.icon} />
               {showTextLabels && !isCompactDock && (
-                <span className="text-xs font-medium hidden xl:inline">Uygulamalar</span>
+                <span className={`${sizeTokens.labelTextCls} font-medium hidden xl:inline`}>Uygulamalar</span>
               )}
               {appStoreWin &&
                 renderIndicator(!appStoreWin.minimized && focusedWindowId === appStoreWin.id)}
@@ -1492,7 +1545,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           {/* Open Other Windows (Linux Apps w/ macOS Launch Bounce, Folders, Preview, Settings) */}
           {otherWindows.length > 0 && (
             <div
-              className={`flex items-center gap-1 min-w-0 ${
+              className={`flex items-center gap-1.5 min-w-0 ${
                 isVertical ? 'flex-col' : 'flex-row'
               }`}
             >
@@ -1532,11 +1585,12 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                       data-testid={`dock-win-${w.appId || w.kind}`}
                       data-launching={isLaunching ? 'true' : 'false'}
                       title={isLaunching ? `${w.title} açılıyor...` : w.title}
-                      className={`relative ${
+                      style={
                         showTextLabels && !isCompactDock
-                          ? `${sizeTokens.btnPill} max-w-[165px]`
-                          : sizeTokens.btnSize
-                      } ${btnShapeClass} flex items-center justify-center gap-2 shrink-0 text-xs transition-colors ${
+                          ? { ...pillBtnStyle, maxWidth: `${Math.round(168 * Math.max(1, barScale * 0.85))}px` }
+                          : squareBtnStyle
+                      }
+                      className={`relative ${btnShapeClass} flex items-center justify-center gap-2 shrink-0 ${sizeTokens.labelTextCls} transition-colors ${
                         active ? palette.activeBg : palette.hoverBg
                       }`}
                     >
@@ -1559,14 +1613,14 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         {isCompactDock && (
           <div
             className={`${
-              isVertical ? 'w-5 h-[1px] my-0.5' : 'h-5 w-[1px] mx-0.5'
+              isVertical ? 'w-6 h-[1px] my-0.5' : 'h-7 w-[1px] mx-0.5'
             } ${palette.dividerBg} shrink-0`}
           />
         )}
 
         {/* End Section: Audio, Control Center (Theme, Virtual Desktops, Settings), Notifications, Clock */}
         <div
-          className={`flex items-center gap-1 shrink-0 ${
+          className={`flex items-center gap-1.5 shrink-0 ${
             isVertical ? 'flex-col' : 'flex-row'
           }`}
         >
@@ -1574,12 +1628,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             <button
               onClick={onToggleMute}
               title={muted ? 'Sesi Aç' : 'Sessize Al'}
-              className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${palette.hoverBg}`}
+              style={squareBtnStyle}
+              className={`${btnShapeClass} flex items-center justify-center transition-colors ${palette.hoverBg}`}
             >
               {muted || volume === 0 ? (
-                <VolumeX className="w-4 h-4 text-red-500" />
+                <VolumeX style={{ width: sizeTokens.trayIcon, height: sizeTokens.trayIcon }} className="text-red-500" />
               ) : (
-                <Volume2 className="w-4 h-4" />
+                <Volume2 style={{ width: sizeTokens.trayIcon, height: sizeTokens.trayIcon }} />
               )}
             </button>
           )}
@@ -1588,26 +1643,28 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             onClick={(e) => toggleFlyout('controls', e)}
             data-testid="dock-controls-btn"
             title="Kontrol Merkezi & Ayarlar"
-            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
+            style={squareBtnStyle}
+            className={`${btnShapeClass} flex items-center justify-center transition-colors ${
               flyout === 'controls' ? palette.activeBg : palette.hoverBg
             }`}
           >
-            <SlidersHorizontal className="w-4 h-4" />
+            <SlidersHorizontal style={{ width: sizeTokens.trayIcon, height: sizeTokens.trayIcon }} />
           </button>
 
           {!isCompactDock && (
             <button
               onClick={(e) => toggleFlyout('notifications', e)}
               title="Bildirimler"
-              className={`relative ${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
+              style={squareBtnStyle}
+              className={`relative ${btnShapeClass} flex items-center justify-center transition-colors ${
                 flyout === 'notifications' ? palette.activeBg : palette.hoverBg
               }`}
             >
-              <Bell className="w-4 h-4" />
+              <Bell style={{ width: sizeTokens.trayIcon, height: sizeTokens.trayIcon }} />
               {notificationHistory.length > 0 && (
                 <span
                   style={{ backgroundColor: palette.indicatorActive }}
-                  className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
+                  className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full"
                 />
               )}
             </button>
@@ -1616,17 +1673,19 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           <button
             onClick={(e) => toggleFlyout('calendar', e)}
             title={`${timeShort} · ${dateShort}`}
-            className={`${
-              isVertical ? `${sizeTokens.btnSize} px-0.5` : `${sizeTokens.btnPill}`
-            } ${btnShapeClass} flex flex-col items-center justify-center leading-tight transition-colors ${
+            style={isVertical ? { ...squareBtnStyle, paddingInline: '2px' } : pillBtnStyle}
+            className={`${btnShapeClass} flex flex-col items-center justify-center leading-tight transition-colors ${
               flyout === 'calendar' ? palette.activeBg : palette.hoverBg
             }`}
           >
-            <span className={`${isVertical ? 'text-[11px]' : 'text-xs'} font-semibold font-mono`}>
+            <span className={`${isVertical ? 'text-xs' : barScale >= 1.25 ? 'text-[13px]' : 'text-xs'} font-semibold font-mono`}>
               {timeShort}
             </span>
             {!isVertical && !isCompactDock && (
-              <span style={{ color: palette.mutedColor }} className="text-[10px] font-mono">
+              <span
+                style={{ color: palette.mutedColor }}
+                className={`${barScale >= 1.25 ? 'text-[11px]' : 'text-[10px]'} font-mono`}
+              >
                 {dateShort}
               </span>
             )}

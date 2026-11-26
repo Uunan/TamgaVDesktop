@@ -1568,6 +1568,24 @@ export default function App() {
             Boolean(win.appSessionId) &&
             externalDropTarget === `linux-app:${win.appSessionId}`);
 
+        const activeDock = { ...DEFAULT_DOCK_PREFERENCES, ...(meta.preferences.dock || {}) };
+        const dockPos = activeDock.position || 'bottom';
+        const isDockVert = dockPos === 'left' || dockPos === 'right';
+        const dockScaleVal = Math.max(
+          0.85,
+          Math.min(
+            1.85,
+            activeDock.barScale ??
+              (activeDock.size === 'sm' ? 1.0 : activeDock.size === 'lg' ? 1.65 : 1.4)
+          )
+        );
+        const dockReserve =
+          Math.max(
+            68,
+            Math.round((isDockVert ? 58 : 54) * dockScaleVal) +
+              (activeDock.style === 'full' ? 8 : 20)
+          );
+
         return (
           <WindowFrame
             key={win.id}
@@ -1575,7 +1593,8 @@ export default function App() {
             isFocused={focusedWindowId === win.id}
             isDropHighlighted={isWinDropHighlighted}
             hiddenUntilReady={Boolean(win.launching)}
-            dockPosition={meta.preferences.dock?.position || 'bottom'}
+            dockPosition={dockPos}
+            dockReserve={dockReserve}
             onFocus={focusWindow}
             onClose={closeWindowById}
             onMinimize={(id) =>
@@ -1908,9 +1927,9 @@ export default function App() {
       <div
         className={`fixed ${
           (meta.preferences.dock?.position || 'bottom') === 'bottom'
-            ? 'bottom-20 right-5'
+            ? 'bottom-28 right-5'
             : (meta.preferences.dock?.position || 'bottom') === 'right'
-            ? 'bottom-5 right-20'
+            ? 'bottom-5 right-28'
             : 'bottom-5 right-5'
         } z-[9970] flex flex-col gap-2 w-76 pointer-events-none`}
       >
@@ -2002,6 +2021,7 @@ export default function App() {
         onOpenFolder={openFolderWindow}
         onOpenNode={handleOpenNode}
         onCloseWindow={closeWindowById}
+        onUpdateDock={(partial) => handleUpdatePreferences({ dock: partial })}
         onToggleWindowFromTaskbar={(winId) => {
           const target = windows.find((w) => w.id === winId);
           if (!target) return;

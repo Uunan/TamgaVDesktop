@@ -43,6 +43,8 @@ export interface DockPreferences {
   position: 'bottom' | 'top' | 'left' | 'right';
   style: 'floating' | 'macos' | 'full' | 'minimal';
   size: 'sm' | 'md' | 'lg';
+  barScale: number;
+  iconScale: number;
   color: 'auto' | 'dark' | 'light' | 'obsidian' | 'midnight' | 'emerald' | 'amethyst' | 'custom';
   customColor?: string;
   opacity: number;
@@ -77,9 +79,9 @@ export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
   motionScale: 0.75,
   maxDpr: 2,
   settlePng: true,
-  settleDelayMs: 300,
-  x11Fps: 30,
-  x11MaxQuality: 85,
+  settleDelayMs: 200,
+  x11Fps: 45,
+  x11MaxQuality: 86,
   x11MotionQuality: 58,
   audioEnabled: true,
 };
@@ -102,6 +104,8 @@ export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
   position: 'bottom',
   style: 'floating',
   size: 'md',
+  barScale: 1.4,
+  iconScale: 1.4,
   color: 'auto',
   customColor: '#18181b',
   opacity: 86,
