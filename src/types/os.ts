@@ -11,6 +11,34 @@ export interface VFSNode {
   originalPath?: string;
 }
 
+export interface StreamPreferences {
+  preset: 'performance' | 'balanced' | 'ultra' | 'custom';
+  dynamicQualityDrop: boolean;
+  motionQuality: number;
+  motionScale: number;
+  maxDpr: number;
+  settlePng: boolean;
+  settleDelayMs: number;
+  x11Fps: number;
+  x11MaxQuality: number;
+  x11MotionQuality: number;
+  audioEnabled: boolean;
+}
+
+export interface BrowserPreferences {
+  defaultUrl: string;
+  closeTabsOnExit: boolean;
+}
+
+export interface TerminalPreferences {
+  fontSize: number;
+  cursorBlink: boolean;
+}
+
+export interface UiPreferences {
+  showFullscreenNotice: boolean;
+}
+
 export interface DesktopMeta {
   positions: Record<string, { x: number; y: number }>;
   trashOrigins: Record<string, string>;
@@ -21,8 +49,40 @@ export interface DesktopMeta {
     iconSize: 'sm' | 'md' | 'lg';
     autoArrange: boolean;
     sortBy: 'name' | 'extension' | 'size' | 'modifiedAt';
+    stream: StreamPreferences;
+    browser: BrowserPreferences;
+    terminal: TerminalPreferences;
+    ui: UiPreferences;
   };
 }
+
+export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
+  preset: 'balanced',
+  dynamicQualityDrop: true,
+  motionQuality: 65,
+  motionScale: 0.75,
+  maxDpr: 2,
+  settlePng: true,
+  settleDelayMs: 300,
+  x11Fps: 20,
+  x11MaxQuality: 85,
+  x11MotionQuality: 58,
+  audioEnabled: true,
+};
+
+export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = {
+  defaultUrl: 'https://www.google.com',
+  closeTabsOnExit: true,
+};
+
+export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
+  fontSize: 13,
+  cursorBlink: true,
+};
+
+export const DEFAULT_UI_PREFERENCES: UiPreferences = {
+  showFullscreenNotice: true,
+};
 
 export interface VirtualDesktopInfo {
   id: string;
@@ -47,6 +107,23 @@ export interface LinuxRuntimeStatus {
   hasAudio: boolean;
   isRoot: boolean;
   distro: string;
+}
+
+export interface SystemInfoResponse {
+  name: string;
+  version: string;
+  hostname: string;
+  port: number;
+  dataDir: string;
+  filesystemMode: string;
+  authEnabled: boolean;
+  runtime: LinuxRuntimeStatus;
+  disk?: {
+    totalGB: number;
+    usedGB: number;
+    availGB: number;
+    percent: number;
+  };
 }
 
 export interface LinuxAppInfo {
@@ -108,6 +185,8 @@ export interface TabSummary {
   filePath?: string;
 }
 
+export type SettingsTabId = 'stream' | 'appearance' | 'browser' | 'terminal' | 'system';
+
 export type WindowKind =
   | 'browser'
   | 'folder'
@@ -115,7 +194,8 @@ export type WindowKind =
   | 'terminal'
   | 'linux-app'
   | 'app-store'
-  | 'vscode';
+  | 'vscode'
+  | 'settings';
 
 export interface OSWindow {
   id: string;
@@ -128,6 +208,8 @@ export interface OSWindow {
   appViewId?: string;
   appId?: string;
   terminalSessionId?: string;
+  terminalCwd?: string;
+  settingsTab?: SettingsTabId;
   x: number;
   y: number;
   width: number;

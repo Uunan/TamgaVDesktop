@@ -330,6 +330,14 @@ def main() -> None:
             return False
         return compress_and_send(img_ptr, grab_w, grab_h, qual)
 
+    # Adaptive quality state (GeForce NOW-style motion drop + crisp settle frame)
+    max_quality = quality
+    motion_quality = max(30, min(max_quality, max_quality - 22))
+    dynamic_drop = True
+    settle_sec = 0.30
+    needs_settle = False
+    last_motion_at = 0.0
+
     # Gentle initial settle window while the X11 app first paints its window
     startup_until = time.monotonic() + 3.0
 
@@ -339,6 +347,9 @@ def main() -> None:
         if dirty and in_flight < 2:
             elapsed = now - last_sent
             wait_timeout = max(0.0, min_interval - elapsed)
+        elif needs_settle and in_flight < 2:
+            rem = settle_sec - (now - last_motion_at)
+            wait_timeout = max(0.0, rem)
         elif now < startup_until:
             wait_timeout = 0.25
 
@@ -398,6 +409,21 @@ def main() -> None:
                                     target_wid if (capture_mode == "pixmap" and target_wid) else root
                                 )
                                 dirty = True
+                            elif ctype == "stream_config":
+                                if "fps" in cmd and cmd["fps"]:
+                                    max_fps = max(8, min(35, int(cmd["fps"])))
+                                    min_interval = 1.0 / float(max_fps)
+                                if "max_quality" in cmd and cmd["max_quality"]:
+                                    max_quality = max(45, min(95, int(cmd["max_quality"])))
+                                if "motion_quality" in cmd and cmd["motion_quality"]:
+                                    motion_quality = max(30, min(max_quality, int(cmd["motion_quality"])))
+                                if "dynamic_drop" in cmd:
+                                    dynamic_drop = bool(cmd["dynamic_drop"])
+                                if "settle_ms" in cmd and cmd["settle_ms"]:
+                                    settle_sec = max(0.12, min(1.2, float(cmd["settle_ms"]) / 1000.0))
+                                needs_settle = True
+                                last_motion_at = 0.0
+                                dirty = True
                             elif ctype == "refresh":
                                 dirty = True
                         except Exception:
@@ -419,10 +445,22 @@ def main() -> None:
             if damage:
                 libXdamage.XDamageSubtract(dpy, damage, 0, 0)
             libX11.XSync(dpy, 0)
-            if grab_and_send(quality):
+            is_rapid_motion = dynamic_drop and (now - last_sent) < max(0.28, min_interval * 3.0)
+            send_qual = motion_quality if is_rapid_motion else max_quality
+            if grab_and_send(send_qual):
                 dirty = False
                 in_flight += 1
                 last_sent = time.monotonic()
+                if is_rapid_motion and motion_quality < max_quality:
+                    needs_settle = True
+                    last_motion_at = last_sent
+                else:
+                    needs_settle = False
+        elif needs_settle and not dirty and in_flight < 2 and (now - last_motion_at) >= settle_sec:
+            if grab_and_send(max_quality):
+                in_flight += 1
+                last_sent = time.monotonic()
+                needs_settle = False
 
     if damage:
         libXdamage.XDamageDestroy(dpy, damage)

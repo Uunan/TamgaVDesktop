@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import multer from 'multer';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -21,7 +22,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.2.6';
+export const TAMGA_VERSION = '1.3.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -254,6 +255,31 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   });
 
   app.get('/api/system/info', (_req, res) => {
+    let disk: { totalGB: number; usedGB: number; availGB: number; percent: number } | undefined;
+    try {
+      const dfOut = execSync(`df -k "${config.dataDir || '/'}" 2>/dev/null || df -k /`, {
+        timeout: 1500,
+      })
+        .toString('utf-8')
+        .trim()
+        .split('\n');
+      const parts = (dfOut[dfOut.length - 1] || '').trim().split(/\s+/);
+      if (parts.length >= 5) {
+        const totalKB = Number(parts[1]) || 0;
+        const usedKB = Number(parts[2]) || 0;
+        const availKB = Number(parts[3]) || 0;
+        const pct = Number(String(parts[4]).replace('%', '')) || (totalKB ? Math.round((usedKB / totalKB) * 100) : 0);
+        if (totalKB > 0) {
+          disk = {
+            totalGB: Number((totalKB / (1024 * 1024)).toFixed(1)),
+            usedGB: Number((usedKB / (1024 * 1024)).toFixed(1)),
+            availGB: Number((availKB / (1024 * 1024)).toFixed(1)),
+            percent: pct,
+          };
+        }
+      }
+    } catch {}
+
     res.json({
       name: config.name,
       version: TAMGA_VERSION,
@@ -263,6 +289,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       filesystemMode: config.desktop.filesystemMode,
       authEnabled: config.auth.enabled,
       runtime: linuxAppManager.getRuntimeStatus(),
+      disk,
     });
   });
 
@@ -305,6 +332,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
 
       const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
       const { vfs } = getDesktopContext(desktopId);
+      const streamPrefs = vfs.getMeta().preferences.stream;
       const appId = String(req.body?.appId || 'custom');
       const found = linuxAppManager.getApp(appId);
       const command = String(req.body?.command || found?.command || '').trim();
@@ -334,9 +362,13 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         height: Number(req.body?.height) || 480,
         viewportWidth: Number(req.body?.viewportWidth) || undefined,
         viewportHeight: Number(req.body?.viewportHeight) || undefined,
-        fps: config.linuxApps.fps,
+        fps: streamPrefs?.x11Fps ?? config.linuxApps.fps,
         quality: config.linuxApps.quality,
-        enableAudio: config.linuxApps.audio && runtime.hasAudio,
+        maxQuality: streamPrefs?.x11MaxQuality ?? 85,
+        motionQuality: streamPrefs?.x11MotionQuality ?? 58,
+        dynamicDrop: streamPrefs?.dynamicQualityDrop ?? true,
+        settleMs: streamPrefs?.settleDelayMs ?? 300,
+        enableAudio: (streamPrefs?.audioEnabled ?? config.linuxApps.audio) && runtime.hasAudio,
       });
 
       res.json({
@@ -682,8 +714,33 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
 
   app.patch('/api/vfs/meta', (req, res) => {
     try {
-      const { vfs } = getDesktopContext(extractReqDesktopId(req));
+      const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
+      const { vfs, browserSession } = getDesktopContext(desktopId);
       const meta = vfs.updateMeta(req.body || {});
+      const prefs = req.body?.preferences;
+      if (prefs?.stream) {
+        const s = meta.preferences.stream;
+        browserSession
+          .setStreamConfig({
+            dynamicQualityDrop: s.dynamicQualityDrop,
+            motionQuality: s.motionQuality,
+            motionScale: s.motionScale,
+            maxDpr: s.maxDpr,
+            settlePng: s.settlePng,
+            settleDelayMs: s.settleDelayMs,
+          })
+          .catch(() => {});
+        linuxDisplayBridge.updateStreamConfig(desktopId, {
+          fps: s.x11Fps,
+          maxQuality: s.x11MaxQuality,
+          motionQuality: s.x11MotionQuality,
+          dynamicDrop: s.dynamicQualityDrop,
+          settleMs: s.settleDelayMs,
+        });
+      }
+      if (prefs?.browser?.defaultUrl) {
+        browserSession.setDefaultUrl(meta.preferences.browser.defaultUrl);
+      }
       res.json({ meta });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -824,6 +881,30 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           case 'browser_visibility':
             await browserSession.setViewerVisible(Boolean(msg.visible));
             break;
+          case 'browser_reset':
+            await browserSession.resetSession();
+            break;
+          case 'stream_config':
+            if (msg.stream) {
+              const updated = vfs.updateMeta({ preferences: { stream: msg.stream } });
+              const s = updated.preferences.stream;
+              await browserSession.setStreamConfig({
+                dynamicQualityDrop: s.dynamicQualityDrop,
+                motionQuality: s.motionQuality,
+                motionScale: s.motionScale,
+                maxDpr: s.maxDpr,
+                settlePng: s.settlePng,
+                settleDelayMs: s.settleDelayMs,
+              });
+              linuxDisplayBridge.updateStreamConfig(desktopId, {
+                fps: s.x11Fps,
+                maxQuality: s.x11MaxQuality,
+                motionQuality: s.x11MotionQuality,
+                dynamicDrop: s.dynamicQualityDrop,
+                settleMs: s.settleDelayMs,
+              });
+            }
+            break;
         }
       } catch {
         // ignore malformed message
@@ -844,9 +925,18 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       reqUrl.searchParams.get('sessionId') || `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const cols = Number(reqUrl.searchParams.get('cols')) || 100;
     const rows = Number(reqUrl.searchParams.get('rows')) || 30;
+    const requestedCwd = reqUrl.searchParams.get('cwd') || '/Desktop';
 
     const { vfs } = getDesktopContext(desktopId);
-    const startDir = vfs.resolveDiskPath('/Desktop');
+    let startDir = vfs.resolveDiskPath('/Desktop');
+    try {
+      const candidate = vfs.resolveDiskPath(requestedCwd);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        startDir = candidate;
+      }
+    } catch {
+      // fallback to /Desktop
+    }
     const session = terminalManager.createSession(sessionId, desktopId, startDir, cols, rows);
 
     const listener = (ev: { type: 'output' | 'exit'; data?: string; code?: number }) => {

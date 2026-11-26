@@ -42,6 +42,8 @@ interface ChromiumWindowBodyProps {
   allNodes: VFSNode[];
   volume: number;
   muted: boolean;
+  defaultUrl?: string;
+  maxDpr?: number;
   sendWs: (msg: Record<string, unknown>) => void;
   onOpenFolder: (path: string) => void;
   onVfsSaved: () => void;
@@ -52,8 +54,9 @@ interface ChromiumWindowBodyProps {
 export const ChromiumTabStrip: React.FC<{
   tabs: TabSummary[];
   activeTabId: string | null;
+  defaultUrl?: string;
   sendWs: (msg: Record<string, unknown>) => void;
-}> = ({ tabs, activeTabId, sendWs }) => {
+}> = ({ tabs, activeTabId, defaultUrl = 'https://www.google.com', sendWs }) => {
   return (
     <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto no-scrollbar py-0.5">
       {tabs.map((tab) => {
@@ -104,7 +107,7 @@ export const ChromiumTabStrip: React.FC<{
       })}
       <button
         data-no-drag="true"
-        onClick={() => sendWs({ type: 'browser_new_tab', url: 'compute://newtab' })}
+        onClick={() => sendWs({ type: 'browser_new_tab', url: defaultUrl || 'https://www.google.com' })}
         title="Yeni Sekme"
         className="p-1.5 rounded-lg hover:bg-[var(--os-hover)] text-[var(--os-text-muted)] hover:text-[var(--os-text)] shrink-0"
       >
@@ -131,6 +134,8 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
   allNodes,
   volume,
   muted,
+  defaultUrl = 'https://www.google.com',
+  maxDpr = 2,
   sendWs,
   onOpenFolder,
   onVfsSaved,
@@ -231,7 +236,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
 
     const emitViewport = (w: number, h: number) => {
       if (w < 120 || h < 120) return;
-      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const dpr = Math.min(maxDpr, Math.max(1, window.devicePixelRatio || 1));
       sendWs({
         type: 'browser_viewport',
         width: Math.round(w),
@@ -255,7 +260,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [sendWs, hasActiveTab]);
+  }, [sendWs, hasActiveTab, maxDpr]);
 
   // Notify server when Chromium window mounts/unmounts so background screencast stops at 0% CPU when closed
   useEffect(() => {
@@ -391,9 +396,9 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
             <RefreshCw className={`w-4 h-4 ${activeTab.isLoading ? 'animate-spin' : ''}`} />
           </button>
           <button
-            onClick={() => navigateActive('compute://newtab')}
+            onClick={() => navigateActive(defaultUrl || 'https://www.google.com')}
             className="p-1.5 rounded-lg hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]"
-            title="Başlangıç"
+            title="Ana Sayfa"
           >
             <Home className="w-4 h-4" />
           </button>
@@ -402,7 +407,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            navigateActive(addressInput || 'compute://newtab');
+            navigateActive(addressInput || defaultUrl || 'https://www.google.com');
             canvasRef.current?.focus();
           }}
           className="flex-1 flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] focus-within:border-[var(--os-border-strong)] transition-colors"

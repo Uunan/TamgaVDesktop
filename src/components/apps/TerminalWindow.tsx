@@ -6,6 +6,9 @@ import { getBridgeDesktopId } from '../../services/osBridge';
 
 interface TerminalWindowProps {
   sessionId: string;
+  cwdPath?: string;
+  fontSize?: number;
+  cursorBlink?: boolean;
   theme: 'dark' | 'light';
   onExit?: () => void;
 }
@@ -56,9 +59,17 @@ const LIGHT_THEME = {
   brightWhite: '#ffffff',
 };
 
-export const TerminalWindow: React.FC<TerminalWindowProps> = ({ sessionId, theme, onExit }) => {
+export const TerminalWindow: React.FC<TerminalWindowProps> = ({
+  sessionId,
+  cwdPath,
+  fontSize = 13,
+  cursorBlink = true,
+  theme,
+  onExit,
+}) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -66,8 +77,8 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ sessionId, theme
     if (!container) return;
 
     const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 13,
+      cursorBlink,
+      fontSize,
       lineHeight: 1.32,
       fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
       theme: theme === 'light' ? LIGHT_THEME : DARK_THEME,
@@ -79,13 +90,15 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ sessionId, theme
     fitAddon.fit();
     term.focus();
     termRef.current = term;
+    fitRef.current = fitAddon;
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const desktopId = getBridgeDesktopId();
+    const cwdQuery = cwdPath ? `&cwd=${encodeURIComponent(cwdPath)}` : '';
     const ws = new WebSocket(
       `${proto}//${window.location.host}/ws/terminal?desktop=${encodeURIComponent(
         desktopId
-      )}&sessionId=${encodeURIComponent(sessionId)}&cols=${term.cols}&rows=${term.rows}`
+      )}&sessionId=${encodeURIComponent(sessionId)}&cols=${term.cols}&rows=${term.rows}${cwdQuery}`
     );
     wsRef.current = ws;
 
@@ -129,6 +142,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ sessionId, theme
       ws.close();
       term.dispose();
       termRef.current = null;
+      fitRef.current = null;
       wsRef.current = null;
     };
   }, [sessionId]);
@@ -138,6 +152,25 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ sessionId, theme
       termRef.current.options.theme = theme === 'light' ? LIGHT_THEME : DARK_THEME;
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.fontSize = fontSize;
+      termRef.current.options.cursorBlink = cursorBlink;
+      try {
+        fitRef.current?.fit();
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: termRef.current.cols,
+              rows: termRef.current.rows,
+            })
+          );
+        }
+      } catch {}
+    }
+  }, [fontSize, cursorBlink]);
 
   return (
     <div

@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom';
 import { CheckCircle2, Info, Lock, TriangleAlert, X } from 'lucide-react';
 import {
+  DEFAULT_BROWSER_PREFERENCES,
+  DEFAULT_STREAM_PREFERENCES,
+  DEFAULT_TERMINAL_PREFERENCES,
+  DEFAULT_UI_PREFERENCES,
   WALLPAPERS,
   type AuthStatus,
   type ClipboardState,
@@ -9,6 +13,8 @@ import {
   type LinuxAppInfo,
   type LinuxRuntimeStatus,
   type OSWindow,
+  type SettingsTabId,
+  type StreamPreferences,
   type TabSummary,
   type TelemetryData,
   type ToastItem,
@@ -30,6 +36,7 @@ import { TerminalWindow } from './components/apps/TerminalWindow';
 import { LinuxAppWindow } from './components/apps/LinuxAppWindow';
 import { AppStoreWindow } from './components/apps/AppStoreWindow';
 import { VSCodeWindow } from './components/apps/VSCodeWindow';
+import { SettingsWindow } from './components/apps/SettingsWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
 import { translateFolderDisplayName } from './utils/format';
 
@@ -42,6 +49,10 @@ const DEFAULT_META: DesktopMeta = {
     iconSize: 'md',
     autoArrange: false,
     sortBy: 'name',
+    stream: { ...DEFAULT_STREAM_PREFERENCES },
+    browser: { ...DEFAULT_BROWSER_PREFERENCES },
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
+    ui: { ...DEFAULT_UI_PREFERENCES },
   },
 };
 
@@ -109,12 +120,16 @@ export default function App() {
   const wsQueueRef = useRef<string[]>([]);
   const videoListenersRef = useRef<Set<(jpegBytes: Uint8Array) => void>>(new Set());
   const lastVideoBytesRef = useRef<Uint8Array | null>(null);
+  const lastFrameStatUpdateRef = useRef<number>(0);
 
   const [tabs, setTabs] = useState<TabSummary[]>([]);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [browserCursor, setBrowserCursor] = useState<string>('default');
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [pingMs, setPingMs] = useState<number>(2);
+  const [lastFrameKB, setLastFrameKB] = useState<number>(0);
 
   const isAuthorized = authChecked && (!authStatus.enabled || authStatus.authenticated);
 
@@ -291,6 +306,7 @@ export default function App() {
       remoteAudio.ensureContext();
       const z = ++nextZRef.current;
       const id = 'win-chromium-main';
+      const wasOpen = windowsRef.current.some((w) => w.kind === 'browser');
       setWindows((prev) => {
         const existing = prev.find((w) => w.kind === 'browser');
         if (existing) {
@@ -321,12 +337,23 @@ export default function App() {
       setFocusedWindowId(id);
       if (initialUrl) {
         sendWs({ type: 'browser_new_tab', url: initialUrl });
+      } else if (!wasOpen) {
+        const defaultUrl =
+          meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl;
+        if (defaultUrl && defaultUrl !== 'compute://newtab') {
+          const curTabs = tabsRef.current;
+          if (curTabs.length === 0) {
+            sendWs({ type: 'browser_new_tab', url: defaultUrl });
+          } else if (curTabs.length === 1 && curTabs[0].mode === 'newtab') {
+            sendWs({ type: 'browser_navigate', tabId: curTabs[0].id, url: defaultUrl });
+          }
+        }
       }
     },
-    [sendWs]
+    [sendWs, meta.preferences.browser?.defaultUrl]
   );
 
-  const openTerminalWindow = useCallback(() => {
+  const openTerminalWindow = useCallback((cwdPath?: string) => {
     const z = ++nextZRef.current;
     const sessionId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const id = `win-${sessionId}`;
@@ -334,6 +361,8 @@ export default function App() {
     const vh = window.innerHeight - 76;
     const width = Math.min(820, vw - 36);
     const height = Math.min(520, vh - 36);
+    const normCwd = cwdPath || '/Desktop';
+    const title = normCwd && normCwd !== '/Desktop' ? `Uç Birim — ${normCwd}` : 'Uç Birim';
     setWindows((prev) => {
       const offset = (prev.length % 5) * 24;
       return [
@@ -341,10 +370,45 @@ export default function App() {
         {
           id,
           kind: 'terminal',
-          title: 'Terminal',
+          title,
           terminalSessionId: sessionId,
+          terminalCwd: normCwd,
           x: Math.max(18, Math.round((vw - width) / 2) + offset - 20),
           y: Math.max(18, Math.round((vh - height) / 2) + offset - 20),
+          width,
+          height,
+          minimized: false,
+          maximized: false,
+          zIndex: z,
+        },
+      ];
+    });
+    setFocusedWindowId(id);
+  }, []);
+
+  const openSettingsWindow = useCallback((initialTab: SettingsTabId = 'stream') => {
+    const z = ++nextZRef.current;
+    const id = 'win-settings';
+    setWindows((prev) => {
+      const existing = prev.find((w) => w.id === id);
+      if (existing) {
+        return prev.map((w) =>
+          w.id === id ? { ...w, minimized: false, zIndex: z, settingsTab: initialTab } : w
+        );
+      }
+      const vw = window.innerWidth;
+      const vh = window.innerHeight - 76;
+      const width = Math.min(880, vw - 36);
+      const height = Math.min(620, vh - 32);
+      return [
+        ...prev,
+        {
+          id,
+          kind: 'settings',
+          title: 'Ayarlar',
+          settingsTab: initialTab,
+          x: Math.max(18, Math.round((vw - width) / 2)),
+          y: Math.max(18, Math.round((vh - height) / 2)),
           width,
           height,
           minimized: false,
@@ -588,6 +652,11 @@ export default function App() {
           if (header === 0x01) {
             const jpegBytes = new Uint8Array(buf, 1);
             lastVideoBytesRef.current = jpegBytes;
+            const now = performance.now();
+            if (now - lastFrameStatUpdateRef.current > 350) {
+              lastFrameStatUpdateRef.current = now;
+              setLastFrameKB(Math.max(1, Math.round(jpegBytes.byteLength / 1024)));
+            }
             for (const listener of videoListenersRef.current) {
               listener(jpegBytes);
             }
@@ -871,7 +940,40 @@ export default function App() {
     }
   };
 
-  const handleUpdatePreferences = async (partial: Partial<DesktopMeta['preferences']>) => {
+  const handleUpdatePreferences = async (partial: {
+    wallpaper?: string;
+    customWallpaper?: string;
+    theme?: 'dark' | 'light';
+    iconSize?: 'sm' | 'md' | 'lg';
+    autoArrange?: boolean;
+    sortBy?: 'name' | 'extension' | 'size' | 'modifiedAt';
+    stream?: Partial<StreamPreferences>;
+    browser?: Partial<DesktopMeta['preferences']['browser']>;
+    terminal?: Partial<DesktopMeta['preferences']['terminal']>;
+    ui?: Partial<DesktopMeta['preferences']['ui']>;
+  }) => {
+    setMeta((prev) => {
+      const { stream, browser, terminal, ui, ...rest } = partial;
+      return {
+        ...prev,
+        preferences: {
+          ...prev.preferences,
+          ...rest,
+          stream: stream
+            ? { ...DEFAULT_STREAM_PREFERENCES, ...(prev.preferences.stream || {}), ...stream }
+            : prev.preferences.stream || { ...DEFAULT_STREAM_PREFERENCES },
+          browser: browser
+            ? { ...DEFAULT_BROWSER_PREFERENCES, ...(prev.preferences.browser || {}), ...browser }
+            : prev.preferences.browser || { ...DEFAULT_BROWSER_PREFERENCES },
+          terminal: terminal
+            ? { ...DEFAULT_TERMINAL_PREFERENCES, ...(prev.preferences.terminal || {}), ...terminal }
+            : prev.preferences.terminal || { ...DEFAULT_TERMINAL_PREFERENCES },
+          ui: ui
+            ? { ...DEFAULT_UI_PREFERENCES, ...(prev.preferences.ui || {}), ...ui }
+            : prev.preferences.ui || { ...DEFAULT_UI_PREFERENCES },
+        },
+      };
+    });
     try {
       if (partial.autoArrange) await vfsApi.resetPositions();
       const res = await vfsApi.updateMeta({ preferences: partial });
@@ -1087,8 +1189,9 @@ export default function App() {
         primaryBrowserLabel="Chromium"
         useFirefoxIcon={false}
         onOpenChromium={openPrimaryBrowser}
-        onOpenTerminal={openTerminalWindow}
+        onOpenTerminal={() => openTerminalWindow('/Desktop')}
         onOpenAppStore={openAppStoreWindow}
+        onOpenSettings={() => openSettingsWindow('stream')}
         onOpenFolderWindow={openFolderWindow}
         onMoveNodesToFolder={handleMoveNodes}
         onTrashNodes={handleTrashPaths}
@@ -1124,6 +1227,13 @@ export default function App() {
               if (target?.kind === 'linux-app' && target.appSessionId) {
                 appsApi.close(target.appSessionId, target.appViewId || 'main').catch(() => {});
               }
+              if (
+                target?.kind === 'browser' &&
+                (meta.preferences.browser?.closeTabsOnExit ?? true)
+              ) {
+                lastVideoBytesRef.current = null;
+                sendWs({ type: 'browser_reset' });
+              }
               setWindows((prev) => prev.filter((w) => w.id !== id));
               if (focusedWindowId === id) setFocusedWindowId(null);
             }}
@@ -1145,7 +1255,14 @@ export default function App() {
             overlayTitlebar={win.kind === 'vscode'}
             headerContent={
               win.kind === 'browser' ? (
-                <ChromiumTabStrip tabs={tabs} activeTabId={activeTabId} sendWs={sendWs} />
+                <ChromiumTabStrip
+                  tabs={tabs}
+                  activeTabId={activeTabId}
+                  defaultUrl={
+                    meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
+                  }
+                  sendWs={sendWs}
+                />
               ) : undefined
             }
           >
@@ -1158,6 +1275,10 @@ export default function App() {
                 allNodes={allNodes}
                 volume={volume}
                 muted={muted}
+                defaultUrl={
+                  meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
+                }
+                maxDpr={meta.preferences.stream?.maxDpr ?? 2}
                 sendWs={sendWs}
                 onOpenFolder={openFolderWindow}
                 onVfsSaved={refreshVfs}
@@ -1169,6 +1290,9 @@ export default function App() {
             {win.kind === 'terminal' && win.terminalSessionId && (
               <TerminalWindow
                 sessionId={win.terminalSessionId}
+                cwdPath={win.terminalCwd}
+                fontSize={meta.preferences.terminal?.fontSize ?? 13}
+                cursorBlink={meta.preferences.terminal?.cursorBlink ?? true}
                 theme={meta.preferences.theme || 'dark'}
                 onExit={() => {
                   setWindows((prev) => prev.filter((w) => w.id !== win.id));
@@ -1262,7 +1386,7 @@ export default function App() {
                     appName: cmd.split(' ')[0] || 'Uygulama',
                   })
                 }
-                onOpenTerminal={openTerminalWindow}
+                onOpenTerminal={() => openTerminalWindow('/Desktop')}
                 onOpenChromium={() => openChromiumWindow()}
               />
             )}
@@ -1300,6 +1424,41 @@ export default function App() {
                 node={allNodes.find((n) => n.path === win.targetNodePath)}
                 onOpenNode={handleOpenNode}
                 onClose={() => setWindows((prev) => prev.filter((w) => w.id !== win.id))}
+              />
+            )}
+
+            {win.kind === 'settings' && (
+              <SettingsWindow
+                initialTab={win.settingsTab || 'stream'}
+                meta={meta}
+                telemetry={telemetry}
+                pingMs={pingMs}
+                lastFrameKB={lastFrameKB}
+                brightness={brightness}
+                volume={volume}
+                muted={muted}
+                authStatus={authStatus}
+                currentDesktop={currentDesktop}
+                desktops={desktops}
+                onUpdatePreferences={handleUpdatePreferences}
+                onToggleTheme={handleChangeTheme}
+                onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
+                onChangeBrightness={setBrightness}
+                onChangeVolume={(v) => {
+                  setVolume(v);
+                  if (v > 0 && muted) setMuted(false);
+                }}
+                onToggleMute={() => setMuted((m) => !m)}
+                onResetBrowserTabs={() => {
+                  lastVideoBytesRef.current = null;
+                  sendWs({ type: 'browser_reset' });
+                }}
+                onOpenTerminal={(dir) => openTerminalWindow(dir || '/Desktop')}
+                onSwitchDesktop={handleSwitchDesktop}
+                onCreateDesktop={handleCreateDesktop}
+                onLockScreen={() => setLocked(true)}
+                onLogout={handleLogout}
+                onNotify={pushToast}
               />
             )}
           </WindowFrame>
@@ -1345,6 +1504,8 @@ export default function App() {
           onShowProperties={openPropertiesWindow}
           onOpenChromium={() => openPrimaryBrowser()}
           onOpenFolderWindow={openFolderWindow}
+          onOpenTerminalInDir={(dirPath) => openTerminalWindow(dirPath)}
+          onOpenSettings={(tab) => openSettingsWindow(tab || 'stream')}
           onUpdatePreferences={handleUpdatePreferences}
           onCycleWallpaper={() => {
             const idx = WALLPAPERS.findIndex((w) => w.id === meta.preferences.wallpaper);
@@ -1369,7 +1530,7 @@ export default function App() {
       )}
 
       {/* TOP-RIGHT SLIDE-IN FULLSCREEN RECOMMENDATION */}
-      <FullscreenNotice locked={locked} />
+      {(meta.preferences.ui?.showFullscreenNotice ?? true) && <FullscreenNotice locked={locked} />}
 
       {/* TOAST NOTIFICATIONS */}
       <div className="fixed bottom-20 right-5 z-[9970] flex flex-col gap-2 w-76 pointer-events-none">
@@ -1447,8 +1608,9 @@ export default function App() {
         onToggleTheme={handleChangeTheme}
         onClearNotifications={() => setNotificationHistory([])}
         onOpenBrowser={() => openPrimaryBrowser()}
-        onOpenTerminal={openTerminalWindow}
+        onOpenTerminal={() => openTerminalWindow('/Desktop')}
         onOpenAppStore={openAppStoreWindow}
+        onOpenSettings={(tab) => openSettingsWindow(tab || 'stream')}
         onLaunchLinuxApp={(app) =>
           launchLinuxApp({
             appId: app.id,

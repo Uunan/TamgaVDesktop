@@ -550,3 +550,14 @@ export const AppStoreIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
   </svg>
 );
 
+export const SettingsAppIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
+  <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-md">
+    <rect x="6" y="8" width="52" height="48" rx="13" fill="#1F1F23" stroke="#52525B" strokeWidth="1.5" />
+    <line x1="18" y1="23" x2="46" y2="23" stroke="#71717A" strokeWidth="2.8" strokeLinecap="round" />
+    <circle cx="28" cy="23" r="4.5" fill="#F4F4F5" />
+    <line x1="18" y1="33" x2="46" y2="33" stroke="#71717A" strokeWidth="2.8" strokeLinecap="round" />
+    <circle cx="38" cy="33" r="4.5" fill="#34D399" />
+    <line x1="18" y1="43" x2="46" y2="43" stroke="#71717A" strokeWidth="2.8" strokeLinecap="round" />
+    <circle cx="24" cy="43" r="4.5" fill="#A1A1AA" />
+  </svg>
+);

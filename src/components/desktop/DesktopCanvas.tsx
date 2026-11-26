@@ -8,6 +8,7 @@ import {
   FileIcon,
   FirefoxLogoIcon,
   RecycleBinIcon,
+  SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
 import type { ContextMenuItemTarget } from './ContextMenu';
@@ -28,6 +29,7 @@ interface DesktopCanvasProps {
   onOpenChromium: (initialUrl?: string) => void;
   onOpenTerminal: () => void;
   onOpenAppStore: () => void;
+  onOpenSettings: () => void;
   onOpenFolderWindow: (path: string) => void;
   onMoveNodesToFolder: (paths: string[], targetDir: string) => void;
   onTrashNodes: (paths: string[]) => void;
@@ -56,6 +58,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   onOpenChromium,
   onOpenTerminal,
   onOpenAppStore,
+  onOpenSettings,
   onOpenFolderWindow,
   onMoveNodesToFolder,
   onTrashNodes,
@@ -150,7 +153,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       if (saved) {
         map[node.path] = saved;
       } else {
-        const slotIndex = idx + 5;
+        const slotIndex = idx + 6;
         const col = Math.floor(slotIndex / maxRows);
         const row = slotIndex % maxRows;
         map[node.path] = {
@@ -395,9 +398,22 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         }),
     },
     {
+      id: 'sys-settings',
+      label: 'Ayarlar',
+      row: 3,
+      dropFolder: undefined,
+      renderIcon: () => <SettingsAppIcon size={sizeConfig.iconPx} />,
+      onOpen: () => onOpenSettings(),
+      onContext: (x: number, y: number) =>
+        onContextMenu(x, y, {
+          kind: 'desktop',
+          dirPath: '/Desktop',
+        }),
+    },
+    {
       id: 'sys-compute',
       label: 'Dosyalar',
-      row: 3,
+      row: 4,
       dropFolder: undefined,
       renderIcon: () => <ComputeSystemIcon size={sizeConfig.iconPx} />,
       onOpen: () => onOpenFolderWindow('/'),
@@ -411,7 +427,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     {
       id: 'sys-trash',
       label: 'Çöp Kutusu',
-      row: 4,
+      row: 5,
       dropFolder: '/.trash',
       renderIcon: () => <RecycleBinIcon size={sizeConfig.iconPx} hasItems={trashCount > 0} />,
       onOpen: () => onOpenFolderWindow('/.trash'),

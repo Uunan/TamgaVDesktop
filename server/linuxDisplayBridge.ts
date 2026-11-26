@@ -4,6 +4,14 @@ import path from 'node:path';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { resolveHelperPath } from './terminalManager';
 
+export interface X11StreamConfig {
+  fps?: number;
+  maxQuality?: number;
+  motionQuality?: number;
+  dynamicDrop?: boolean;
+  settleMs?: number;
+}
+
 export interface LinuxAppSessionOptions {
   sessionId: string;
   desktopId: string;
@@ -18,6 +26,10 @@ export interface LinuxAppSessionOptions {
   viewportHeight?: number;
   fps?: number;
   quality?: number;
+  maxQuality?: number;
+  motionQuality?: number;
+  dynamicDrop?: boolean;
+  settleMs?: number;
   enableAudio?: boolean;
 }
 
@@ -131,6 +143,10 @@ export class LinuxAppSession {
   private readonly screenHeight: number;
   private fps: number;
   private quality: number;
+  private maxQuality: number;
+  private motionQuality: number;
+  private dynamicDrop: boolean;
+  private settleMs: number;
   private enableAudio: boolean;
   private desktopDataRoot: string;
   private command: string;
@@ -170,8 +186,12 @@ export class LinuxAppSession {
     const dims = clampDim(opts.width || 720, opts.height || 480, this.screenWidth, this.screenHeight);
     this.width = dims.width;
     this.height = dims.height;
-    this.fps = Math.max(10, Math.min(30, opts.fps || 24));
+    this.fps = Math.max(8, Math.min(35, opts.fps || 20));
     this.quality = Math.max(2, Math.min(10, opts.quality || 4));
+    this.maxQuality = Math.max(45, Math.min(95, opts.maxQuality ?? Math.max(60, Math.min(88, 92 - this.quality * 4))));
+    this.motionQuality = Math.max(30, Math.min(this.maxQuality, opts.motionQuality ?? Math.max(40, this.maxQuality - 24)));
+    this.dynamicDrop = opts.dynamicDrop ?? true;
+    this.settleMs = Math.max(120, Math.min(1200, opts.settleMs ?? 300));
     this.enableAudio = opts.enableAudio ?? true;
     this.tempDir = path.join(
       os.tmpdir(),
@@ -196,6 +216,40 @@ export class LinuxAppSession {
       resizeTimer: null,
       subscribers: new Set(),
     });
+  }
+
+  public updateStreamConfig(cfg: X11StreamConfig): void {
+    if (typeof cfg.fps === 'number' && Number.isFinite(cfg.fps)) {
+      this.fps = Math.max(8, Math.min(35, Math.round(cfg.fps)));
+    }
+    if (typeof cfg.maxQuality === 'number' && Number.isFinite(cfg.maxQuality)) {
+      this.maxQuality = Math.max(45, Math.min(95, Math.round(cfg.maxQuality)));
+    }
+    if (typeof cfg.motionQuality === 'number' && Number.isFinite(cfg.motionQuality)) {
+      this.motionQuality = Math.max(30, Math.min(this.maxQuality, Math.round(cfg.motionQuality)));
+    }
+    if (typeof cfg.dynamicDrop === 'boolean') {
+      this.dynamicDrop = cfg.dynamicDrop;
+    }
+    if (typeof cfg.settleMs === 'number' && Number.isFinite(cfg.settleMs)) {
+      this.settleMs = Math.max(120, Math.min(1200, Math.round(cfg.settleMs)));
+    }
+    const payload =
+      JSON.stringify({
+        type: 'stream_config',
+        fps: this.fps,
+        max_quality: this.maxQuality,
+        motion_quality: this.motionQuality,
+        dynamic_drop: this.dynamicDrop,
+        settle_ms: this.settleMs,
+      }) + '\n';
+    for (const v of this.views.values()) {
+      if (v.streamerMode === 'xdamage' && v.streamerProc?.stdin?.writable) {
+        try {
+          v.streamerProc.stdin.write(payload);
+        } catch {}
+      }
+    }
   }
 
   public async start(): Promise<void> {
@@ -716,7 +770,7 @@ export class LinuxAppSession {
   private startViewXDamageStreamer(view: ViewStream): void {
     view.streamerMode = 'xdamage';
     const scriptPath = resolveHelperPath('x11_streamer.py');
-    const jpegQual = Math.max(60, Math.min(88, 92 - this.quality * 4));
+    const jpegQual = this.maxQuality;
     const initTargetWid = view.targetMode === 'pixmap' ? String(view.targetWid || 0) : '0';
     const proc = spawn(
       'python3',
@@ -739,6 +793,20 @@ export class LinuxAppSession {
     );
     view.streamerProc = proc;
     proc.stdin?.on('error', () => {});
+    if (proc.stdin?.writable) {
+      try {
+        proc.stdin.write(
+          JSON.stringify({
+            type: 'stream_config',
+            fps: this.fps,
+            max_quality: this.maxQuality,
+            motion_quality: this.motionQuality,
+            dynamic_drop: this.dynamicDrop,
+            settle_ms: this.settleMs,
+          }) + '\n'
+        );
+      } catch {}
+    }
     proc.stderr?.on('data', (err: Buffer) => {
       const msg = err.toString('utf-8').trim();
       if (msg) console.error(`[x11_streamer ${this.displayStr}/${view.viewId}]`, msg);
@@ -1091,6 +1159,14 @@ export class LinuxDisplayBridge {
       s.closeView(viewId);
     } else {
       s.close();
+    }
+  }
+
+  public updateStreamConfig(desktopId: string, cfg: X11StreamConfig): void {
+    for (const s of this.sessions.values()) {
+      if (s.desktopId === desktopId) {
+        s.updateStreamConfig(cfg);
+      }
     }
   }
 

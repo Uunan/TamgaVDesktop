@@ -21,10 +21,12 @@ import {
   RefreshCw,
   RotateCcw,
   Scissors,
+  Settings,
+  Terminal,
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { ClipboardState, DesktopMeta, VFSNode } from '../../types/os';
+import type { ClipboardState, DesktopMeta, SettingsTabId, VFSNode } from '../../types/os';
 import { isImageExtension } from '../../utils/format';
 
 export interface ContextMenuItemTarget {
@@ -65,6 +67,8 @@ interface ContextMenuProps {
   onShowProperties: (node: VFSNode) => void;
   onOpenChromium: () => void;
   onOpenFolderWindow: (path: string) => void;
+  onOpenTerminalInDir: (dirPath: string) => void;
+  onOpenSettings: (tab?: SettingsTabId) => void;
   onUpdatePreferences: (partial: Partial<DesktopMeta['preferences']>) => void;
   onCycleWallpaper: () => void;
   onRefresh: () => void;
@@ -100,6 +104,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onShowProperties,
   onOpenChromium,
   onOpenFolderWindow,
+  onOpenTerminalInDir,
+  onOpenSettings,
   onUpdatePreferences,
   onCycleWallpaper,
   onRefresh,
@@ -211,6 +217,19 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                   <span>Aç</span>
                 </span>
               </button>
+
+              {selectedNodes.length === 1 && firstNode.isDir && (
+                <button
+                  data-testid="ctx-open-terminal-node"
+                  onClick={() => run(() => onOpenTerminalInDir(firstNode.path))}
+                  className={itemCls}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Terminal className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                    <span>Uç Birim</span>
+                  </span>
+                </button>
+              )}
 
               {canSetAsWallpaper && (
                 <button
@@ -432,6 +451,19 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               <div className="my-1 border-t border-[var(--os-border)]" />
 
               <button
+                data-testid="ctx-open-terminal"
+                onClick={() => run(() => onOpenTerminalInDir(target.dirPath))}
+                className={itemCls}
+              >
+                <span className="flex items-center gap-2.5 font-medium">
+                  <Terminal className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                  <span>Uç Birim</span>
+                </span>
+              </button>
+
+              <div className="my-1 border-t border-[var(--os-border)]" />
+
+              <button
                 disabled={!clipboard?.paths.length}
                 onClick={() => run(() => onPaste(target.dirPath))}
                 className={`${itemCls} disabled:opacity-35 disabled:pointer-events-none`}
@@ -522,6 +554,17 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 <span className="flex items-center gap-2.5">
                   <ImageIcon className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
                   <span>Hazır Arka Planı Değiştir</span>
+                </span>
+              </button>
+
+              <button
+                data-testid="ctx-open-settings"
+                onClick={() => run(() => onOpenSettings('stream'))}
+                className={itemCls}
+              >
+                <span className="flex items-center gap-2.5">
+                  <Settings className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                  <span>Ayarlar & Akış Kalitesi</span>
                 </span>
               </button>
             </>

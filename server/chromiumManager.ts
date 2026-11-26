@@ -598,12 +598,92 @@ export class ChromiumDesktopSession {
   private lastFpsCheck = Date.now();
   public currentFps = 0;
   private viewerVisible = true;
+  private defaultUrl = 'https://www.google.com';
+  private streamConfig = {
+    dynamicQualityDrop: true,
+    motionQuality: 65,
+    motionScale: 0.75,
+    maxDpr: 2,
+    settlePng: true,
+    settleDelayMs: 300,
+  };
 
   constructor(desktopId: string, vfs: VFSManager, cluster: ChromiumCluster) {
     this.desktopId = desktopId;
     this.vfs = vfs;
     this.cluster = cluster;
+    const savedPrefs = vfs.getMeta().preferences;
+    if (savedPrefs?.browser?.defaultUrl) {
+      this.defaultUrl = savedPrefs.browser.defaultUrl;
+    }
+    if (savedPrefs?.stream) {
+      this.streamConfig = {
+        dynamicQualityDrop: savedPrefs.stream.dynamicQualityDrop ?? true,
+        motionQuality: Math.max(35, Math.min(95, Number(savedPrefs.stream.motionQuality) || 65)),
+        motionScale: Math.max(0.5, Math.min(1, Number(savedPrefs.stream.motionScale) || 0.75)),
+        maxDpr: Math.max(1, Math.min(2, Number(savedPrefs.stream.maxDpr) || 2)),
+        settlePng: savedPrefs.stream.settlePng ?? true,
+        settleDelayMs: Math.max(150, Math.min(900, Number(savedPrefs.stream.settleDelayMs) || 300)),
+      };
+    }
     this.createTabInternal('compute://newtab', true);
+  }
+
+  private getEffectiveDpr(): number {
+    return Math.max(1, Math.min(this.dpr, this.streamConfig.maxDpr));
+  }
+
+  public setDefaultUrl(url: string) {
+    const trimmed = String(url || '').trim();
+    this.defaultUrl = trimmed || 'https://www.google.com';
+  }
+
+  public async setStreamConfig(cfg: Partial<typeof this.streamConfig>) {
+    const prevMaxDpr = this.streamConfig.maxDpr;
+    if (typeof cfg.dynamicQualityDrop === 'boolean') {
+      this.streamConfig.dynamicQualityDrop = cfg.dynamicQualityDrop;
+    }
+    if (typeof cfg.motionQuality === 'number' && Number.isFinite(cfg.motionQuality)) {
+      this.streamConfig.motionQuality = Math.max(35, Math.min(95, Math.round(cfg.motionQuality)));
+    }
+    if (typeof cfg.motionScale === 'number' && Number.isFinite(cfg.motionScale)) {
+      this.streamConfig.motionScale = Math.max(0.5, Math.min(1, Number(cfg.motionScale)));
+    }
+    if (typeof cfg.maxDpr === 'number' && Number.isFinite(cfg.maxDpr)) {
+      this.streamConfig.maxDpr = Math.max(1, Math.min(2, Number(cfg.maxDpr)));
+    }
+    if (typeof cfg.settlePng === 'boolean') {
+      this.streamConfig.settlePng = cfg.settlePng;
+    }
+    if (typeof cfg.settleDelayMs === 'number' && Number.isFinite(cfg.settleDelayMs)) {
+      this.streamConfig.settleDelayMs = Math.max(150, Math.min(900, Math.round(cfg.settleDelayMs)));
+    }
+
+    const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
+    if (active?.mode === 'web' && active.page && !active.page.isClosed()) {
+      try {
+        active.lastScreencastData = undefined;
+        active.suppressSettleUntil = 0;
+        await this.stopScreencast(active);
+        if (Math.abs(prevMaxDpr - this.streamConfig.maxDpr) >= 0.05) {
+          await this.applyTabMetrics(active);
+        }
+        await this.startScreencast(active);
+        await this.captureImmediateFrame(active);
+      } catch {}
+    }
+  }
+
+  public async resetSession(): Promise<void> {
+    this.viewerVisible = false;
+    for (const tab of Array.from(this.tabs.values())) {
+      await this.cleanupTabPage(tab);
+    }
+    this.tabs.clear();
+    this.tabOrder = [];
+    this.activeTabId = null;
+    this.createTabInternal('compute://newtab', true);
+    this.broadcastTabs();
   }
 
   public getSessionStats() {
@@ -813,8 +893,9 @@ export class ChromiumDesktopSession {
     return tab;
   }
 
-  public async createTab(initialUrl = 'compute://newtab'): Promise<string> {
-    const tab = this.createTabInternal(initialUrl, false);
+  public async createTab(initialUrl?: string): Promise<string> {
+    const targetUrl = initialUrl && initialUrl.trim() ? initialUrl : this.defaultUrl;
+    const tab = this.createTabInternal(targetUrl, false);
     await this.activateTab(tab.id);
     if (tab.mode === 'web') {
       await this.navigate(tab.id, tab.url);
@@ -833,7 +914,7 @@ export class ChromiumDesktopSession {
         await tab.cdp.send('Emulation.setDeviceMetricsOverride', {
           width: this.viewport.width,
           height: this.viewport.height,
-          deviceScaleFactor: this.dpr,
+          deviceScaleFactor: this.getEffectiveDpr(),
           mobile: false,
         });
       } catch {}
@@ -940,13 +1021,13 @@ export class ChromiumDesktopSession {
       if (this.activeTabId === tab.id && tab.mode === 'web') {
         this.broadcastBinary(packet);
 
-        // Send a lossless PNG frame shortly after motion settles for native Retina text clarity
+        // Send a crisp settle frame shortly after motion settles (lossless 2x PNG or high-quality JPEG)
         if (tab.settleTimer) clearTimeout(tab.settleTimer);
         tab.settleTimer = setTimeout(() => {
           if (this.activeTabId === tab.id && tab.mode === 'web' && this.binaryListeners.size > 0 && this.viewerVisible) {
             this.captureImmediateFrame(tab).catch(() => {});
           }
-        }, 280);
+        }, this.streamConfig.settleDelayMs);
       }
     });
 
@@ -1042,11 +1123,16 @@ export class ChromiumDesktopSession {
     if (!tab.cdp || tab.streaming || tab.mode !== 'web') return;
     if (this.binaryListeners.size === 0 || !this.viewerVisible) return;
     try {
+      const effectiveDpr = this.getEffectiveDpr();
+      const motionScale = this.streamConfig.dynamicQualityDrop ? this.streamConfig.motionScale : 1;
+      const motionQuality = this.streamConfig.dynamicQualityDrop
+        ? this.streamConfig.motionQuality
+        : Math.max(85, this.streamConfig.motionQuality);
       await tab.cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 84,
-        maxWidth: Math.round(this.viewport.width * this.dpr),
-        maxHeight: Math.round(this.viewport.height * this.dpr),
+        quality: Math.max(35, Math.min(95, Math.round(motionQuality))),
+        maxWidth: Math.max(320, Math.round(this.viewport.width * effectiveDpr * motionScale)),
+        maxHeight: Math.max(240, Math.round(this.viewport.height * effectiveDpr * motionScale)),
         everyNthFrame: 1,
       });
       tab.streaming = true;
@@ -1073,21 +1159,28 @@ export class ChromiumDesktopSession {
     tab.capturingPng = true;
     try {
       tab.suppressSettleUntil = Date.now() + 1200;
-      let pngBuf: Buffer;
+      const usePng = this.streamConfig.settlePng;
+      let frameBuf: Buffer;
       if (tab.cdp) {
-        const res = await tab.cdp.send('Page.captureScreenshot', {
-          format: 'png',
-          fromSurface: true,
-        });
-        pngBuf = Buffer.from(res.data, 'base64');
+        const res = await tab.cdp.send(
+          'Page.captureScreenshot',
+          usePng
+            ? { format: 'png', fromSurface: true }
+            : { format: 'jpeg', quality: Math.max(82, this.streamConfig.motionQuality), fromSurface: true }
+        );
+        frameBuf = Buffer.from(res.data, 'base64');
       } else {
-        pngBuf = await tab.page.screenshot({ type: 'png', scale: 'device' });
+        frameBuf = await tab.page.screenshot(
+          usePng
+            ? { type: 'png', scale: 'device' }
+            : { type: 'jpeg', quality: Math.max(82, this.streamConfig.motionQuality), scale: 'device' }
+        );
       }
       tab.lastPngAt = Date.now();
       tab.suppressSettleUntil = tab.lastPngAt + 950;
-      const packet = Buffer.allocUnsafe(1 + pngBuf.length);
+      const packet = Buffer.allocUnsafe(1 + frameBuf.length);
       packet[0] = PACKET_VIDEO_JPEG;
-      pngBuf.copy(packet, 1);
+      frameBuf.copy(packet, 1);
       if (tab.lastFrameBuffer && tab.lastFrameBuffer.length === packet.length && tab.lastFrameBuffer.equals(packet)) {
         return;
       }

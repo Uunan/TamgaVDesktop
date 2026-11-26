@@ -15,6 +15,34 @@ export interface VFSNode {
   originalPath?: string;
 }
 
+export interface StreamPreferences {
+  preset: 'performance' | 'balanced' | 'ultra' | 'custom';
+  dynamicQualityDrop: boolean;
+  motionQuality: number;
+  motionScale: number;
+  maxDpr: number;
+  settlePng: boolean;
+  settleDelayMs: number;
+  x11Fps: number;
+  x11MaxQuality: number;
+  x11MotionQuality: number;
+  audioEnabled: boolean;
+}
+
+export interface BrowserPreferences {
+  defaultUrl: string;
+  closeTabsOnExit: boolean;
+}
+
+export interface TerminalPreferences {
+  fontSize: number;
+  cursorBlink: boolean;
+}
+
+export interface UiPreferences {
+  showFullscreenNotice: boolean;
+}
+
 export interface DesktopMeta {
   positions: Record<string, { x: number; y: number }>;
   trashOrigins: Record<string, string>;
@@ -25,8 +53,40 @@ export interface DesktopMeta {
     iconSize: 'sm' | 'md' | 'lg';
     autoArrange: boolean;
     sortBy: 'name' | 'extension' | 'size' | 'modifiedAt';
+    stream: StreamPreferences;
+    browser: BrowserPreferences;
+    terminal: TerminalPreferences;
+    ui: UiPreferences;
   };
 }
+
+export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
+  preset: 'balanced',
+  dynamicQualityDrop: true,
+  motionQuality: 65,
+  motionScale: 0.75,
+  maxDpr: 2,
+  settlePng: true,
+  settleDelayMs: 300,
+  x11Fps: 20,
+  x11MaxQuality: 85,
+  x11MotionQuality: 58,
+  audioEnabled: true,
+};
+
+export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = {
+  defaultUrl: 'https://www.google.com',
+  closeTabsOnExit: true,
+};
+
+export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
+  fontSize: 13,
+  cursorBlink: true,
+};
+
+export const DEFAULT_UI_PREFERENCES: UiPreferences = {
+  showFullscreenNotice: true,
+};
 
 export interface VirtualDesktopInfo {
   id: string;
@@ -248,6 +308,10 @@ export class VFSManager {
     }
   }
 
+  public getMeta(): DesktopMeta {
+    return this.meta;
+  }
+
   private loadMeta(): DesktopMeta {
     if (fs.existsSync(this.metaFile)) {
       try {
@@ -266,6 +330,22 @@ export class VFSManager {
             iconSize: parsed.preferences?.iconSize || 'md',
             autoArrange: parsed.preferences?.autoArrange ?? false,
             sortBy: parsed.preferences?.sortBy || 'name',
+            stream: {
+              ...DEFAULT_STREAM_PREFERENCES,
+              ...(parsed.preferences?.stream || {}),
+            },
+            browser: {
+              ...DEFAULT_BROWSER_PREFERENCES,
+              ...(parsed.preferences?.browser || {}),
+            },
+            terminal: {
+              ...DEFAULT_TERMINAL_PREFERENCES,
+              ...(parsed.preferences?.terminal || {}),
+            },
+            ui: {
+              ...DEFAULT_UI_PREFERENCES,
+              ...(parsed.preferences?.ui || {}),
+            },
           },
         };
       } catch {
@@ -281,6 +361,10 @@ export class VFSManager {
         iconSize: 'md',
         autoArrange: false,
         sortBy: 'name',
+        stream: { ...DEFAULT_STREAM_PREFERENCES },
+        browser: { ...DEFAULT_BROWSER_PREFERENCES },
+        terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
+        ui: { ...DEFAULT_UI_PREFERENCES },
       },
     };
   }
@@ -758,13 +842,34 @@ export class VFSManager {
 
   public updateMeta(partial: {
     positions?: Record<string, { x: number; y: number }>;
-    preferences?: Partial<DesktopMeta['preferences']>;
+    preferences?: Partial<
+      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui'> & {
+        stream?: Partial<StreamPreferences>;
+        browser?: Partial<BrowserPreferences>;
+        terminal?: Partial<TerminalPreferences>;
+        ui?: Partial<UiPreferences>;
+      }
+    >;
   }): DesktopMeta {
     if (partial.positions) {
       this.meta.positions = { ...this.meta.positions, ...partial.positions };
     }
     if (partial.preferences) {
-      this.meta.preferences = { ...this.meta.preferences, ...partial.preferences };
+      const { stream, browser, terminal, ui, ...rest } = partial.preferences;
+      this.meta.preferences = {
+        ...this.meta.preferences,
+        ...rest,
+        stream: stream
+          ? { ...this.meta.preferences.stream, ...stream }
+          : this.meta.preferences.stream,
+        browser: browser
+          ? { ...this.meta.preferences.browser, ...browser }
+          : this.meta.preferences.browser,
+        terminal: terminal
+          ? { ...this.meta.preferences.terminal, ...terminal }
+          : this.meta.preferences.terminal,
+        ui: ui ? { ...this.meta.preferences.ui, ...ui } : this.meta.preferences.ui,
+      };
       if (!this.meta.preferences.customWallpaper) {
         delete this.meta.preferences.customWallpaper;
       }

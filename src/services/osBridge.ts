@@ -4,6 +4,7 @@ import type {
   LinuxAppInfo,
   LinuxRuntimeStatus,
   RunningLinuxSession,
+  SystemInfoResponse,
   VFSNode,
   VirtualDesktopInfo,
 } from '../types/os';
@@ -70,6 +71,15 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  changePassword: (password: string) =>
+    jsonReq<{ ok: boolean }>('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+};
+
+export const systemApi = {
+  info: () => jsonReq<SystemInfoResponse>('/api/system/info'),
 };
 
 export const appsApi = {
@@ -269,7 +279,14 @@ export const vfsApi = {
 
   updateMeta: (partial: {
     positions?: Record<string, { x: number; y: number }>;
-    preferences?: Partial<DesktopMeta['preferences']>;
+    preferences?: Partial<
+      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui'> & {
+        stream?: Partial<DesktopMeta['preferences']['stream']>;
+        browser?: Partial<DesktopMeta['preferences']['browser']>;
+        terminal?: Partial<DesktopMeta['preferences']['terminal']>;
+        ui?: Partial<DesktopMeta['preferences']['ui']>;
+      }
+    >;
   }) =>
     jsonReq<{ meta: DesktopMeta }>('/api/vfs/meta', {
       method: 'PATCH',

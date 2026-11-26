@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Folder,
+  Gauge,
   HardDrive,
   ImagePlus,
   Layers,
@@ -19,6 +20,7 @@ import {
   Plus,
   RotateCw,
   Search,
+  Settings,
   SlidersHorizontal,
   Sun,
   Terminal,
@@ -31,6 +33,7 @@ import {
   type DesktopMeta,
   type LinuxAppInfo,
   type OSWindow,
+  type SettingsTabId,
   type TelemetryData,
   type ToastItem,
   type VFSNode,
@@ -42,6 +45,7 @@ import {
   ChromiumLogoIcon,
   FileIcon,
   FirefoxLogoIcon,
+  SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
 import { formatUptime, getFileTypeLabel } from '../../utils/format';
@@ -80,6 +84,7 @@ interface TaskbarProps {
   onOpenBrowser: () => void;
   onOpenTerminal: () => void;
   onOpenAppStore: () => void;
+  onOpenSettings: (tab?: SettingsTabId) => void;
   onLaunchLinuxApp: (app: LinuxAppInfo) => void;
   onOpenFolder: (path: string) => void;
   onOpenNode: (node: VFSNode) => void;
@@ -133,6 +138,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onOpenBrowser,
   onOpenTerminal,
   onOpenAppStore,
+  onOpenSettings,
   onLaunchLinuxApp,
   onOpenFolder,
   onOpenNode,
@@ -224,8 +230,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   const browserWin = windows.find((w) => w.kind === 'browser');
   const terminalWin = windows.find((w) => w.kind === 'terminal');
   const appStoreWin = windows.find((w) => w.kind === 'app-store');
+  const settingsWin = windows.find((w) => w.kind === 'settings');
   const otherWindows = windows.filter(
-    (w) => w.id !== browserWin?.id && w.id !== terminalWin?.id && w.id !== appStoreWin?.id
+    (w) =>
+      w.id !== browserWin?.id &&
+      w.id !== terminalWin?.id &&
+      w.id !== appStoreWin?.id &&
+      w.id !== settingsWin?.id
   );
   const customWallpaperUrl = customWallpaper ? buildWallpaperUrl(customWallpaper) : undefined;
 
@@ -985,6 +996,33 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             )}
           </button>
 
+          {/* Pinned System Settings */}
+          <button
+            onClick={() => {
+              if (settingsWin) onToggleWindowFromTaskbar(settingsWin.id);
+              else onOpenSettings('stream');
+            }}
+            data-testid="dock-settings-btn"
+            title="Ayarlar"
+            className={`relative h-10 px-2.5 rounded-xl flex items-center gap-2 transition-colors shrink-0 ${
+              settingsWin && !settingsWin.minimized && focusedWindowId === settingsWin.id
+                ? 'bg-[var(--os-active)] text-[var(--os-text)]'
+                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]'
+            }`}
+          >
+            <SettingsAppIcon size={23} />
+            <span className="text-xs font-medium hidden xl:inline">Ayarlar</span>
+            {settingsWin && (
+              <span
+                className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
+                  !settingsWin.minimized && focusedWindowId === settingsWin.id
+                    ? 'w-4 bg-[var(--os-accent-bg)]'
+                    : 'w-1.5 bg-[var(--os-text-subtle)]'
+                }`}
+              />
+            )}
+          </button>
+
           {/* Open Other Windows (Folders, Linux Apps, Properties) */}
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
             {otherWindows.map((w) => {
@@ -1005,6 +1043,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     <AppWindow className="w-4 h-4 shrink-0" />
                   ) : w.kind === 'app-store' ? (
                     <LayoutGrid className="w-4 h-4 shrink-0" />
+                  ) : w.kind === 'settings' ? (
+                    <Settings className="w-4 h-4 shrink-0" />
                   ) : (
                     <Folder className="w-4 h-4 shrink-0" />
                   )}
@@ -1020,8 +1060,17 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           </div>
         </div>
 
-        {/* Right: Quick Theme Toggle, Volume, Control Center, Notifications, Clock */}
+        {/* Right: Quick Stream Quality, Theme Toggle, Volume, Control Center, Notifications, Clock */}
         <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => onOpenSettings('stream')}
+            data-testid="dock-stream-quality-btn"
+            title="Akış & Kalite Ayarları"
+            className="h-10 w-9 rounded-xl flex items-center justify-center hover:bg-[var(--os-hover)] text-emerald-400 hover:text-emerald-300 transition-colors"
+          >
+            <Gauge className="w-4 h-4" />
+          </button>
+
           <button
             onClick={(e) => onToggleTheme(theme === 'dark' ? 'light' : 'dark', getOriginFromEvent(e))}
             data-testid="dock-theme-toggle"
