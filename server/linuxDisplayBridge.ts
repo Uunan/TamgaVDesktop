@@ -785,16 +785,18 @@ export class LinuxAppSession {
           extraFlags.push(`--window-size=${this.width},${this.height}`);
         }
       }
-      if (!finalCmd.includes('--user-data-dir')) {
+      const supportsUserDataDir =
+        isChromiumBrowser || baseBin === 'code' || baseBin === 'codium';
+      if (supportsUserDataDir && !finalCmd.includes('--user-data-dir')) {
         extraFlags.push(`--user-data-dir="${profileDir}"`);
       }
       if (!finalCmd.includes('--disable-gpu')) {
         extraFlags.push('--disable-gpu', '--disable-dev-shm-usage');
       }
-      if ((baseBin === 'code' || baseBin === 'antigravity') && !finalCmd.includes('--verbose')) {
+      if ((baseBin === 'code' || baseBin === 'codium') && !finalCmd.includes('--verbose')) {
         extraFlags.push('--verbose');
       }
-      if (extraNewWindow && !finalCmd.includes('--new-window')) {
+      if (extraNewWindow && supportsUserDataDir && !finalCmd.includes('--new-window')) {
         extraFlags.push('--new-window');
       }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
