@@ -1,6 +1,6 @@
 {
   "name": "tamga-vdesktop",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": false,
   "type": "module",
   "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, and seamless native Linux GUI apps (Firefox, VS Code, Antigravity).",

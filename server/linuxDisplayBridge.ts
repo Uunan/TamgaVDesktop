@@ -649,10 +649,14 @@ export class LinuxAppSession {
       ],
       {
         env: this.baseEnv,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
     view.streamerProc = proc;
+    proc.stderr?.on('data', (err: Buffer) => {
+      const msg = err.toString('utf-8').trim();
+      if (msg) console.error(`[x11_streamer ${this.displayStr}/${view.viewId}]`, msg);
+    });
 
     let acc = Buffer.alloc(0);
 

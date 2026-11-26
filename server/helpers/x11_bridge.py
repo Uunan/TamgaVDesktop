@@ -469,7 +469,7 @@ def main() -> None:
     target_h = int(sys.argv[3]) if len(sys.argv) > 3 else 680
 
     dpy = None
-    for _ in range(30):
+    for _ in range(80):
         dpy = libX11.XOpenDisplay(display_str.encode("utf-8"))
         if dpy:
             break

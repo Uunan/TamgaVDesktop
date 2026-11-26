@@ -303,17 +303,26 @@ export class LinuxAppManager {
     const safe = path.basename(iconName).replace(/[^a-z0-9._-]/gi, '');
     if (!safe) return null;
 
-    const searchPaths = [
-      `/usr/share/icons/hicolor/128x128/apps/${safe}.png`,
-      `/usr/share/icons/hicolor/64x64/apps/${safe}.png`,
-      `/usr/share/icons/hicolor/48x48/apps/${safe}.png`,
-      `/usr/share/icons/hicolor/scalable/apps/${safe}.svg`,
-      `/usr/share/pixmaps/${safe}.png`,
-      `/usr/share/pixmaps/${safe}.svg`,
-      `/usr/share/pixmaps/${safe}.xpm`,
-    ];
-    for (const p of searchPaths) {
-      if (fs.existsSync(p)) return p;
+    const aliasMap: Record<string, string[]> = {
+      chrome: ['google-chrome', 'chromium', 'chromium-browser'],
+      mousepad: ['org.xfce.mousepad', 'mousepad'],
+      vscode: ['com.visualstudio.code', 'vscode', 'visual-studio-code'],
+    };
+    const candidates = Array.from(new Set([safe, ...(aliasMap[safe] || [])]));
+
+    for (const name of candidates) {
+      const searchPaths = [
+        `/usr/share/icons/hicolor/128x128/apps/${name}.png`,
+        `/usr/share/icons/hicolor/64x64/apps/${name}.png`,
+        `/usr/share/icons/hicolor/48x48/apps/${name}.png`,
+        `/usr/share/icons/hicolor/scalable/apps/${name}.svg`,
+        `/usr/share/pixmaps/${name}.png`,
+        `/usr/share/pixmaps/${name}.svg`,
+        `/usr/share/pixmaps/${name}.xpm`,
+      ];
+      for (const p of searchPaths) {
+        if (fs.existsSync(p)) return p;
+      }
     }
     return null;
   }

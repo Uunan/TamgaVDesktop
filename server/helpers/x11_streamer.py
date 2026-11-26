@@ -149,7 +149,7 @@ def main() -> None:
     off_y = max(0, int(sys.argv[7]) if len(sys.argv) > 7 else 0)
 
     dpy = None
-    for _ in range(30):
+    for _ in range(80):
         dpy = libX11.XOpenDisplay(display_str.encode("utf-8"))
         if dpy:
             break
@@ -258,8 +258,8 @@ def main() -> None:
                         try:
                             cmd = json.loads(s.decode("utf-8"))
                             if cmd.get("type") == "resize":
-                                width = max(320, min(1920, int(cmd.get("width", width))))
-                                height = max(240, min(1080, int(cmd.get("height", height))))
+                                width = max(240, min(1920, int(cmd.get("width", width))))
+                                height = max(180, min(1080, int(cmd.get("height", height))))
                                 dirty = True
                             elif cmd.get("type") == "refresh":
                                 dirty = True
