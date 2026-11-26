@@ -350,6 +350,7 @@ export class LinuxAppSession {
       }
     );
     this.x11BridgeProc = proc;
+    proc.stdin?.on('error', () => {});
     proc.stderr?.on('data', (err: Buffer) => {
       const msg = err.toString('utf-8').trim();
       if (msg) console.error(`[x11_bridge ${this.displayStr}]`, msg);
@@ -737,6 +738,7 @@ export class LinuxAppSession {
       }
     );
     view.streamerProc = proc;
+    proc.stdin?.on('error', () => {});
     proc.stderr?.on('data', (err: Buffer) => {
       const msg = err.toString('utf-8').trim();
       if (msg) console.error(`[x11_streamer ${this.displayStr}/${view.viewId}]`, msg);
@@ -762,14 +764,18 @@ export class LinuxAppSession {
 
         if (!view.hasGeometry) {
           // Wait until the X11 app actually maps a window so clients never flash blank black frames
-          if (proc.stdin?.writable) proc.stdin.write('a\n');
+          if (proc.stdin?.writable) {
+            try { proc.stdin.write('a\n'); } catch {}
+          }
           continue;
         }
 
         view.lastFrame = frame;
 
         if (view.subscribers.size === 0) {
-          if (proc.stdin?.writable) proc.stdin.write('a\n');
+          if (proc.stdin?.writable) {
+            try { proc.stdin.write('a\n'); } catch {}
+          }
           continue;
         }
 
@@ -778,7 +784,7 @@ export class LinuxAppSession {
           if (!ackSent) {
             ackSent = true;
             if (!this.closed && proc.stdin?.writable) {
-              proc.stdin.write('a\n');
+              try { proc.stdin.write('a\n'); } catch {}
             }
           }
         };
@@ -863,9 +869,11 @@ export class LinuxAppSession {
 
   private resizeViewCapture(view: ViewStream, evenW: number, evenH: number): void {
     if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
-      view.streamerProc.stdin.write(
-        JSON.stringify({ type: 'resize', width: evenW, height: evenH }) + '\n'
-      );
+      try {
+        view.streamerProc.stdin.write(
+          JSON.stringify({ type: 'resize', width: evenW, height: evenH }) + '\n'
+        );
+      } catch {}
       return;
     }
 
@@ -904,13 +912,15 @@ export class LinuxAppSession {
         type: 'view_geometry',
         width: view.width,
         height: view.height,
-        initial: true,
+        initial: view.viewId === 'main',
       });
     }
     if (view.lastFrame && view.hasGeometry) {
       sub.onVideoFrame(view.lastFrame);
     } else if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
-      view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
+      try {
+        view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
+      } catch {}
     }
     return () => {
       view.subscribers.delete(sub);
@@ -919,7 +929,9 @@ export class LinuxAppSession {
 
   public sendInput(msg: Record<string, unknown>, viewId = 'main'): void {
     if (this.closed || !this.x11BridgeProc?.stdin?.writable) return;
-    this.x11BridgeProc.stdin.write(JSON.stringify({ ...msg, view: msg.view || viewId }) + '\n');
+    try {
+      this.x11BridgeProc.stdin.write(JSON.stringify({ ...msg, view: msg.view || viewId }) + '\n');
+    } catch {}
   }
 
   public resizeView(viewId: string, width: number, height: number): void {

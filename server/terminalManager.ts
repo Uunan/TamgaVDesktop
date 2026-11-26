@@ -85,14 +85,18 @@ export class TerminalManager {
       for (const fn of listeners) fn({ type: 'output', data: txt });
     });
 
+    proc.stdin.on('error', () => {});
+
     proc.on('exit', (code) => {
       for (const fn of listeners) fn({ type: 'exit', code: code ?? 0 });
       this.sessions.delete(sessionId);
     });
 
     const sendCmd = (payload: Record<string, unknown>) => {
-      if (proc.stdin.writable) {
-        proc.stdin.write(JSON.stringify(payload) + '\n');
+      if (!proc.killed && proc.stdin.writable) {
+        try {
+          proc.stdin.write(JSON.stringify(payload) + '\n');
+        } catch {}
       }
     };
 
