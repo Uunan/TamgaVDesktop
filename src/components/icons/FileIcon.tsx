@@ -592,3 +592,44 @@ export const SettingsAppIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
     <circle cx="24" cy="43" r="4.5" fill="#A1A1AA" />
   </svg>
 );
+
+export const VSCodeLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => {
+  const uid = React.useId().replace(/:/g, '');
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm shrink-0">
+      <defs>
+        <linearGradient id={`${uid}-vsc-bg`} x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#29B6F6" />
+          <stop offset="100%" stopColor="#0065A9" />
+        </linearGradient>
+      </defs>
+      <rect x="6" y="6" width="52" height="52" rx="14" fill={`url(#${uid}-vsc-bg)`} />
+      <path
+        d="M44.5 16L25 34.5L17.2 28.4L14 30.2V33.8L21.5 39.2L14 44.6V48.2L17.2 50L25 43.9L44.5 48L50 45.2V18.8L44.5 16ZM44 24.4V39.6L32.8 32L44 24.4Z"
+        fill="#FFFFFF"
+      />
+    </svg>
+  );
+};
+
+export const AntigravityLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => {
+  const uid = React.useId().replace(/:/g, '');
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm shrink-0">
+      <defs>
+        <linearGradient id={`${uid}-ag-bg`} x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#4F46E5" />
+          <stop offset="52%" stopColor="#6366F1" />
+          <stop offset="100%" stopColor="#06B6D4" />
+        </linearGradient>
+      </defs>
+      <rect x="6" y="6" width="52" height="52" rx="14" fill={`url(#${uid}-ag-bg)`} />
+      <path
+        d="M32 14L47 47H39.4L36.1 39.2H27.9L24.6 47H17L32 14ZM32 24.8L29.6 33.4H34.4L32 24.8Z"
+        fill="#FFFFFF"
+      />
+      <circle cx="46" cy="19" r="3.2" fill="#A5F3FC" />
+    </svg>
+  );
+};
+

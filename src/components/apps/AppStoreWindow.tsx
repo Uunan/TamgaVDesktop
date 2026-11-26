@@ -14,7 +14,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  Sparkles,
   Terminal,
   Trash2,
   Wrench,
@@ -22,7 +21,12 @@ import {
 } from 'lucide-react';
 import type { AptSearchResult, LinuxAppInfo, LinuxRuntimeStatus } from '../../types/os';
 import { appsApi, buildAppIconUrl } from '../../services/osBridge';
-import { FirefoxLogoIcon, GoogleChromeLogoIcon } from '../icons/FileIcon';
+import {
+  AntigravityLogoIcon,
+  FirefoxLogoIcon,
+  GoogleChromeLogoIcon,
+  VSCodeLogoIcon,
+} from '../icons/FileIcon';
 
 interface AppStoreWindowProps {
   runtime: LinuxRuntimeStatus | null;
@@ -57,21 +61,12 @@ const SIDEBAR_ITEMS: Array<{ id: StoreSection; label: string; icon: React.Compon
 
 const StoreAppBadge: React.FC<{ app: LinuxAppInfo; size?: number }> = ({ app, size = 40 }) => {
   const [imgErr, setImgErr] = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
 
   if (app.id === 'chrome') return <GoogleChromeLogoIcon size={size} />;
   if (app.id === 'firefox') return <FirefoxLogoIcon size={size} />;
-
-  if (app.installed && app.iconName && !imgErr) {
-    return (
-      <img
-        src={buildAppIconUrl(app.iconName)}
-        alt={app.name}
-        onError={() => setImgErr(true)}
-        style={{ width: size, height: size }}
-        className="object-contain shrink-0"
-      />
-    );
-  }
+  if (app.id === 'vscode') return <VSCodeLogoIcon size={size} />;
+  if (app.id === 'antigravity') return <AntigravityLogoIcon size={size} />;
 
   const accent = app.accent || '#3f3f46';
   const initials = app.name
@@ -81,7 +76,7 @@ const StoreAppBadge: React.FC<{ app: LinuxAppInfo; size?: number }> = ({ app, si
     .join('')
     .toUpperCase();
 
-  return (
+  const fallbackTile = (
     <div
       style={{
         width: size,
@@ -90,13 +85,29 @@ const StoreAppBadge: React.FC<{ app: LinuxAppInfo; size?: number }> = ({ app, si
       }}
       className="rounded-xl flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-sm shrink-0"
     >
-      {app.id === 'antigravity' ? (
-        <Sparkles className="w-5 h-5 text-white" />
-      ) : (
-        initials || <Package className="w-4 h-4" />
-      )}
+      {initials || <Package className="w-4 h-4" />}
     </div>
   );
+
+  if (app.installed && app.iconName && !imgErr) {
+    return (
+      <div style={{ width: size, height: size }} className="relative shrink-0">
+        {!imgLoaded && fallbackTile}
+        <img
+          src={buildAppIconUrl(app.iconName)}
+          alt={app.name}
+          onLoad={() => setImgLoaded(true)}
+          onError={() => setImgErr(true)}
+          style={{ width: size, height: size }}
+          className={`object-contain shrink-0 transition-opacity duration-150 ${
+            imgLoaded ? 'opacity-100' : 'opacity-0 absolute inset-0'
+          }`}
+        />
+      </div>
+    );
+  }
+
+  return fallbackTile;
 };
 
 export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
@@ -261,71 +272,78 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
       <div
         key={app.id}
         data-testid={`store-app-${app.id}`}
-        className="group p-3.5 rounded-2xl bg-[var(--os-surface-2)] hover:bg-[var(--os-surface-3)]/70 border border-[var(--os-border)] hover:border-[var(--os-border-strong)] transition-all flex items-center gap-3.5"
+        className="group p-3.5 rounded-2xl bg-[var(--os-surface-2)] hover:bg-[var(--os-surface-3)]/70 border border-[var(--os-border)] hover:border-[var(--os-border-strong)] transition-all flex flex-col justify-between gap-2.5"
       >
-        <StoreAppBadge app={app} size={42} />
+        <div className="flex items-start gap-3">
+          <StoreAppBadge app={app} size={44} />
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold text-[var(--os-text)] truncate">{app.name}</span>
-            {app.installed && (
-              <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-[9px] font-semibold shrink-0">
-                Yüklü
+          <div className="min-w-0 flex-1 pt-0.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[13px] font-semibold text-[var(--os-text)] leading-tight truncate">
+                {app.name}
               </span>
-            )}
-          </div>
-          <div className="text-[10px] text-[var(--os-text-subtle)] truncate">
-            {app.publisher || 'Ubuntu'}
-          </div>
-          <div className="text-[11px] text-[var(--os-text-muted)] truncate mt-0.5">
-            {app.description}
+              {app.installed && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 text-[10px] font-semibold shrink-0">
+                  Yüklü
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] text-[var(--os-text-subtle)] truncate mt-0.5">
+              {app.publisher || 'Ubuntu'}
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
-          {app.installed ? (
-            <>
-              <button
-                onClick={() => onLaunchApp(app)}
-                data-testid={`launch-app-${app.id}`}
-                className="px-3 py-1.5 rounded-full bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] hover:opacity-90 text-[11px] font-semibold flex items-center gap-1 transition-opacity"
-              >
-                <Play className="w-3 h-3" />
-                <span>Aç</span>
-              </button>
-              <button
-                onClick={() => onLaunchApp(app, { forceNew: true })}
-                title="Yeni Pencere"
-                className="p-1.5 rounded-full bg-[var(--os-bg)] hover:bg-[var(--os-surface-4)] border border-[var(--os-border)] text-[var(--os-text-secondary)] transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-              </button>
-              {allowInstall && app.uninstallable && (
+        <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--os-border)]/50">
+          <p className="text-[11px] text-[var(--os-text-muted)] line-clamp-1 flex-1 min-w-0">
+            {app.description}
+          </p>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {app.installed ? (
+              <>
                 <button
-                  disabled={isBusy}
-                  onClick={() => startUninstall({ appId: app.id, label: app.name })}
-                  title="Kaldır"
-                  className="p-1.5 rounded-full bg-[var(--os-bg)] hover:bg-red-500/15 border border-[var(--os-border)] text-[var(--os-text-subtle)] hover:text-red-400 disabled:opacity-40 transition-colors"
+                  onClick={() => onLaunchApp(app)}
+                  data-testid={`launch-app-${app.id}`}
+                  className="px-3 py-1.5 rounded-full bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] hover:opacity-90 text-[11px] font-semibold flex items-center gap-1 transition-opacity"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Play className="w-3 h-3" />
+                  <span>Aç</span>
                 </button>
-              )}
-            </>
-          ) : (
-            <button
-              disabled={isBusy || !allowInstall || !runtime?.isLinux}
-              onClick={() => startInstall({ appId: app.id, label: app.name })}
-              data-testid={`install-app-${app.id}`}
-              className="px-3.5 py-1.5 rounded-full bg-[var(--os-bg)] hover:bg-[var(--os-accent-bg)] hover:text-[var(--os-accent-fg)] border border-[var(--os-border-strong)] text-[11px] font-semibold flex items-center gap-1.5 disabled:opacity-40 transition-colors"
-            >
-              {busyThis ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <Download className="w-3 h-3" />
-              )}
-              <span>{busyThis ? 'Kuruluyor' : 'Yükle'}</span>
-            </button>
-          )}
+                <button
+                  onClick={() => onLaunchApp(app, { forceNew: true })}
+                  title="Yeni Pencere"
+                  className="p-1.5 rounded-full bg-[var(--os-bg)] hover:bg-[var(--os-surface-4)] border border-[var(--os-border)] text-[var(--os-text-secondary)] transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+                {allowInstall && app.uninstallable && (
+                  <button
+                    disabled={isBusy}
+                    onClick={() => startUninstall({ appId: app.id, label: app.name })}
+                    title="Kaldır"
+                    className="p-1.5 rounded-full bg-[var(--os-bg)] hover:bg-red-500/15 border border-[var(--os-border)] text-[var(--os-text-subtle)] hover:text-red-400 disabled:opacity-40 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </>
+            ) : (
+              <button
+                disabled={isBusy || !allowInstall || !runtime?.isLinux}
+                onClick={() => startInstall({ appId: app.id, label: app.name })}
+                data-testid={`install-app-${app.id}`}
+                className="px-3.5 py-1.5 rounded-full bg-[var(--os-bg)] hover:bg-[var(--os-accent-bg)] hover:text-[var(--os-accent-fg)] border border-[var(--os-border-strong)] text-[11px] font-semibold flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+              >
+                {busyThis ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3" />
+                )}
+                <span>{busyThis ? 'Kuruluyor' : 'Yükle'}</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );

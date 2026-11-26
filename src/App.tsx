@@ -434,8 +434,8 @@ export default function App() {
       }
       const vw = window.innerWidth;
       const vh = window.innerHeight - 76;
-      const width = Math.min(840, vw - 36);
-      const height = Math.min(600, vh - 36);
+      const width = Math.min(960, vw - 36);
+      const height = Math.min(660, vh - 36);
       return [
         ...prev,
         {
