@@ -269,23 +269,27 @@ export class LinuxAppSession {
     const baseBin = path.basename(finalCmd.split(/\s+/)[0] || '');
 
     if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
-      // Pre-seed lightweight user.js for smooth software rendering and clean first-run
+      // Pre-seed lightweight user.js for crisp software WebRender and clean startup without first-run dim overlays
       const userJsPath = path.join(profileDir, 'user.js');
-      if (!fs.existsSync(userJsPath)) {
-        fs.writeFileSync(
-          userJsPath,
-          [
-            'user_pref("browser.shell.checkDefaultBrowser", false);',
-            'user_pref("browser.aboutwelcome.enabled", false);',
-            'user_pref("datareporting.policy.firstRunURL", "");',
-            'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
-            'user_pref("browser.tabs.inTitlebar", 0);',
-            'user_pref("browser.download.dir", ' + JSON.stringify(path.join(this.desktopDataRoot, 'vfs', 'Downloads')) + ');',
-            'user_pref("browser.download.folderList", 2);',
-          ].join('\n') + '\n',
-          'utf-8'
-        );
-      }
+      fs.writeFileSync(
+        userJsPath,
+        [
+          'user_pref("browser.shell.checkDefaultBrowser", false);',
+          'user_pref("browser.aboutwelcome.enabled", false);',
+          'user_pref("trailhead.firstrun.didSeeAboutWelcome", true);',
+          'user_pref("datareporting.policy.firstRunURL", "");',
+          'user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);',
+          'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
+          'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
+          'user_pref("browser.startup.homepage", "https://www.google.com");',
+          'user_pref("browser.tabs.inTitlebar", 0);',
+          'user_pref("gfx.webrender.software", true);',
+          'user_pref("gfx.x11-egl.force-disabled", true);',
+          'user_pref("browser.download.dir", ' + JSON.stringify(path.join(this.desktopDataRoot, 'vfs', 'Downloads')) + ');',
+          'user_pref("browser.download.folderList", 2);',
+        ].join('\n') + '\n',
+        'utf-8'
+      );
       finalCmd = `${finalCmd} --no-remote -profile "${profileDir}" --width=${this.width} --height=${this.height}`;
     } else if (
       this.needsNoSandbox ||
@@ -344,6 +348,7 @@ export class LinuxAppSession {
       '-i', `${this.displayStr}.0+0,0`,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
+      '-pix_fmt', 'yuvj420p',
       '-q:v', String(this.quality),
       '-',
     ];

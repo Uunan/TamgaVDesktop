@@ -20,7 +20,7 @@ import { TerminalManager } from './terminalManager';
 import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 
-export const TAMGA_VERSION = '1.0.0';
+export const TAMGA_VERSION = '1.0.1';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',

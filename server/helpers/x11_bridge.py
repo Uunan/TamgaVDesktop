@@ -109,6 +109,10 @@ def fit_windows(display_str: str, width: int, height: int) -> None:
                 ["wmctrl", "-i", "-r", wid, "-e", f"0,0,0,{width},{height}"],
                 env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=1.0
             )
+            subprocess.run(
+                ["wmctrl", "-i", "-a", wid],
+                env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=1.0
+            )
     except Exception:
         try:
             wid = subprocess.check_output(

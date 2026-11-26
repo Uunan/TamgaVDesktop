@@ -1,6 +1,6 @@
 {
   "name": "tamga-vdesktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
   "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, and seamless native Linux GUI apps (Firefox, VS Code, Antigravity).",
@@ -9,7 +9,7 @@
   "homepage": "https://github.com/Uunan/TamgaVDesktop#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Uunan/TamgaVDesktop.git"
+    "url": "git+https://github.com/Uunan/TamgaVDesktop.git"
   },
   "bugs": {
     "url": "https://github.com/Uunan/TamgaVDesktop/issues"
@@ -30,8 +30,8 @@
     "node": ">=18.0.0"
   },
   "bin": {
-    "tamga-vdesktop": "./dist/cli.js",
-    "tamga": "./dist/cli.js"
+    "tamga-vdesktop": "dist/cli.js",
+    "tamga": "dist/cli.js"
   },
   "main": "./dist/server.js",
   "exports": {
