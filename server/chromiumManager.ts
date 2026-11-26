@@ -514,13 +514,19 @@ export class ChromiumCluster {
       }
       this.executableUsed = executablePath;
 
+      let devShmOk = false;
+      try {
+        const shmStat = fs.statfsSync('/dev/shm');
+        devShmOk = Number(shmStat.bavail) * Number(shmStat.bsize) >= 256 * 1024 * 1024;
+      } catch {}
+
       const launched = await chromiumApi.launch({
         executablePath,
         headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
+          ...(devShmOk ? [] : ['--disable-dev-shm-usage']),
           '--disable-blink-features=AutomationControlled',
           '--autoplay-policy=no-user-gesture-required',
           '--font-render-hinting=medium',
@@ -1012,16 +1018,19 @@ export class ChromiumDesktopSession {
       }
       tab.lastScreencastData = payload.data;
 
-      const jpegBuf = Buffer.from(payload.data, 'base64');
-      const packet = Buffer.allocUnsafe(1 + jpegBuf.length);
+      const b64 = payload.data;
+      const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+      const decodedLen = Math.max(0, Math.floor((b64.length * 3) / 4) - pad);
+      const packet = Buffer.allocUnsafe(1 + decodedLen);
       packet[0] = PACKET_VIDEO_JPEG;
-      jpegBuf.copy(packet, 1);
+      const written = packet.write(b64, 1, 'base64');
+      const finalPacket = written === decodedLen ? packet : packet.subarray(0, 1 + written);
 
-      tab.lastFrameBuffer = packet;
+      tab.lastFrameBuffer = finalPacket;
       this.recordFrameTick();
 
       if (this.activeTabId === tab.id && tab.mode === 'web') {
-        this.broadcastBinary(packet);
+        this.broadcastBinary(finalPacket);
 
         // Send a crisp settle frame shortly after motion settles (lossless 2x PNG or high-quality JPEG)
         if (tab.settleTimer) clearTimeout(tab.settleTimer);

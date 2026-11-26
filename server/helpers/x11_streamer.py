@@ -156,6 +156,9 @@ IPC_PRIVATE = 0
 IPC_CREAT = 0o1000
 IPC_RMID = 0
 
+libc.memcmp.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+libc.memcmp.restype = ctypes.c_int
+
 # MIT-SHM signatures
 if libXext is not None:
     libXext.XShmQueryExtension.argtypes = [ctypes.c_void_p]
@@ -509,6 +512,192 @@ def cluster_dirty_rects(
     return clusters
 
 
+class PrevFrameCache:
+    """Keeps the last transmitted BGRA frame to skip identical repaints and shrink oversized XDamage rects."""
+
+    def __init__(self) -> None:
+        self.buf: bytearray | None = None
+        self.ctype_arr = None
+        self.ptr: int = 0
+        self.w: int = 0
+        self.h: int = 0
+        self.stride: int = 0
+
+    def reset(self) -> None:
+        self.buf = None
+        self.ctype_arr = None
+        self.ptr = 0
+        self.w = 0
+        self.h = 0
+        self.stride = 0
+
+    def ensure_ready(self, w: int, h: int, stride: int) -> bool:
+        """Ensure buffer matches current dimensions. Returns True if newly allocated/resized."""
+        total = stride * h
+        if (
+            self.buf is not None
+            and self.w == w
+            and self.h == h
+            and self.stride == stride
+            and len(self.buf) == total
+        ):
+            return False
+        self.buf = bytearray(total)
+        self.ctype_arr = (ctypes.c_ubyte * total).from_buffer(self.buf)
+        self.ptr = ctypes.addressof(self.ctype_arr)
+        self.w = w
+        self.h = h
+        self.stride = stride
+        return True
+
+    def sync_full(self, base_data: int, w: int, h: int, stride: int) -> None:
+        self.ensure_ready(w, h, stride)
+        if self.ptr and base_data:
+            ctypes.memmove(self.ptr, base_data, stride * h)
+
+    def sync_rects(
+        self, base_data: int, w: int, h: int, stride: int, bpp: int, rects: list[tuple[int, int, int, int]]
+    ) -> None:
+        if not self.ptr or not base_data or self.w != w or self.h != h or self.stride != stride:
+            return
+        for rx, ry, rw, rh in rects:
+            row_bytes = rw * bpp
+            x_off = rx * bpp
+            for y in range(ry, ry + rh):
+                off = y * stride + x_off
+                ctypes.memmove(self.ptr + off, base_data + off, row_bytes)
+
+    def _tighten_rect(
+        self, base_data: int, full_w: int, full_h: int, stride: int, bpp: int, rect: tuple[int, int, int, int]
+    ) -> list[tuple[int, int, int, int]]:
+        rx, ry, rw, rh = rect
+        x_off = rx * bpp
+        row_bytes = rw * bpp
+        # Split tall vertical gaps (>24px unchanged rows) inside a single XDamage bbox
+        bands: list[tuple[int, int]] = []
+        in_band = False
+        band_y0 = ry
+        clean_streak = 0
+        y_end = ry + rh
+        for y in range(ry, y_end):
+            off = y * stride + x_off
+            if libc.memcmp(base_data + off, self.ptr + off, row_bytes) != 0:
+                if not in_band:
+                    band_y0 = y
+                    in_band = True
+                clean_streak = 0
+            elif in_band:
+                clean_streak += 1
+                if clean_streak >= 24:
+                    bands.append((band_y0, y - clean_streak + 1))
+                    in_band = False
+                    clean_streak = 0
+        if in_band:
+            bands.append((band_y0, y_end - clean_streak))
+        if not bands:
+            return []
+
+        out: list[tuple[int, int, int, int]] = []
+        blk = 64  # 16px BGRA chunks
+        for by0, by1 in bands:
+            min_bx = row_bytes
+            max_bx = 0
+            for y in range(by0, by1):
+                off = y * stride + x_off
+                if libc.memcmp(base_data + off, self.ptr + off, row_bytes) == 0:
+                    continue
+                for bx in range(0, row_bytes, blk):
+                    seg = min(blk, row_bytes - bx)
+                    if libc.memcmp(base_data + off + bx, self.ptr + off + bx, seg) != 0:
+                        if bx < min_bx:
+                            min_bx = bx
+                        break
+                last_bx = ((row_bytes - 1) // blk) * blk
+                for bx in range(last_bx, min_bx - 1, -blk):
+                    seg = min(blk, row_bytes - bx)
+                    if libc.memcmp(base_data + off + bx, self.ptr + off + bx, seg) != 0:
+                        if bx + seg > max_bx:
+                            max_bx = bx + seg
+                        break
+            if max_bx > min_bx:
+                ax = rx + (min_bx // bpp)
+                aw = (max_bx - min_bx + bpp - 1) // bpp
+                aligned = clamp_align_rect(ax, by0, aw, by1 - by0, full_w, full_h)
+                if aligned:
+                    out.append(aligned)
+        return out
+
+    def diff_frame(
+        self,
+        base_data: int,
+        full_w: int,
+        full_h: int,
+        stride: int,
+        bpp: int,
+        candidate_rects: list[tuple[int, int, int, int]] | None,
+    ) -> tuple[bool, list[tuple[int, int, int, int]] | None]:
+        """Returns (has_changes, refined_rects_or_None_for_full)."""
+        if bpp != 4 or stride < full_w * 4 or not base_data:
+            return True, candidate_rects
+
+        if self.ensure_ready(full_w, full_h, stride):
+            return True, None
+
+        total_bytes = stride * full_h
+        if libc.memcmp(base_data, self.ptr, total_bytes) == 0:
+            return False, None
+
+        if candidate_rects is None:
+            # Fast 8px-strip whole-screen diff (~0.3ms): catches cursor/status/dual-corner changes even on full repaints
+            bands: list[tuple[int, int]] = []
+            in_band = False
+            band_y0 = 0
+            last_dirty_y1 = 0
+            clean_bands = 0
+            for y in range(0, full_h, 8):
+                rows = min(8, full_h - y)
+                off = y * stride
+                if libc.memcmp(base_data + off, self.ptr + off, rows * stride) != 0:
+                    if not in_band:
+                        band_y0 = y
+                        in_band = True
+                    last_dirty_y1 = y + rows
+                    clean_bands = 0
+                elif in_band:
+                    clean_bands += 1
+                    if clean_bands >= 3:
+                        bands.append((band_y0, last_dirty_y1))
+                        in_band = False
+                        clean_bands = 0
+            if in_band:
+                bands.append((band_y0, last_dirty_y1))
+            if not bands:
+                return False, None
+
+            raw: list[tuple[int, int, int, int]] = []
+            for by0, by1 in bands:
+                raw.extend(self._tighten_rect(base_data, full_w, full_h, stride, bpp, (0, by0, full_w, max(1, by1 - by0))))
+            if not raw:
+                return False, None
+            clusters = cluster_dirty_rects(raw, max_clusters=4) if len(raw) > 1 else raw
+            area = sum(rw * rh for _rx, _ry, rw, rh in clusters)
+            if area < int(full_w * full_h * 0.60):
+                return True, clusters
+            return True, None
+
+        # Refine candidate XDamage rects against cached frame pixels
+        refined: list[tuple[int, int, int, int]] = []
+        for r in candidate_rects:
+            refined.extend(self._tighten_rect(base_data, full_w, full_h, stride, bpp, r))
+        if not refined:
+            return False, None
+        clusters = cluster_dirty_rects(refined, max_clusters=4) if len(refined) > 1 else refined
+        area = sum(rw * rh for _rx, _ry, rw, rh in clusters)
+        if area >= int(full_w * full_h * 0.65):
+            return True, None
+        return True, clusters
+
+
 def main() -> None:
     global last_x_error
     libX11.XSetErrorHandler(track_x_error)
@@ -592,6 +781,41 @@ def main() -> None:
     # Cached root size to avoid extra XGetGeometry roundtrip on every single frame
     root_w, root_h = query_drawable_size(dpy, root)
     last_geom_check = time.monotonic()
+    prev_cache = PrevFrameCache()
+
+    def compress_and_pack_rect(
+        base_data: int,
+        stride: int,
+        bpp: int,
+        rx: int,
+        ry: int,
+        rw: int,
+        rh: int,
+        subsamp: int,
+        qual: int,
+    ) -> bytes | None:
+        src_ptr = ctypes.c_void_p(base_data + ry * stride + rx * bpp)
+        jpeg_ptr = ctypes.c_void_p()
+        jpeg_len = ctypes.c_ulong(0)
+        rc = libtj.tjCompress2(
+            tj,
+            src_ptr,
+            rw,
+            stride,
+            rh,
+            TJPF_BGRX,
+            ctypes.byref(jpeg_ptr),
+            ctypes.byref(jpeg_len),
+            subsamp,
+            qual,
+            TJFLAG_FASTDCT,
+        )
+        if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
+            return None
+        try:
+            return ctypes.string_at(jpeg_ptr.value, int(jpeg_len.value))
+        finally:
+            libtj.tjFree(jpeg_ptr)
 
     def encode_and_emit(
         img_ptr,
@@ -601,86 +825,65 @@ def main() -> None:
         subsamp: int,
         rects: list[tuple[int, int, int, int]] | None,
         destroy_img: bool,
-    ) -> bool:
+        allow_diff: bool = False,
+        bypass_dedup: bool = False,
+    ) -> tuple[str, tuple[int, int, int, int] | None]:
         try:
             img = img_ptr.contents
             bpp = max(1, int(img.bits_per_pixel) // 8)
             stride = int(img.bytes_per_line)
             base_data = int(img.data)
 
+            if allow_diff and has_sent_full and not bypass_dedup:
+                has_changes, refined = prev_cache.diff_frame(
+                    base_data, full_w, full_h, stride, bpp, rects
+                )
+                if not has_changes:
+                    return "unchanged", None
+                rects = refined
+
             if rects and len(rects) == 1:
                 rx, ry, rw, rh = rects[0]
-                src_ptr = ctypes.c_void_p(base_data + ry * stride + rx * bpp)
-                jpeg_ptr = ctypes.c_void_p()
-                jpeg_len = ctypes.c_ulong(0)
-                rc = libtj.tjCompress2(
-                    tj,
-                    src_ptr,
-                    rw,
-                    stride,
-                    rh,
-                    TJPF_BGRX,
-                    ctypes.byref(jpeg_ptr),
-                    ctypes.byref(jpeg_len),
-                    subsamp,
-                    qual,
-                    TJFLAG_FASTDCT,
-                )
-                if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
-                    return False
-                try:
-                    jlen = int(jpeg_len.value)
-                    pkt = bytearray(17 + jlen)
-                    struct.pack_into(">IBHHHHHH", pkt, 0, 13 + jlen, PACKET_RECT_JPEG, rx, ry, rw, rh, full_w, full_h)
-                    ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 17), jpeg_ptr.value, jlen)
-                    write_all(out_fd, pkt)
-                    return True
-                finally:
-                    libtj.tjFree(jpeg_ptr)
+                jb = compress_and_pack_rect(base_data, stride, bpp, rx, ry, rw, rh, subsamp, qual)
+                if not jb:
+                    return "error", None
+                jlen = len(jb)
+                pkt = bytearray(17 + jlen)
+                struct.pack_into(">IBHHHHHH", pkt, 0, 13 + jlen, PACKET_RECT_JPEG, rx, ry, rw, rh, full_w, full_h)
+                pkt[17 : 17 + jlen] = jb
+                write_all(out_fd, pkt)
+                prev_cache.sync_rects(base_data, full_w, full_h, stride, bpp, rects)
+                return "sent", rects[0]
 
             if rects and len(rects) > 1:
                 # Pack multiple sparse dirty rectangles atomically into ONE 0x04 packet
                 encoded_items: list[tuple[int, int, int, int, bytes]] = []
                 total_payload = 7  # u8 type + u16 count + u16 fullW + u16 fullH
                 for rx, ry, rw, rh in rects:
-                    src_ptr = ctypes.c_void_p(base_data + ry * stride + rx * bpp)
-                    jpeg_ptr = ctypes.c_void_p()
-                    jpeg_len = ctypes.c_ulong(0)
-                    rc = libtj.tjCompress2(
-                        tj,
-                        src_ptr,
-                        rw,
-                        stride,
-                        rh,
-                        TJPF_BGRX,
-                        ctypes.byref(jpeg_ptr),
-                        ctypes.byref(jpeg_len),
-                        subsamp,
-                        qual,
-                        TJFLAG_FASTDCT,
-                    )
-                    if rc == 0 and jpeg_ptr.value and jpeg_len.value > 0:
-                        try:
-                            jb = ctypes.string_at(jpeg_ptr.value, jpeg_len.value)
-                            encoded_items.append((rx, ry, rw, rh, jb))
-                            total_payload += 12 + len(jb)
-                        finally:
-                            libtj.tjFree(jpeg_ptr)
+                    jb = compress_and_pack_rect(base_data, stride, bpp, rx, ry, rw, rh, subsamp, qual)
+                    if jb:
+                        encoded_items.append((rx, ry, rw, rh, jb))
+                        total_payload += 12 + len(jb)
                 if not encoded_items:
-                    return False
+                    return "error", None
                 pkt = bytearray(4 + total_payload)
                 struct.pack_into(
                     ">IBHHH", pkt, 0, total_payload, PACKET_MULTI_RECT, len(encoded_items), full_w, full_h
                 )
                 pos = 11
+                sent_bbox: tuple[int, int, int, int] | None = None
+                synced: list[tuple[int, int, int, int]] = []
                 for rx, ry, rw, rh, jb in encoded_items:
                     jlen = len(jb)
                     struct.pack_into(">HHHHI", pkt, pos, rx, ry, rw, rh, jlen)
                     pos += 12
                     pkt[pos : pos + jlen] = jb
                     pos += jlen
+                    synced.append((rx, ry, rw, rh))
+                    sent_bbox = union_rects(sent_bbox, (rx, ry, rw, rh))
                 write_all(out_fd, pkt)
-                return True
+                prev_cache.sync_rects(base_data, full_w, full_h, stride, bpp, synced)
+                return "sent", sent_bbox
 
             jpeg_ptr = ctypes.c_void_p()
             jpeg_len = ctypes.c_ulong(0)
@@ -698,14 +901,15 @@ def main() -> None:
                 TJFLAG_FASTDCT,
             )
             if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
-                return False
+                return "error", None
             try:
                 jlen = int(jpeg_len.value)
                 pkt = bytearray(5 + jlen)
                 struct.pack_into(">IB", pkt, 0, 1 + jlen, PACKET_FULL_JPEG)
                 ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 5), jpeg_ptr.value, jlen)
                 write_all(out_fd, pkt)
-                return True
+                prev_cache.sync_full(base_data, full_w, full_h, stride)
+                return "sent", (0, 0, full_w, full_h)
             finally:
                 libtj.tjFree(jpeg_ptr)
         finally:
@@ -772,7 +976,8 @@ def main() -> None:
         explicit_rect: tuple[int, int, int, int] | None,
         allow_partial: bool,
         prefetched: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None,
-    ) -> tuple[bool, tuple[int, int, int, int] | None]:
+        bypass_dedup: bool = False,
+    ) -> tuple[str, tuple[int, int, int, int] | None]:
         nonlocal root_w, root_h, last_geom_check, has_sent_full
         global last_x_error
 
@@ -788,24 +993,30 @@ def main() -> None:
                     grab_w = min(width, pw) if pw > 0 else 0
                     grab_h = min(height, ph) if ph > 0 else 0
                     if grab_w >= 2 and grab_h >= 2:
+                        exp_rects = [explicit_rect] if explicit_rect is not None else None
+                        allow_diff = allow_partial and has_sent_full
                         # Use fast zero-copy MIT-SHM on XComposite off-screen pixmaps (~0.5ms vs ~14ms XGetImage)
                         shm_pix = shm.grab(pix, 0, 0, grab_w, grab_h)
                         if shm_pix is not None:
-                            ok = encode_and_emit(shm_pix, grab_w, grab_h, qual, subsamp, None, False)
-                            if ok:
+                            status, srect = encode_and_emit(
+                                shm_pix, grab_w, grab_h, qual, subsamp, exp_rects, False, allow_diff=allow_diff, bypass_dedup=bypass_dedup
+                            )
+                            if status == "sent":
                                 has_sent_full = True
-                            return ok, None
+                            return status, srect
                         img_ptr = libX11.XGetImage(
                             dpy, pix, 0, 0, grab_w, grab_h, ALL_PLANES, ZPIXMAP
                         )
                         if img_ptr:
-                            ok = encode_and_emit(img_ptr, grab_w, grab_h, qual, subsamp, None, True)
-                            if ok:
+                            status, srect = encode_and_emit(
+                                img_ptr, grab_w, grab_h, qual, subsamp, exp_rects, True, allow_diff=allow_diff, bypass_dedup=bypass_dedup
+                            )
+                            if status == "sent":
                                 has_sent_full = True
-                            return ok, None
+                            return status, srect
                 finally:
                     libX11.XFreePixmap(dpy, pix)
-            return False, None
+            return "error", None
 
         now_g = time.monotonic()
         if root_w == 0 or root_h == 0 or (now_g - last_geom_check) > 3.0:
@@ -813,11 +1024,11 @@ def main() -> None:
             last_geom_check = now_g
 
         if root_w <= off_x or root_h <= off_y:
-            return False, None
+            return "error", None
         grab_w = min(width, root_w - off_x)
         grab_h = min(height, root_h - off_y)
         if grab_w < 2 or grab_h < 2:
-            return False, None
+            return "error", None
 
         if explicit_rect is not None:
             dirty_bbox = explicit_rect
@@ -842,7 +1053,7 @@ def main() -> None:
         # Zero-copy MIT-SHM grab (~0.5ms) with seamless fallback to XGetImage
         shm_ptr = shm.grab(root, off_x, off_y, grab_w, grab_h)
         if shm_ptr is not None:
-            ok = encode_and_emit(
+            status, srect = encode_and_emit(
                 shm_ptr,
                 grab_w,
                 grab_h,
@@ -850,10 +1061,12 @@ def main() -> None:
                 subsamp,
                 selected_rects,
                 False,
+                allow_diff=allow_partial and has_sent_full,
+                bypass_dedup=bypass_dedup,
             )
-            if ok and selected_rects is None:
+            if status == "sent":
                 has_sent_full = True
-            return ok, (dirty_bbox if selected_rects is not None else (0, 0, grab_w, grab_h))
+            return status, srect
 
         # Fallback: XGetImage (grab only dirty sub-rect when single partial)
         if selected_rects is not None and len(selected_rects) == 1:
@@ -862,7 +1075,7 @@ def main() -> None:
                 dpy, root, off_x + rx, off_y + ry, rw, rh, ALL_PLANES, ZPIXMAP
             )
             if not img_ptr:
-                return False, None
+                return "error", None
             img = img_ptr.contents
             jpeg_ptr = ctypes.c_void_p()
             jpeg_len = ctypes.c_ulong(0)
@@ -881,7 +1094,7 @@ def main() -> None:
                     TJFLAG_FASTDCT,
                 )
                 if rc != 0 or not jpeg_ptr.value or jpeg_len.value == 0:
-                    return False, None
+                    return "error", None
                 try:
                     jlen = int(jpeg_len.value)
                     pkt = bytearray(17 + jlen)
@@ -890,7 +1103,8 @@ def main() -> None:
                     )
                     ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 17), jpeg_ptr.value, jlen)
                     write_all(out_fd, pkt)
-                    return True, selected_rects[0]
+                    prev_cache.reset()
+                    return "sent", selected_rects[0]
                 finally:
                     libtj.tjFree(jpeg_ptr)
             finally:
@@ -900,11 +1114,13 @@ def main() -> None:
             dpy, root, off_x, off_y, grab_w, grab_h, ALL_PLANES, ZPIXMAP
         )
         if not img_ptr:
-            return False, None
-        ok = encode_and_emit(img_ptr, grab_w, grab_h, qual, subsamp, None, True)
-        if ok:
+            return "error", None
+        status, srect = encode_and_emit(
+            img_ptr, grab_w, grab_h, qual, subsamp, None, True, allow_diff=False, bypass_dedup=bypass_dedup
+        )
+        if status == "sent":
             has_sent_full = True
-        return ok, (0, 0, grab_w, grab_h)
+        return status, srect
 
     # Adaptive quality state (GeForce NOW-style motion drop + crisp TJSAMP_444 settle)
     max_quality = quality
@@ -982,6 +1198,7 @@ def main() -> None:
                             if ctype == "resize":
                                 width = max(240, min(1920, int(cmd.get("width", width))))
                                 height = max(180, min(1080, int(cmd.get("height", height))))
+                                prev_cache.reset()
                                 force_full = True
                                 pending_damage = None
                                 dirty = True
@@ -1005,6 +1222,7 @@ def main() -> None:
                                 bind_damage(
                                     target_wid if (capture_mode == "pixmap" and target_wid) else root
                                 )
+                                prev_cache.reset()
                                 force_full = True
                                 pending_damage = None
                                 dirty = True
@@ -1021,12 +1239,14 @@ def main() -> None:
                                     dynamic_drop = bool(cmd["dynamic_drop"])
                                 if "settle_ms" in cmd and cmd["settle_ms"]:
                                     settle_sec = max(0.10, min(1.2, float(cmd["settle_ms"]) / 1000.0))
+                                prev_cache.reset()
                                 force_full = True
                                 pending_damage = None
                                 needs_settle = False
                                 settle_rect = None
                                 dirty = True
                             elif ctype == "refresh":
+                                prev_cache.reset()
                                 force_full = True
                                 pending_damage = None
                                 dirty = True
@@ -1069,7 +1289,8 @@ def main() -> None:
 
         now = time.monotonic()
         if now < startup_until and (now - last_sent) > 0.25:
-            force_full = True
+            if not has_sent_full:
+                force_full = True
             pending_damage = None
             dirty = True
 
@@ -1087,18 +1308,19 @@ def main() -> None:
             send_qual = (
                 max(30, motion_quality - congestion_drop)
                 if is_rapid_motion
-                else max(45, max_quality - (congestion_drop if is_rapid_motion else 0))
+                else max(45, max_quality)
             )
             subsamp = TJSAMP_420 if is_rapid_motion else (TJSAMP_444 if not force_full else TJSAMP_422)
-            ok, sent_rect = grab_and_send(
+            status, sent_rect = grab_and_send(
                 send_qual,
                 subsamp,
                 None,
                 allow_partial=not force_full,
                 prefetched=pending_damage,
+                bypass_dedup=False,
             )
             pending_damage = None
-            if ok:
+            if status == "sent":
                 dirty = False
                 force_full = False
                 in_flight += 1
@@ -1111,6 +1333,9 @@ def main() -> None:
                 else:
                     needs_settle = False
                     settle_rect = None
+            elif status == "unchanged":
+                dirty = False
+                force_full = False
         elif (
             needs_settle
             and not dirty
@@ -1118,11 +1343,14 @@ def main() -> None:
             and (now - last_motion_at) >= settle_sec
         ):
             # Sharpen ONLY the region that actually moved using lossless-chroma 4:4:4!
-            ok, _ = grab_and_send(max_quality, TJSAMP_444, settle_rect, allow_partial=True)
-            if ok:
-                in_flight += 1
-                in_flight_since = time.monotonic()
-                last_sent = in_flight_since
+            status, _ = grab_and_send(
+                max_quality, TJSAMP_444, settle_rect, allow_partial=True, bypass_dedup=True
+            )
+            if status in ("sent", "unchanged"):
+                if status == "sent":
+                    in_flight += 1
+                    in_flight_since = time.monotonic()
+                    last_sent = in_flight_since
                 needs_settle = False
                 settle_rect = None
 

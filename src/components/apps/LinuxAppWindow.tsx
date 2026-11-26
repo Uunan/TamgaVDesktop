@@ -246,7 +246,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       dropStaleBefore(seq);
       pendingAckCount += 1;
       const blob = new Blob([bytes as BlobPart], { type: 'image/jpeg' });
-      createImageBitmap(blob)
+      createImageBitmap(blob, { colorSpaceConversion: 'none' })
         .then((bitmap) => {
           if (closed || seq < nextPaintSeq) {
             bitmap.close();
@@ -278,7 +278,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       const fullW = dv.getUint16(9, false);
       const fullH = dv.getUint16(11, false);
       const blob = new Blob([new Uint8Array(buf, 13) as BlobPart], { type: 'image/jpeg' });
-      createImageBitmap(blob)
+      createImageBitmap(blob, { colorSpaceConversion: 'none' })
         .then((bitmap) => {
           if (closed || seq < nextPaintSeq) {
             bitmap.close();
@@ -321,7 +321,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         if (jlen <= 0 || off + jlen > buf.byteLength) break;
         const blob = new Blob([new Uint8Array(buf, off, jlen) as BlobPart], { type: 'image/jpeg' });
         off += jlen;
-        jobs.push(createImageBitmap(blob).then((bitmap) => ({ rx, ry, bitmap })));
+        jobs.push(createImageBitmap(blob, { colorSpaceConversion: 'none' }).then((bitmap) => ({ rx, ry, bitmap })));
       }
       if (jobs.length === 0) {
         readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });

@@ -159,6 +159,22 @@ export default function App() {
   const globalUploadRef = useRef<HTMLInputElement>(null);
   const wallpaperUploadRef = useRef<HTMLInputElement>(null);
   const themeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefUpdateSeqRef = useRef(0);
+  const prefPendingCountRef = useRef(0);
+  const queuedPrefRef = useRef<{
+    wallpaper?: string;
+    customWallpaper?: string;
+    theme?: 'dark' | 'light';
+    iconSize?: 'sm' | 'md' | 'lg';
+    autoArrange?: boolean;
+    sortBy?: 'name' | 'extension' | 'size' | 'modifiedAt';
+    stream?: Partial<StreamPreferences>;
+    browser?: Partial<DesktopMeta['preferences']['browser']>;
+    terminal?: Partial<DesktopMeta['preferences']['terminal']>;
+    ui?: Partial<DesktopMeta['preferences']['ui']>;
+    dock?: Partial<DockPreferences>;
+  } | null>(null);
+  const prefFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [uploadTargetDir, setUploadTargetDir] = useState('/Desktop');
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -228,8 +244,14 @@ export default function App() {
     try {
       const snap = await vfsApi.getSnapshot();
       setAllNodes(snap.nodes);
-      setMeta(snap.meta);
-      saveCachedPrefs(desktopId, snap.meta.preferences);
+      setMeta((prev) =>
+        prefPendingCountRef.current > 0
+          ? { ...snap.meta, preferences: prev.preferences }
+          : snap.meta
+      );
+      if (prefPendingCountRef.current === 0) {
+        saveCachedPrefs(desktopId, snap.meta.preferences);
+      }
       setPrefsReady(true);
       if (snap.desktop) setCurrentDesktop(snap.desktop);
       if (snap.desktops) setDesktops(snap.desktops);
@@ -953,7 +975,11 @@ export default function App() {
             case 'vfs_snapshot':
               if (msg.snapshot) {
                 setAllNodes(msg.snapshot.nodes);
-                setMeta(msg.snapshot.meta);
+                setMeta((prev) =>
+                  prefPendingCountRef.current > 0
+                    ? { ...msg.snapshot.meta, preferences: prev.preferences }
+                    : msg.snapshot.meta
+                );
               }
               break;
             case 'download_complete':
@@ -1281,6 +1307,28 @@ export default function App() {
     }
   };
 
+  const flushQueuedPreferences = async () => {
+    const batch = queuedPrefRef.current;
+    queuedPrefRef.current = null;
+    prefFlushTimerRef.current = null;
+    if (!batch) {
+      prefPendingCountRef.current = Math.max(0, prefPendingCountRef.current - 1);
+      return;
+    }
+    const seqAtSend = prefUpdateSeqRef.current;
+    try {
+      if (batch.autoArrange) await vfsApi.resetPositions();
+      const res = await vfsApi.updateMeta({ preferences: batch });
+      if (seqAtSend === prefUpdateSeqRef.current && !queuedPrefRef.current) {
+        setMeta(res.meta);
+      }
+    } catch {
+      // keep optimistic UI preferences on transient network hiccup
+    } finally {
+      prefPendingCountRef.current = Math.max(0, prefPendingCountRef.current - 1);
+    }
+  };
+
   const handleUpdatePreferences = async (partial: {
     wallpaper?: string;
     customWallpaper?: string;
@@ -1294,6 +1342,7 @@ export default function App() {
     ui?: Partial<DesktopMeta['preferences']['ui']>;
     dock?: Partial<DockPreferences>;
   }) => {
+    prefUpdateSeqRef.current += 1;
     setMeta((prev) => {
       const { stream, browser, terminal, ui, dock, ...rest } = partial;
       return {
@@ -1319,11 +1368,23 @@ export default function App() {
         },
       };
     });
-    try {
-      if (partial.autoArrange) await vfsApi.resetPositions();
-      const res = await vfsApi.updateMeta({ preferences: partial });
-      setMeta(res.meta);
-    } catch {}
+
+    const prevQ = queuedPrefRef.current || {};
+    queuedPrefRef.current = {
+      ...prevQ,
+      ...partial,
+      stream: partial.stream || prevQ.stream ? { ...(prevQ.stream || {}), ...(partial.stream || {}) } : undefined,
+      browser: partial.browser || prevQ.browser ? { ...(prevQ.browser || {}), ...(partial.browser || {}) } : undefined,
+      terminal: partial.terminal || prevQ.terminal ? { ...(prevQ.terminal || {}), ...(partial.terminal || {}) } : undefined,
+      ui: partial.ui || prevQ.ui ? { ...(prevQ.ui || {}), ...(partial.ui || {}) } : undefined,
+      dock: partial.dock || prevQ.dock ? { ...(prevQ.dock || {}), ...(partial.dock || {}) } : undefined,
+    };
+    if (!prefFlushTimerRef.current) {
+      prefPendingCountRef.current += 1;
+      prefFlushTimerRef.current = setTimeout(() => {
+        void flushQueuedPreferences();
+      }, 45);
+    }
   };
 
   useEffect(() => {
@@ -1334,6 +1395,15 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (themeTimerRef.current) clearTimeout(themeTimerRef.current);
+      if (prefFlushTimerRef.current) {
+        clearTimeout(prefFlushTimerRef.current);
+        prefFlushTimerRef.current = null;
+        if (queuedPrefRef.current) {
+          const remaining = queuedPrefRef.current;
+          queuedPrefRef.current = null;
+          void vfsApi.updateMeta({ preferences: remaining }).catch(() => {});
+        }
+      }
     };
   }, []);
 

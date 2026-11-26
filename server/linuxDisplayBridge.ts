@@ -135,6 +135,11 @@ function buildChromiumRuntimeFlags(
   if (!alreadyHas('--disable-gpu-vsync')) flags.push('--disable-gpu-vsync');
   if (!alreadyHas('--num-raster-threads')) flags.push('--num-raster-threads=2');
   if (!alreadyHas('--disable-smooth-scrolling')) flags.push('--disable-smooth-scrolling');
+  if (!alreadyHas('--disable-renderer-backgrounding')) flags.push('--disable-renderer-backgrounding');
+  if (!alreadyHas('--disable-background-timer-throttling')) {
+    flags.push('--disable-background-timer-throttling');
+  }
+  if (!alreadyHas('--wm-window-animations-disabled')) flags.push('--wm-window-animations-disabled');
   if (!alreadyHas('--disable-features')) {
     flags.push(
       '--disable-features=UseChromeOSDirectVideoDecoder,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion'
@@ -682,8 +687,10 @@ export class LinuxAppSession {
       XDG_RUNTIME_DIR: this.tempDir,
       GDK_SCALE: '1',
       QT_AUTO_SCREEN_SCALE_FACTOR: '0',
+      QT_X11_NO_MITSHM: '0',
       MOZ_ENABLE_WAYLAND: '0',
       GTK_CSD: '0',
+      GTK_OVERLAY_SCROLLING: '0',
       NO_AT_BRIDGE: '1',
       XCURSOR_THEME: 'DMZ-White',
     });
