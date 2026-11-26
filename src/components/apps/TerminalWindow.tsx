@@ -80,6 +80,8 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
   clipSyncRef.current = onClipboardSync;
   const initialCmdRef = useRef(initialCommand);
   initialCmdRef.current = initialCommand;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   useEffect(() => {
     const container = hostRef.current;
@@ -156,9 +158,63 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
     );
     wsRef.current = ws;
 
+    const sendRawInput = (data: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+      }
+    };
+
+    // Bypass @xterm/xterm@5.5.0 built-in requestMode() ReferenceError ('n is not defined' after Vite bundle)
+    // and answer OSC 10/11 foreground/background queries immediately so Codex/Neovim/TUI apps never stall.
+    const decPrivSub = term.parser.registerCsiHandler(
+      { prefix: '?', intermediates: '$', final: 'p' },
+      (params) => {
+        const mode = Number(Array.isArray(params[0]) ? params[0][0] : (params[0] ?? 0));
+        const status =
+          mode === 7 || mode === 25
+            ? 1
+            : [1, 6, 12, 45, 66, 1000, 1002, 1003, 1004, 1006, 1007, 1047, 1048, 1049, 2004, 2026].includes(mode)
+            ? 2
+            : 0;
+        sendRawInput(`\x1b[?${mode};${status}$y`);
+        return true;
+      }
+    );
+    const decAnsiSub = term.parser.registerCsiHandler(
+      { intermediates: '$', final: 'p' },
+      (params) => {
+        const mode = Number(Array.isArray(params[0]) ? params[0][0] : (params[0] ?? 0));
+        const status = mode === 2 ? 4 : mode === 12 ? 3 : mode === 4 || mode === 20 ? 2 : 0;
+        sendRawInput(`\x1b[${mode};${status}$y`);
+        return true;
+      }
+    );
+    const osc10Sub = term.parser.registerOscHandler(10, (data) => {
+      if (data === '?') {
+        sendRawInput(
+          themeRef.current === 'light'
+            ? '\x1b]10;rgb:0f0f/1717/2a2a\x1b\\'
+            : '\x1b]10;rgb:e2e2/e8e8/f0f0\x1b\\'
+        );
+        return true;
+      }
+      return false;
+    });
+    const osc11Sub = term.parser.registerOscHandler(11, (data) => {
+      if (data === '?') {
+        sendRawInput(
+          themeRef.current === 'light'
+            ? '\x1b]11;rgb:f8f8/fafa/fcfc\x1b\\'
+            : '\x1b]11;rgb:0a0a/0e0e/1717\x1b\\'
+        );
+        return true;
+      }
+      return false;
+    });
+
     ws.onopen = () => {
       if (initialCmdRef.current) {
-        ws.send(JSON.stringify({ type: 'input', data: `${initialCmdRef.current}\r` }));
+        sendRawInput(`${initialCmdRef.current}\r`);
       }
     };
 
@@ -179,9 +235,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
     };
 
     const dataSub = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data }));
-      }
+      sendRawInput(data);
     });
 
     const ro = new ResizeObserver(() => {
@@ -199,6 +253,10 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
     return () => {
       container.removeEventListener('paste', handleDomPaste, true);
       ro.disconnect();
+      decPrivSub.dispose();
+      decAnsiSub.dispose();
+      osc10Sub.dispose();
+      osc11Sub.dispose();
       dataSub.dispose();
       ws.close();
       term.dispose();
