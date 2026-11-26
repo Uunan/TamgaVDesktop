@@ -229,32 +229,47 @@ export function installPlaywrightBrowserSync(opts?: { quiet?: boolean; withDeps?
   const shouldWithDeps = Boolean(
     opts?.withDeps && process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0
   );
-  const args = [cliPath, 'install', 'chromium-headless-shell'];
-  if (shouldWithDeps) args.push('--with-deps');
-  if (opts?.quiet) args.push('--no-progress');
+  const hosts = process.env.PLAYWRIGHT_DOWNLOAD_HOST
+    ? [process.env.PLAYWRIGHT_DOWNLOAD_HOST]
+    : ['', 'https://cdn.npmmirror.com/binaries/playwright'];
 
   if (!opts?.quiet) {
     console.log('[TamgaVDesktop] Yerleşik Playwright Chromium tarayıcısı kuruluyor...');
   }
-  const res = spawnSync(process.execPath, args, {
-    stdio: opts?.quiet ? 'ignore' : 'inherit',
-    env: {
+
+  for (let i = 0; i < hosts.length; i++) {
+    const host = hosts[i];
+    const args = [cliPath, 'install', 'chromium-headless-shell'];
+    if (i === 0 && shouldWithDeps) args.push('--with-deps');
+    if (opts?.quiet) args.push('--no-progress');
+
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       PLAYWRIGHT_SKIP_BROWSER_GC: '1',
-    },
-  });
-  if (res.status === 0 && findPlaywrightManagedBrowser()) {
-    return true;
-  }
+    };
+    if (host) env.PLAYWRIGHT_DOWNLOAD_HOST = host;
 
-  // Fallback for Playwright versions without chromium-headless-shell target alias
-  const fallbackArgs = [cliPath, 'install', '--only-shell', 'chromium'];
-  if (shouldWithDeps) fallbackArgs.push('--with-deps');
-  if (opts?.quiet) fallbackArgs.push('--no-progress');
-  const res2 = spawnSync(process.execPath, fallbackArgs, {
-    stdio: opts?.quiet ? 'ignore' : 'inherit',
-  });
-  return res2.status === 0 && Boolean(findPlaywrightManagedBrowser());
+    const res = spawnSync(process.execPath, args, {
+      stdio: opts?.quiet ? 'ignore' : 'inherit',
+      env,
+    });
+    if (res.status === 0 && findPlaywrightManagedBrowser()) {
+      return true;
+    }
+
+    // Fallback for Playwright versions without chromium-headless-shell target alias
+    const fallbackArgs = [cliPath, 'install', '--only-shell', 'chromium'];
+    if (i === 0 && shouldWithDeps) fallbackArgs.push('--with-deps');
+    if (opts?.quiet) fallbackArgs.push('--no-progress');
+    const res2 = spawnSync(process.execPath, fallbackArgs, {
+      stdio: opts?.quiet ? 'ignore' : 'inherit',
+      env,
+    });
+    if (res2.status === 0 && findPlaywrightManagedBrowser()) {
+      return true;
+    }
+  }
+  return Boolean(findPlaywrightManagedBrowser());
 }
 
 async function installPlaywrightBrowserAsync(): Promise<void> {
@@ -262,15 +277,24 @@ async function installPlaywrightBrowserAsync(): Promise<void> {
   const cliPath = resolvePlaywrightCliPath();
   if (!cliPath) return;
 
-  await new Promise<void>((resolve) => {
-    const child = spawn(
-      process.execPath,
-      [cliPath, 'install', 'chromium-headless-shell', '--no-progress'],
-      { stdio: 'ignore' }
-    );
-    child.on('exit', () => resolve());
-    child.on('error', () => resolve());
-  });
+  const hosts = process.env.PLAYWRIGHT_DOWNLOAD_HOST
+    ? [process.env.PLAYWRIGHT_DOWNLOAD_HOST]
+    : ['', 'https://cdn.npmmirror.com/binaries/playwright'];
+
+  for (const host of hosts) {
+    if (findPlaywrightManagedBrowser()) return;
+    const env: NodeJS.ProcessEnv = { ...process.env, PLAYWRIGHT_SKIP_BROWSER_GC: '1' };
+    if (host) env.PLAYWRIGHT_DOWNLOAD_HOST = host;
+    await new Promise<void>((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [cliPath, 'install', 'chromium-headless-shell', '--no-progress'],
+        { stdio: 'ignore', env }
+      );
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+  }
 }
 
 function normalizeUserUrl(rawInput: string): {
