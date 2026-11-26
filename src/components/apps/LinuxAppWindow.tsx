@@ -14,6 +14,7 @@ interface LinuxAppWindowProps {
   sessionId: string;
   viewId?: string;
   appName: string;
+  isFocused?: boolean;
   onTitleChange?: (title: string) => void;
   onAppExit?: () => void;
   onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
@@ -23,6 +24,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   sessionId,
   viewId = 'main',
   appName,
+  isFocused = true,
   onTitleChange,
   onAppExit,
   onWindowOpened,
@@ -34,7 +36,9 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   const pendingJpegRef = useRef<Uint8Array | null>(null);
   const lastMoveTsRef = useRef(0);
   const touchStateRef = useRef<{ lastY: number; moved: boolean } | null>(null);
-  const dimsRef = useRef({ width: 1100, height: 680 });
+  const dimsRef = useRef({ width: 720, height: 480 });
+  const hasGeometryRef = useRef(false);
+  const serverDimsRef = useRef({ width: 0, height: 0 });
 
   const frameControls = useWindowFrameControls();
   const controlsRef = useRef(frameControls);
@@ -58,7 +62,15 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   };
 
   useEffect(() => {
+    if (isFocused) {
+      sendInput({ type: 'focus' });
+    }
+  }, [isFocused]);
+
+  useEffect(() => {
     let closed = false;
+    hasGeometryRef.current = false;
+    serverDimsRef.current = { width: 0, height: 0 };
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(
       `${proto}//${window.location.host}/ws/app?sessionId=${encodeURIComponent(sessionId)}&view=${encodeURIComponent(viewId)}`
@@ -99,10 +111,9 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
 
     ws.onopen = () => {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (rect && rect.width > 100 && rect.height > 100) {
-        dimsRef.current = { width: Math.round(rect.width), height: Math.round(rect.height) };
-        sendInput({ type: 'resize', width: dimsRef.current.width, height: dimsRef.current.height });
+      // Do not force browser placeholder dims on startup; let the X11 app report view_geometry first.
+      if (isFocused) {
+        sendInput({ type: 'focus' });
       }
     };
 
@@ -127,9 +138,12 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         } else if (msg.type === 'view_geometry' && msg.width && msg.height) {
           const nw = Math.round(Number(msg.width));
           const nh = Math.round(Number(msg.height));
+          hasGeometryRef.current = true;
+          serverDimsRef.current = { width: nw, height: nh };
           dimsRef.current = { width: nw, height: nh };
-          controlsRef.current?.resizeFrame(nw, nh);
+          controlsRef.current?.resizeFrame(nw, nh, { center: Boolean(msg.initial) });
         } else if (msg.type === 'view_maximize') {
+          hasGeometryRef.current = true;
           controlsRef.current?.setMaximized(true);
         } else if (msg.type === 'window_opened' && typeof msg.view === 'string') {
           onWindowOpenedRef.current?.({
@@ -162,13 +176,27 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect || rect.width < 120 || rect.height < 120) return;
+      if (!hasGeometryRef.current) return;
       const w = Math.round(rect.width);
       const h = Math.round(rect.height);
+      if (
+        Math.abs(w - serverDimsRef.current.width) <= 3 &&
+        Math.abs(h - serverDimsRef.current.height) <= 3
+      ) {
+        return;
+      }
       dimsRef.current = { width: w, height: h };
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
+        if (
+          Math.abs(w - serverDimsRef.current.width) <= 3 &&
+          Math.abs(h - serverDimsRef.current.height) <= 3
+        ) {
+          return;
+        }
+        serverDimsRef.current = { width: w, height: h };
         sendInput({ type: 'resize', width: w, height: h });
-      }, 140);
+      }, 200);
     });
     ro.observe(el);
     return () => {

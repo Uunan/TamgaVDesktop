@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Low-latency event-driven X11/XTest input, XFixes cursor sync, multi-window slot manager and lifecycle bridge.
+"""Event-driven X11/XTest input, XFixes cursor sync, XComposite multi-window & native-geometry manager.
 
-Multi-window model:
-- The Xvfb screen is a large virtual canvas split into 1920x1080 "slots".
-- The first main application window lives in slot 0 (view "main").
-- Every additional top-level application window gets its own free slot and is announced to Node
-  as a separate view ({"type": "window_opened", "view": "<wid>", ...}) so the web shell can open it
-  inside its own desktop window frame.
-- Dialogs / transient windows are kept centered inside their parent's slot.
-- When an application resizes or maximizes its own window, the new geometry is reported
-  ({"type": "view_geometry"} / {"type": "view_maximize"}) so the web window frame follows the app.
+Key behaviors:
+- Runs inside an Xvfb sized cleanly to the user's Tamga desktop viewport (with XComposite enabled).
+- Lets each Linux application determine its own initial & resized window dimensions (`view_geometry`).
+- Smoothly hands off startup splash windows (_NET_WM_WINDOW_TYPE_SPLASH, e.g. GIMP Startup)
+  to the main workspace window without freezing or closing the app frame.
+- Keeps dialogs / transient windows centered inside their parent view.
+- Supports unlimited extra top-level windows in the same X11 session: the active/focused view
+  captures from `root` (including menus, dropdowns, and dialogs) while background views
+  capture cleanly from their off-screen XCompositeNameWindowPixmap without overlapping bleed.
 """
 import ctypes
 import json
@@ -22,6 +22,10 @@ import time
 libX11 = ctypes.CDLL("libX11.so.6")
 libXtst = ctypes.CDLL("libXtst.so.6")
 libXfixes = ctypes.CDLL("libXfixes.so.3")
+try:
+    libXcomp = ctypes.CDLL("libXcomposite.so.1")
+except OSError:
+    libXcomp = None
 
 
 class XFixesCursorImage(ctypes.Structure):
@@ -46,13 +50,30 @@ class XEvent(ctypes.Union):
 libX11.XOpenDisplay.argtypes = [ctypes.c_char_p]
 libX11.XOpenDisplay.restype = ctypes.c_void_p
 libX11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+libX11.XCloseDisplay.restype = ctypes.c_int
 libX11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
 libX11.XDefaultRootWindow.restype = ctypes.c_ulong
 libX11.XSelectInput.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_long]
+libX11.XSelectInput.restype = ctypes.c_int
 libX11.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.POINTER(XEvent)]
+libX11.XNextEvent.restype = ctypes.c_int
 libX11.XPending.argtypes = [ctypes.c_void_p]
 libX11.XPending.restype = ctypes.c_int
 libX11.XFlush.argtypes = [ctypes.c_void_p]
+libX11.XFlush.restype = ctypes.c_int
+libX11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+libX11.XSync.restype = ctypes.c_int
+libX11.XQueryTree.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+    ctypes.POINTER(ctypes.c_uint),
+]
+libX11.XQueryTree.restype = ctypes.c_int
+libX11.XFree.argtypes = [ctypes.c_void_p]
+libX11.XFree.restype = ctypes.c_int
 libX11.XStringToKeysym.argtypes = [ctypes.c_char_p]
 libX11.XStringToKeysym.restype = ctypes.c_ulong
 libX11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
@@ -60,6 +81,7 @@ libX11.XKeysymToKeycode.restype = ctypes.c_ubyte
 libX11.XSetErrorHandler.argtypes = [
     ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 ]
+libX11.XSetErrorHandler.restype = ctypes.c_void_p
 
 libXtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
 libXtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
@@ -74,15 +96,14 @@ libXfixes.XFixesQueryExtension.restype = ctypes.c_int
 libXfixes.XFixesSelectCursorInput.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
 libXfixes.XFixesGetCursorImage.argtypes = [ctypes.c_void_p]
 libXfixes.XFixesGetCursorImage.restype = ctypes.POINTER(XFixesCursorImage)
-libX11.XFree.argtypes = [ctypes.c_void_p]
+
+if libXcomp is not None:
+    libXcomp.XCompositeRedirectSubwindows.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int]
+    libXcomp.XCompositeRedirectSubwindows.restype = ctypes.c_int
 
 SUBSTRUCTURE_NOTIFY_MASK = 1 << 19
 PROPERTY_CHANGE_MASK = 1 << 22
 
-SLOT_W = 1920
-SLOT_H = 1080
-SLOT_COLS = 2
-SLOT_COUNT = 4
 MIN_W = 240
 MIN_H = 180
 
@@ -159,14 +180,6 @@ def map_xcursor_to_css(raw_name: str) -> str:
     return "default"
 
 
-def slot_origin(slot: int) -> tuple[int, int]:
-    return (slot % SLOT_COLS) * SLOT_W, (slot // SLOT_COLS) * SLOT_H
-
-
-def clamp_size(w: int, h: int) -> tuple[int, int]:
-    return max(MIN_W, min(SLOT_W, int(w))), max(MIN_H, min(SLOT_H, int(h)))
-
-
 def run_quiet(cmd: list[str], env: dict, timeout: float = 1.0) -> None:
     try:
         subprocess.run(cmd, env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=timeout)
@@ -177,6 +190,30 @@ def run_quiet(cmd: list[str], env: dict, timeout: float = 1.0) -> None:
 def spawn_reaped(cmd: list[str], env: dict) -> None:
     p = subprocess.Popen(cmd, env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     threading.Thread(target=p.wait, daemon=True).start()
+
+
+def find_top_frame(dpy, root: int, client_wid_hex: str) -> str:
+    """Walk parent windows up to root to get the Openbox frame window for XComposite capture."""
+    if not dpy:
+        return client_wid_hex
+    try:
+        cur = int(client_wid_hex, 16)
+    except ValueError:
+        return client_wid_hex
+    for _ in range(12):
+        r_ret = ctypes.c_ulong(0)
+        p_ret = ctypes.c_ulong(0)
+        ch_ret = ctypes.POINTER(ctypes.c_ulong)()
+        n_ret = ctypes.c_uint(0)
+        ok = libX11.XQueryTree(
+            dpy, cur, ctypes.byref(r_ret), ctypes.byref(p_ret), ctypes.byref(ch_ret), ctypes.byref(n_ret)
+        )
+        if ch_ret:
+            libX11.XFree(ch_ret)
+        if not ok or p_ret.value == 0 or p_ret.value == root:
+            break
+        cur = p_ret.value
+    return hex(cur)
 
 
 def list_windows_geom(env: dict) -> list[dict]:
@@ -207,8 +244,8 @@ def list_windows_geom(env: dict) -> list[dict]:
 
 
 def classify_window(wid: str, env: dict) -> dict:
-    """Return {'main': bool, 'transient_for': str|None} for a top-level window."""
-    info = {"main": True, "transient_for": None}
+    """Return {'main': bool, 'is_splash': bool, 'transient_for': str|None}."""
+    info = {"main": True, "is_splash": False, "transient_for": None}
     try:
         prop = subprocess.check_output(
             ["xprop", "-id", wid, "WM_TRANSIENT_FOR", "_NET_WM_WINDOW_TYPE"],
@@ -222,6 +259,9 @@ def classify_window(wid: str, env: dict) -> dict:
             tail = line.split("#")[-1].strip()
             if tail.startswith("0x"):
                 info["transient_for"] = tail.lower()
+    if "_NET_WM_WINDOW_TYPE_SPLASH" in prop:
+        info["main"] = False
+        info["is_splash"] = True
     for skip in (
         "_NET_WM_WINDOW_TYPE_DIALOG",
         "_NET_WM_WINDOW_TYPE_MENU",
@@ -229,7 +269,6 @@ def classify_window(wid: str, env: dict) -> dict:
         "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
         "_NET_WM_WINDOW_TYPE_TOOLTIP",
         "_NET_WM_WINDOW_TYPE_UTILITY",
-        "_NET_WM_WINDOW_TYPE_SPLASH",
         "_NET_WM_WINDOW_TYPE_NOTIFICATION",
     ):
         if skip in prop:
@@ -255,70 +294,132 @@ def same_wid(a: str, b: str) -> bool:
 
 
 class WindowManager:
-    def __init__(self, display_str: str, main_w: int, main_h: int):
+    def __init__(self, display_str: str, screen_w: int, screen_h: int):
         self.env = os.environ.copy()
         self.env["DISPLAY"] = display_str
+        self.screen_w = max(800, min(1920, int(screen_w)))
+        self.screen_h = max(600, min(1080, int(screen_h)))
+        self.rec_dpy = None
+        self.rec_root = 0
         self.lock = threading.RLock()
-        # view id -> {wid, slot, w, h, title, ignore_until}
+        # view id -> {wid, top_wid, w, h, cw, ch, title, is_splash, ignore_until}
         self.views: dict[str, dict] = {}
+        self.dialogs: dict[str, str] = {}  # dialog_wid -> parent_vid
+        self.active_view = "main"
         self.main_assigned = False
-        self.main_req = clamp_size(main_w, main_h)
+        self.splash_handoff_until = 0.0
         self.class_cache: dict[str, dict] = {}
         self.placed_dialogs: set[str] = set()
         self.had_window = False
         self.closed_announced = False
+        self.last_targets_json = ""
         self.dirty = threading.Event()
 
-    # ---------- helpers ----------
+    def attach_reconcile_display(self, rec_dpy, rec_root: int) -> None:
+        self.rec_dpy = rec_dpy
+        self.rec_root = rec_root
+
+    def clamp_size(self, w: int, h: int) -> tuple[int, int]:
+        cw = max(MIN_W, min(self.screen_w, int(w or MIN_W)))
+        ch = max(MIN_H, min(self.screen_h, int(h or MIN_H)))
+        return cw - (cw % 2), ch - (ch % 2)
+
     def _view_by_wid(self, wid: str):
         for vid, v in self.views.items():
             if same_wid(v["wid"], wid):
                 return vid, v
         return None, None
 
-    def _free_slot(self):
-        used = {v["slot"] for v in self.views.values()}
-        for s in range(0, SLOT_COUNT):
-            if s not in used:
-                return s
-        return None
-
-    def _place(self, v: dict, w: int, h: int, strip_fs: bool = True) -> None:
-        ox, oy = slot_origin(v["slot"])
-        v["w"], v["h"] = w, h
-        v["ignore_until"] = time.monotonic() + 0.35
-        wid = v["wid"]
-        rm_atoms = "remove,maximized_vert,maximized_horz,fullscreen" if strip_fs else "remove,maximized_vert,maximized_horz"
+    def _anchor_native(self, wid: str, win: dict, cw: int, ch: int, strip_fs: bool = True) -> None:
+        """Anchor window at (0, 0) while preserving its own size unless out of screen bounds."""
+        rm_atoms = (
+            "remove,maximized_vert,maximized_horz,fullscreen"
+            if strip_fs
+            else "remove,maximized_vert,maximized_horz"
+        )
         run_quiet(["wmctrl", "-i", "-r", wid, "-b", rm_atoms], self.env)
-        run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{ox},{oy},{w},{h}"], self.env)
+        need_resize = (
+            win["w"] < MIN_W
+            or win["h"] < MIN_H
+            or win["w"] > self.screen_w
+            or win["h"] > self.screen_h
+        )
+        if need_resize:
+            run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,0,0,{cw},{ch}"], self.env)
+        elif abs(win["x"]) > 2 or abs(win["y"]) > 2:
+            # -1 keeps the app's own native width and height completely intact
+            run_quiet(["wmctrl", "-i", "-r", wid, "-e", "0,0,0,-1,-1"], self.env)
 
-    def view_offset(self, view: str) -> tuple[int, int]:
-        with self.lock:
-            v = self.views.get(view or "main")
-            if not v:
-                v = self.views.get("main") or (next(iter(self.views.values()), None))
-            if not v:
-                return 0, 0
-            return slot_origin(v["slot"])
+    def _place_exact(self, v: dict, w: int, h: int, strip_fs: bool = True) -> None:
+        v["cw"], v["ch"] = w, h
+        v["w"], v["h"] = w, h
+        v["ignore_until"] = time.monotonic() + 0.45
+        wid = v["wid"]
+        rm_atoms = (
+            "remove,maximized_vert,maximized_horz,fullscreen"
+            if strip_fs
+            else "remove,maximized_vert,maximized_horz"
+        )
+        run_quiet(["wmctrl", "-i", "-r", wid, "-b", rm_atoms], self.env)
+        run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,0,0,{w},{h}"], self.env)
+
+    def _emit_targets(self) -> None:
+        if not self.views:
+            return
+        if self.active_view not in self.views:
+            self.active_view = "main" if "main" in self.views else next(iter(self.views.keys()))
+        multi = len(self.views) > 1
+        targets = {}
+        for vid, v in self.views.items():
+            if not multi or vid == self.active_view or not v.get("top_wid") or libXcomp is None:
+                targets[vid] = {
+                    "mode": "root",
+                    "wid": 0,
+                    "off_x": 0,
+                    "off_y": 0,
+                    "width": v["cw"],
+                    "height": v["ch"],
+                }
+            else:
+                targets[vid] = {
+                    "mode": "pixmap",
+                    "wid": v["top_wid"],
+                    "off_x": 0,
+                    "off_y": 0,
+                    "width": v["cw"],
+                    "height": v["ch"],
+                }
+        payload = json.dumps(targets, sort_keys=True)
+        if payload != self.last_targets_json:
+            self.last_targets_json = payload
+            emit({"type": "view_targets", "targets": targets, "activeView": self.active_view})
 
     # ---------- commands from Node ----------
     def resize_view(self, view: str, w: int, h: int) -> None:
         with self.lock:
-            cw, ch = clamp_size(w, h)
-            if (view or "main") == "main":
-                self.main_req = (cw, ch)
+            cw, ch = self.clamp_size(w, h)
             v = self.views.get(view or "main")
             if not v:
                 return
-            if abs(v["w"] - cw) < 6 and abs(v["h"] - ch) < 6:
+            if abs(v["cw"] - cw) < 6 and abs(v["ch"] - ch) < 6:
                 return
-            self._place(v, cw, ch, strip_fs=True)
+            self._place_exact(v, cw, ch, strip_fs=True)
+            self._emit_targets()
 
     def focus_view(self, view: str) -> None:
         with self.lock:
-            v = self.views.get(view or "main")
-            if v:
-                run_quiet(["wmctrl", "-i", "-a", v["wid"]], self.env)
+            vid = view or "main"
+            v = self.views.get(vid)
+            if not v:
+                return
+            changed = self.active_view != vid
+            self.active_view = vid
+            run_quiet(["wmctrl", "-i", "-a", v["wid"]], self.env)
+            for dwid, pvid in self.dialogs.items():
+                if pvid == vid:
+                    run_quiet(["wmctrl", "-i", "-a", dwid], self.env)
+            if changed:
+                self._emit_targets()
 
     def close_view(self, view: str) -> None:
         with self.lock:
@@ -337,91 +438,165 @@ class WindowManager:
             for vid in list(self.views.keys()):
                 v = self.views[vid]
                 if not any(same_wid(v["wid"], p) for p in present):
+                    was_splash = bool(v.get("is_splash"))
                     del self.views[vid]
-                    emit({"type": "view_closed", "view": vid})
+                    if vid == "main" and was_splash:
+                        # Splash closed while handing off to real main window -> hold main slot briefly
+                        self.splash_handoff_until = now + 5.0
+                    elif vid == "main" and not self.views:
+                        # Single window vanished (could be launcher/Terms -> main transition or real exit)
+                        self.splash_handoff_until = now + 1.4
+                    else:
+                        emit({"type": "view_closed", "view": vid})
+
             self.placed_dialogs = {d for d in self.placed_dialogs if any(same_wid(d, p) for p in present)}
+            self.dialogs = {d: pv for d, pv in self.dialogs.items() if any(same_wid(d, p) for p in present)}
 
             if wins:
                 self.had_window = True
                 self.closed_announced = False
-            elif self.had_window and not self.closed_announced:
+            elif self.had_window and not self.views and not self.closed_announced:
                 self.closed_announced = True
-                threading.Thread(target=self._confirm_all_closed, daemon=True).start()
+                wait_sec = max(1.4, self.splash_handoff_until - now)
+                threading.Thread(target=self._confirm_all_closed, args=(wait_sec,), daemon=True).start()
                 return
 
-            # 2. New / existing windows
+            # 2. Classify & process new / existing windows
+            # Sort so non-splash NORMAL windows are handled before splashes if both map simultaneously
+            ordered = []
             for win in wins:
                 wid = win["wid"]
                 cls = self.class_cache.get(wid)
                 if cls is None:
                     cls = classify_window(wid, self.env)
                     self.class_cache[wid] = cls
+                ordered.append((0 if cls["main"] else (1 if cls["is_splash"] else 2), win, cls))
+            ordered.sort(key=lambda item: item[0])
 
+            for _prio, win, cls in ordered:
+                wid = win["wid"]
                 vid, v = self._view_by_wid(wid)
 
+                # Promote real main window seamlessly over an active splash or splash handoff
                 if v is None and cls["main"]:
-                    if not self.main_assigned:
+                    cur_main = self.views.get("main")
+                    need_main = (
+                        not self.main_assigned
+                        or (cur_main is None and now <= self.splash_handoff_until)
+                        or (cur_main is not None and cur_main.get("is_splash"))
+                    )
+                    if need_main:
                         self.main_assigned = True
-                        v = {"wid": wid, "slot": 0, "w": 0, "h": 0, "title": "", "ignore_until": 0.0}
-                        self.views["main"] = v
-                        vid = "main"
-                        mw, mh = self.main_req
-                        self._place(v, mw, mh)
-                        run_quiet(["wmctrl", "-i", "-a", wid], self.env)
-                    else:
-                        slot = self._free_slot()
-                        if slot is None:
-                            mv = next(iter(self.views.values()), None)
-                            if mv:
-                                cw, ch = clamp_size(min(win["w"], mv["w"]), min(win["h"], mv["h"]))
-                                ox, oy = slot_origin(mv["slot"])
-                                run_quiet(["wmctrl", "-i", "-r", wid, "-e",
-                                           f"0,{ox + max(0, (mv['w'] - cw) // 2)},{oy + max(0, (mv['h'] - ch) // 2)},{cw},{ch}"], self.env)
-                            continue
-                        cw, ch = clamp_size(win["w"] if win["w"] > 40 else 900, win["h"] if win["h"] > 40 else 640)
-                        vid = wid
-                        v = {"wid": wid, "slot": slot, "w": 0, "h": 0, "title": win["title"], "ignore_until": 0.0}
-                        self.views[vid] = v
-                        self._place(v, cw, ch)
-                        run_quiet(["wmctrl", "-i", "-a", wid], self.env)
-                        emit({
-                            "type": "window_opened",
-                            "view": vid,
-                            "slot": slot,
+                        self.splash_handoff_until = 0.0
+                        cw, ch = self.clamp_size(win["w"], win["h"])
+                        top_wid = find_top_frame(self.rec_dpy, self.rec_root, wid)
+                        v = {
+                            "wid": wid,
+                            "top_wid": top_wid,
+                            "w": win["w"],
+                            "h": win["h"],
+                            "cw": cw,
+                            "ch": ch,
                             "title": win["title"],
-                            "width": cw,
-                            "height": ch,
-                        })
+                            "is_splash": False,
+                            "ignore_until": now + 0.5,
+                        }
+                        self.views["main"] = v
+                        self.active_view = "main"
+                        self._anchor_native(wid, win, cw, ch)
+                        run_quiet(["wmctrl", "-i", "-a", wid], self.env)
+                        emit({"type": "view_geometry", "view": "main", "width": cw, "height": ch, "initial": True})
+                        if win["title"]:
+                            emit({"type": "title", "view": "main", "title": win["title"]})
+                        self._emit_targets()
+                        continue
+
+                    # Additional top-level window -> open extra Tamga frame
+                    cw, ch = self.clamp_size(win["w"], win["h"])
+                    top_wid = find_top_frame(self.rec_dpy, self.rec_root, wid)
+                    vid = wid
+                    v = {
+                        "wid": wid,
+                        "top_wid": top_wid,
+                        "w": win["w"],
+                        "h": win["h"],
+                        "cw": cw,
+                        "ch": ch,
+                        "title": win["title"],
+                        "is_splash": False,
+                        "ignore_until": now + 0.5,
+                    }
+                    self.views[vid] = v
+                    self.active_view = vid
+                    self._anchor_native(wid, win, cw, ch)
+                    run_quiet(["wmctrl", "-i", "-a", wid], self.env)
+                    emit({
+                        "type": "window_opened",
+                        "view": vid,
+                        "title": win["title"],
+                        "width": cw,
+                        "height": ch,
+                    })
                     if win["title"]:
-                        v["title"] = win["title"]
                         emit({"type": "title", "view": vid, "title": win["title"]})
+                    self._emit_targets()
+                    continue
+
+                # Initial startup splash screen before any main window exists
+                if v is None and cls["is_splash"] and not self.main_assigned:
+                    self.main_assigned = True
+                    cw, ch = self.clamp_size(win["w"], win["h"])
+                    top_wid = find_top_frame(self.rec_dpy, self.rec_root, wid)
+                    v = {
+                        "wid": wid,
+                        "top_wid": top_wid,
+                        "w": win["w"],
+                        "h": win["h"],
+                        "cw": cw,
+                        "ch": ch,
+                        "title": win["title"],
+                        "is_splash": True,
+                        "ignore_until": now + 0.5,
+                    }
+                    self.views["main"] = v
+                    self.active_view = "main"
+                    self._anchor_native(wid, win, cw, ch)
+                    run_quiet(["wmctrl", "-i", "-a", wid], self.env)
+                    emit({"type": "view_geometry", "view": "main", "width": cw, "height": ch, "initial": True})
+                    if win["title"]:
+                        emit({"type": "title", "view": "main", "title": win["title"]})
+                    self._emit_targets()
+                    continue
+
+                if v is None and cls["is_splash"]:
                     continue
 
                 if v is None:
-                    # Dialog / transient: keep it centered inside its parent's slot
+                    # Transient / dialog window: anchor centered inside its parent view
                     if wid in self.placed_dialogs:
                         continue
-                    parent_slot = 0
+                    parent_vid = self.active_view if self.active_view in self.views else "main"
                     if cls.get("transient_for"):
-                        _pv, pvv = self._view_by_wid(cls["transient_for"])
-                        if pvv:
-                            parent_slot = pvv["slot"]
-                    elif "main" in self.views:
-                        parent_slot = self.views["main"]["slot"]
-                    elif self.views:
-                        parent_slot = next(iter(self.views.values()))["slot"]
-                    pv = next((x for x in self.views.values() if x["slot"] == parent_slot), None)
-                    pw, ph = (pv["w"], pv["h"]) if pv else self.main_req
-                    ox, oy = slot_origin(parent_slot)
+                        pv_id, _pvv = self._view_by_wid(cls["transient_for"])
+                        if pv_id:
+                            parent_vid = pv_id
+                    pv = self.views.get(parent_vid) or next(iter(self.views.values()), None)
+                    pw, ph = (pv["cw"], pv["ch"]) if pv else (min(1100, self.screen_w), min(680, self.screen_h))
                     dw, dh = min(win["w"], pw), min(win["h"], ph)
-                    tx = ox + max(0, (pw - dw) // 2)
-                    ty = oy + max(0, (ph - dh) // 3)
+                    tx = max(0, (pw - dw) // 2)
+                    ty = max(0, (ph - dh) // 3)
                     run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{tx},{ty},{dw},{dh}"], self.env)
                     run_quiet(["wmctrl", "-i", "-a", wid], self.env)
                     self.placed_dialogs.add(wid)
+                    self.dialogs[wid] = parent_vid
                     continue
 
-                # Tracked main / extra window: title sync + self-resize / maximize detection
+                # Tracked window: sync top_wid, title, and detect app-initiated resize/maximize
+                top_now = find_top_frame(self.rec_dpy, self.rec_root, wid)
+                if top_now != v.get("top_wid"):
+                    v["top_wid"] = top_now
+                    self._emit_targets()
+
                 if win["title"] and win["title"] != v["title"]:
                     v["title"] = win["title"]
                     emit({"type": "title", "view": vid, "title": win["title"]})
@@ -429,44 +604,45 @@ class WindowManager:
                 if now < v.get("ignore_until", 0.0):
                     continue
 
-                ox, oy = slot_origin(v["slot"])
-                too_big = win["w"] > SLOT_W + 2 or win["h"] > SLOT_H + 2
-                if too_big or is_maximized(wid, self.env):
-                    # App asked to maximize / fullscreen itself -> maximize the web window frame
+                if is_maximized(wid, self.env):
                     emit({"type": "view_maximize", "view": vid})
-                    mw, mh = clamp_size(v["w"] or self.main_req[0], v["h"] or self.main_req[1])
-                    self._place(v, mw, mh, strip_fs=True)
+                    self._place_exact(v, v["cw"], v["ch"], strip_fs=True)
+                    self._emit_targets()
                     continue
 
                 if abs(win["w"] - v["w"]) >= 6 or abs(win["h"] - v["h"]) >= 6:
-                    # App resized its own window -> web window frame follows the app
-                    cw, ch = clamp_size(win["w"], win["h"])
-                    v["w"], v["h"] = cw, ch
+                    cw, ch = self.clamp_size(win["w"], win["h"])
+                    v["w"], v["h"] = win["w"], win["h"]
+                    v["cw"], v["ch"] = cw, ch
+                    if win["w"] > self.screen_w or win["h"] > self.screen_h or win["w"] < MIN_W or win["h"] < MIN_H:
+                        self._place_exact(v, cw, ch)
+                    elif abs(win["x"]) > 2 or abs(win["y"]) > 2:
+                        run_quiet(["wmctrl", "-i", "-r", wid, "-e", "0,0,0,-1,-1"], self.env)
                     emit({"type": "view_geometry", "view": vid, "width": cw, "height": ch})
-                    if cw != win["w"] or ch != win["h"] or abs(win["x"] - ox) > 2 or abs(win["y"] - oy) > 2:
-                        self._place(v, cw, ch)
+                    self._emit_targets()
                     continue
 
-                if abs(win["x"] - ox) > 2 or abs(win["y"] - oy) > 2:
-                    # Keep window anchored in its slot (app moved itself)
+                if abs(win["x"]) > 2 or abs(win["y"]) > 2:
                     v["ignore_until"] = now + 0.35
-                    run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{ox},{oy},{v['w']},{v['h']}"], self.env)
+                    run_quiet(["wmctrl", "-i", "-r", wid, "-e", "0,0,0,-1,-1"], self.env)
 
-    def _confirm_all_closed(self) -> None:
-        time.sleep(1.2)
-        if not list_windows_geom(self.env):
-            emit({"type": "all_windows_closed"})
-        else:
-            with self.lock:
-                self.closed_announced = False
-            self.dirty.set()
+    def _confirm_all_closed(self, wait_sec: float) -> None:
+        deadline = time.monotonic() + max(1.2, min(6.0, wait_sec))
+        while time.monotonic() < deadline:
+            time.sleep(0.3)
+            if list_windows_geom(self.env):
+                with self.lock:
+                    self.closed_announced = False
+                self.dirty.set()
+                return
+        emit({"type": "all_windows_closed"})
 
 
 def main() -> None:
     libX11.XSetErrorHandler(ignore_x_error)
     display_str = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DISPLAY", ":100")
-    target_w = int(sys.argv[2]) if len(sys.argv) > 2 else 1100
-    target_h = int(sys.argv[3]) if len(sys.argv) > 3 else 680
+    screen_w = int(sys.argv[2]) if len(sys.argv) > 2 else 1440
+    screen_h = int(sys.argv[3]) if len(sys.argv) > 3 else 840
 
     dpy = None
     for _ in range(80):
@@ -478,14 +654,22 @@ def main() -> None:
         emit({"type": "error", "message": f"Cannot open X11 display {display_str}"})
         sys.exit(1)
 
+    if libXcomp is not None:
+        root_main = libX11.XDefaultRootWindow(dpy)
+        libXcomp.XCompositeRedirectSubwindows(dpy, root_main, 0)
+        libX11.XSync(dpy, 0)
+
     shift_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Shift_L"))
     x11_lock = threading.Lock()
-    wm = WindowManager(display_str, target_w, target_h)
+    wm = WindowManager(display_str, screen_w, screen_h)
     env = wm.env
     state = {"last_cursor": "default"}
 
     def reconcile_loop():
-        """Debounced window reconciliation: runs at most every ~120ms only after X11 window events."""
+        rec_dpy = libX11.XOpenDisplay(display_str.encode("utf-8"))
+        if rec_dpy:
+            rec_root = libX11.XDefaultRootWindow(rec_dpy)
+            wm.attach_reconcile_display(rec_dpy, rec_root)
         while True:
             wm.dirty.wait()
             time.sleep(0.12)
@@ -496,7 +680,6 @@ def main() -> None:
                 pass
 
     def event_monitor_loop():
-        """Zero-polling X11 event thread: window map/unmap/configure + XFixes cursor shape changes."""
         mon_dpy = libX11.XOpenDisplay(display_str.encode("utf-8"))
         if not mon_dpy:
             return
@@ -509,7 +692,7 @@ def main() -> None:
             libXfixes.XFixesQueryExtension(mon_dpy, ctypes.byref(xfixes_ev_base), ctypes.byref(xfixes_err_base))
         )
         if has_xfixes:
-            libXfixes.XFixesSelectCursorInput(mon_dpy, root, 1)  # XFixesDisplayCursorNotifyMask
+            libXfixes.XFixesSelectCursorInput(mon_dpy, root, 1)
         libX11.XFlush(mon_dpy)
 
         ev = XEvent()
@@ -555,9 +738,8 @@ def main() -> None:
         view = str(msg.get("view") or "main")
         try:
             if mtype in ("mousemove", "mousedown", "mouseup", "wheel"):
-                ox, oy = wm.view_offset(view)
-                x = ox + max(0, min(SLOT_W - 1, int(msg.get("x", 0))))
-                y = oy + max(0, min(SLOT_H - 1, int(msg.get("y", 0))))
+                x = max(0, min(wm.screen_w - 1, int(msg.get("x", 0))))
+                y = max(0, min(wm.screen_h - 1, int(msg.get("y", 0))))
 
                 if mtype == "mousemove":
                     with x11_lock:
@@ -565,6 +747,8 @@ def main() -> None:
                         libX11.XFlush(dpy)
 
                 elif mtype in ("mousedown", "mouseup"):
+                    if mtype == "mousedown" and len(wm.views) > 1 and view != wm.active_view:
+                        wm.focus_view(view)
                     btn_in = msg.get("button", "left")
                     btn = 1 if btn_in in ("left", 0, 1) else (2 if btn_in in ("middle", 2) else 3)
                     is_down = 1 if mtype == "mousedown" else 0

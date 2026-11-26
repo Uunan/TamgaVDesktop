@@ -21,7 +21,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.1.6';
+export const TAMGA_VERSION = '1.1.7';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -330,8 +330,10 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         command,
         needsNoSandbox: Boolean(req.body?.needsNoSandbox ?? found?.needsNoSandbox),
         desktopDataRoot: vfs.getInstanceRoot(),
-        width: Number(req.body?.width) || 1100,
-        height: Number(req.body?.height) || 680,
+        width: Number(req.body?.width) || 720,
+        height: Number(req.body?.height) || 480,
+        viewportWidth: Number(req.body?.viewportWidth) || undefined,
+        viewportHeight: Number(req.body?.viewportHeight) || undefined,
         fps: config.linuxApps.fps,
         quality: config.linuxApps.quality,
         enableAudio: config.linuxApps.audio && runtime.hasAudio,

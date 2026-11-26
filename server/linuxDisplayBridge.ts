@@ -14,6 +14,8 @@ export interface LinuxAppSessionOptions {
   desktopDataRoot: string;
   width?: number;
   height?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
   fps?: number;
   quality?: number;
   enableAudio?: boolean;
@@ -30,6 +32,9 @@ interface ViewStream {
   title: string;
   width: number;
   height: number;
+  hasGeometry: boolean;
+  targetMode: 'root' | 'pixmap';
+  targetWid: string | number;
   offsetX: number;
   offsetY: number;
   lastFrame: Buffer | null;
@@ -39,9 +44,8 @@ interface ViewStream {
   subscribers: Set<LinuxAppSubscriber>;
 }
 
-const SLOT_W = 1920;
-const SLOT_H = 1080;
-const SLOT_COLS = 2;
+const DEFAULT_SCREEN_W = 1440;
+const DEFAULT_SCREEN_H = 840;
 
 const PROFILE_LOCKED_APPS = new Set([
   'firefox',
@@ -101,9 +105,9 @@ function buildOpenboxRcXml(): string {
 `;
 }
 
-function clampDim(w: number, h: number): { width: number; height: number } {
-  const cw = Math.max(240, Math.min(SLOT_W, Math.round(w || 1100)));
-  const ch = Math.max(180, Math.min(SLOT_H, Math.round(h || 680)));
+function clampDim(w: number, h: number, maxW = 1920, maxH = 1080): { width: number; height: number } {
+  const cw = Math.max(240, Math.min(maxW, Math.round(w || 720)));
+  const ch = Math.max(180, Math.min(maxH, Math.round(h || 480)));
   return {
     width: cw - (cw % 2),
     height: ch - (ch % 2),
@@ -123,6 +127,8 @@ export class LinuxAppSession {
   public height: number;
   public startedAt = Date.now();
 
+  private readonly screenWidth: number;
+  private readonly screenHeight: number;
   private fps: number;
   private quality: number;
   private enableAudio: boolean;
@@ -156,7 +162,12 @@ export class LinuxAppSession {
     this.displayNum = displayNum;
     this.displayStr = `:${displayNum}`;
 
-    const dims = clampDim(opts.width || 1100, opts.height || 680);
+    const rawScreenW = Math.max(1280, Math.min(1920, Math.round(opts.viewportWidth || DEFAULT_SCREEN_W)));
+    const rawScreenH = Math.max(760, Math.min(1080, Math.round(opts.viewportHeight || DEFAULT_SCREEN_H)));
+    this.screenWidth = rawScreenW - (rawScreenW % 2);
+    this.screenHeight = rawScreenH - (rawScreenH % 2);
+
+    const dims = clampDim(opts.width || 720, opts.height || 480, this.screenWidth, this.screenHeight);
     this.width = dims.width;
     this.height = dims.height;
     this.fps = Math.max(10, Math.min(30, opts.fps || 24));
@@ -168,12 +179,15 @@ export class LinuxAppSession {
     );
     this.onCloseCb = onCloseCb;
 
-    // Seed primary view 'main' in slot 0
+    // Seed primary view 'main' (initial native dimensions are populated when app maps)
     this.views.set('main', {
       viewId: 'main',
       title: this.appName,
       width: this.width,
       height: this.height,
+      hasGeometry: false,
+      targetMode: 'root',
+      targetWid: 0,
       offsetX: 0,
       offsetY: 0,
       lastFrame: null,
@@ -189,14 +203,14 @@ export class LinuxAppSession {
     const obRcPath = path.join(this.tempDir, 'rc.xml');
     fs.writeFileSync(obRcPath, buildOpenboxRcXml(), 'utf-8');
 
-    // 1. Start lightweight Xvfb 2x2 slot virtual display (4 x 1920x1080 windows max)
+    // 1. Start lightweight Xvfb sized to desktop viewport with XComposite for occluded views
     this.xvfbProc = spawn(
       'Xvfb',
       [
         this.displayStr,
         '-screen',
         '0',
-        '3840x2160x24',
+        `${this.screenWidth}x${this.screenHeight}x24`,
         '-ac',
         '+extension',
         'RANDR',
@@ -204,6 +218,8 @@ export class LinuxAppSession {
         'DAMAGE',
         '+extension',
         'XFIXES',
+        '+extension',
+        'Composite',
         '+render',
         '-noreset',
       ],
@@ -241,10 +257,10 @@ export class LinuxAppSession {
       this.setupPulseAudio(baseEnv);
     }
 
-    // 4. Event-driven multi-slot X11/XTest + XFixes cursor bridge
+    // 4. Event-driven X11/XTest + XFixes cursor + XComposite bridge
     this.startX11Bridge(baseEnv);
 
-    // 5. Launch real Linux GUI app
+    // 5. Launch real Linux GUI app (native sizing determined by the program)
     this.launchTargetApp(baseEnv);
 
     // 6. Start zero-idle XDamage+TurboJPEG capture for 'main' view
@@ -327,13 +343,17 @@ export class LinuxAppSession {
     const scriptPath = resolveHelperPath('x11_bridge.py');
     const proc = spawn(
       'python3',
-      ['-u', scriptPath, this.displayStr, String(this.width), String(this.height)],
+      ['-u', scriptPath, this.displayStr, String(this.screenWidth), String(this.screenHeight)],
       {
         env: baseEnv,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
     this.x11BridgeProc = proc;
+    proc.stderr?.on('data', (err: Buffer) => {
+      const msg = err.toString('utf-8').trim();
+      if (msg) console.error(`[x11_bridge ${this.displayStr}]`, msg);
+    });
 
     let lineBuf = '';
     proc.stdout?.on('data', (chunk: Buffer) => {
@@ -382,10 +402,12 @@ export class LinuxAppSession {
 
     if (msg.type === 'window_opened' && typeof msg.view === 'string') {
       this.hadWindow = true;
-      const slot = Math.max(0, Math.min(3, Number(msg.slot) || 1));
-      const dims = clampDim(Number(msg.width) || 900, Number(msg.height) || 640);
-      const offsetX = (slot % SLOT_COLS) * SLOT_W;
-      const offsetY = Math.floor(slot / SLOT_COLS) * SLOT_H;
+      const dims = clampDim(
+        Number(msg.width) || 900,
+        Number(msg.height) || 640,
+        this.screenWidth,
+        this.screenHeight
+      );
       const title = typeof msg.title === 'string' && msg.title ? msg.title : this.appName;
 
       if (!this.views.has(msg.view)) {
@@ -394,8 +416,11 @@ export class LinuxAppSession {
           title,
           width: dims.width,
           height: dims.height,
-          offsetX,
-          offsetY,
+          hasGeometry: true,
+          targetMode: 'root',
+          targetWid: 0,
+          offsetX: 0,
+          offsetY: 0,
           lastFrame: null,
           streamerProc: null,
           streamerMode: 'xdamage',
@@ -424,16 +449,56 @@ export class LinuxAppSession {
     if (msg.type === 'view_geometry' && typeof msg.view === 'string') {
       const v = this.views.get(msg.view);
       if (!v) return;
-      const dims = clampDim(Number(msg.width) || v.width, Number(msg.height) || v.height);
+      const dims = clampDim(
+        Number(msg.width) || v.width,
+        Number(msg.height) || v.height,
+        this.screenWidth,
+        this.screenHeight
+      );
       v.width = dims.width;
       v.height = dims.height;
+      v.hasGeometry = true;
       if (v.viewId === 'main') {
         this.width = dims.width;
         this.height = dims.height;
       }
       this.resizeViewCapture(v, dims.width, dims.height);
       for (const sub of v.subscribers) {
-        sub.onEvent({ type: 'view_geometry', width: dims.width, height: dims.height });
+        sub.onEvent({
+          type: 'view_geometry',
+          width: dims.width,
+          height: dims.height,
+          initial: Boolean(msg.initial),
+        });
+      }
+      return;
+    }
+
+    if (msg.type === 'view_targets' && msg.targets && typeof msg.targets === 'object') {
+      const targets = msg.targets as Record<
+        string,
+        { mode?: string; wid?: string | number; off_x?: number; off_y?: number; width?: number; height?: number }
+      >;
+      for (const [vid, t] of Object.entries(targets)) {
+        const v = this.views.get(vid);
+        if (!v || !t) continue;
+        v.targetMode = t.mode === 'pixmap' ? 'pixmap' : 'root';
+        v.targetWid = t.wid ?? 0;
+        v.offsetX = Number(t.off_x) || 0;
+        v.offsetY = Number(t.off_y) || 0;
+        if (v.streamerMode === 'xdamage' && v.streamerProc?.stdin?.writable) {
+          v.streamerProc.stdin.write(
+            JSON.stringify({
+              type: 'target',
+              mode: v.targetMode,
+              wid: v.targetWid,
+              off_x: v.offsetX,
+              off_y: v.offsetY,
+              width: Number(t.width) || v.width,
+              height: Number(t.height) || v.height,
+            }) + '\n'
+          );
+        }
       }
       return;
     }
@@ -537,10 +602,10 @@ export class LinuxAppSession {
         ].join('\n') + '\n',
         'utf-8'
       );
-      // Omit --no-remote so Firefox supports opening extra windows cleanly inside its isolated DISPLAY
+      // Omit --no-remote and explicit --width/--height so Firefox picks its own geometry and supports extra windows
       finalCmd = extraNewWindow
         ? `${finalCmd} -profile "${profileDir}" --new-window about:home`
-        : `${finalCmd} -profile "${profileDir}" --width=${this.width} --height=${this.height}`;
+        : `${finalCmd} -profile "${profileDir}"`;
     } else if (
       this.needsNoSandbox ||
       ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'].includes(baseBin)
@@ -651,6 +716,7 @@ export class LinuxAppSession {
     view.streamerMode = 'xdamage';
     const scriptPath = resolveHelperPath('x11_streamer.py');
     const jpegQual = Math.max(60, Math.min(88, 92 - this.quality * 4));
+    const initTargetWid = view.targetMode === 'pixmap' ? String(view.targetWid || 0) : '0';
     const proc = spawn(
       'python3',
       [
@@ -663,6 +729,7 @@ export class LinuxAppSession {
         String(jpegQual),
         String(view.offsetX),
         String(view.offsetY),
+        initTargetWid,
       ],
       {
         env: this.baseEnv,
@@ -692,6 +759,13 @@ export class LinuxAppSession {
         }
         const frame = Buffer.from(acc.subarray(4, 4 + frameLen));
         acc = acc.subarray(4 + frameLen);
+
+        if (!view.hasGeometry) {
+          // Wait until the X11 app actually maps a window so clients never flash blank black frames
+          if (proc.stdin?.writable) proc.stdin.write('a\n');
+          continue;
+        }
+
         view.lastFrame = frame;
 
         if (view.subscribers.size === 0) {
@@ -775,6 +849,7 @@ export class LinuxAppSession {
         }
         const frame = Buffer.from(acc.subarray(start, end + 2));
         acc = acc.subarray(end + 2);
+        if (!view.hasGeometry) continue;
         if (view.lastFrame && view.lastFrame.length === frame.length && view.lastFrame.equals(frame)) {
           continue;
         }
@@ -824,7 +899,15 @@ export class LinuxAppSession {
     view.subscribers.add(sub);
     sub.onEvent({ type: 'title', title: view.title });
     sub.onEvent({ type: 'cursor', cursor: this.cursor });
-    if (view.lastFrame) {
+    if (view.hasGeometry) {
+      sub.onEvent({
+        type: 'view_geometry',
+        width: view.width,
+        height: view.height,
+        initial: true,
+      });
+    }
+    if (view.lastFrame && view.hasGeometry) {
       sub.onVideoFrame(view.lastFrame);
     } else if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
       view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
@@ -843,7 +926,7 @@ export class LinuxAppSession {
     if (this.closed) return;
     const view = this.views.get(viewId || 'main');
     if (!view) return;
-    const dims = clampDim(width, height);
+    const dims = clampDim(width, height, this.screenWidth, this.screenHeight);
     if (Math.abs(dims.width - view.width) < 4 && Math.abs(dims.height - view.height) < 4) return;
 
     view.width = dims.width;

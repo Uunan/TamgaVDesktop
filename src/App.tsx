@@ -453,8 +453,10 @@ export default function App() {
       remoteAudio.ensureContext();
       const vw = window.innerWidth;
       const vh = window.innerHeight - 76;
-      const width = Math.min(1160, vw - 36);
-      const height = Math.min(720, vh - 32);
+      const viewportWidth = Math.max(960, vw - 36);
+      const viewportHeight = Math.max(600, vh - 32 - 42);
+      const width = Math.min(740, vw - 36);
+      const height = Math.min(520, vh - 32);
 
       // Run Visual Studio Code in 100% Web-Native DOM mode (zero video lag, zero remote cursor!)
       if (params.appId === 'vscode' || params.command?.trim() === 'code') {
@@ -467,6 +469,8 @@ export default function App() {
           ...params,
           width,
           height: height - 42,
+          viewportWidth,
+          viewportHeight,
         });
 
         // If backend opened an extra window inside an active profile session (e.g. Firefox),
@@ -1148,8 +1152,8 @@ export default function App() {
             onUpdateBounds={(id, bounds) =>
               setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...bounds } : w)))
             }
-            minWidth={win.kind === 'properties' || win.kind === 'linux-app' ? 280 : 420}
-            minHeight={win.kind === 'properties' || win.kind === 'linux-app' ? 220 : 300}
+            minWidth={win.kind === 'properties' ? 280 : win.kind === 'linux-app' ? 240 : 420}
+            minHeight={win.kind === 'properties' ? 220 : win.kind === 'linux-app' ? 180 : 300}
             overlayTitlebar={win.kind === 'vscode'}
             headerContent={
               win.kind === 'browser' ? (
@@ -1205,6 +1209,7 @@ export default function App() {
                 sessionId={win.appSessionId}
                 viewId={win.appViewId || 'main'}
                 appName={win.title}
+                isFocused={focusedWindowId === win.id}
                 onTitleChange={(nextTitle) =>
                   setWindows((prev) =>
                     prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
@@ -1213,8 +1218,8 @@ export default function App() {
                 onWindowOpened={(extra) => {
                   const vw = window.innerWidth;
                   const vh = window.innerHeight - 76;
-                  const extraW = Math.max(280, Math.min(vw - 28, Math.round(extra.width || 900)));
-                  const extraH = Math.max(220, Math.min(vh - 20, Math.round((extra.height || 640) + 42)));
+                  const extraW = Math.max(240, Math.min(vw - 28, Math.round(extra.width || 900)));
+                  const extraH = Math.max(222, Math.min(vh - 14, Math.round((extra.height || 640) + 42)));
                   const extraId = `win-linux-${win.appSessionId}-${extra.view}`;
                   const z = ++nextZRef.current;
                   setWindows((prev) => {

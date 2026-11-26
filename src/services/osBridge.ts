@@ -88,6 +88,8 @@ export const appsApi = {
     needsNoSandbox?: boolean;
     width?: number;
     height?: number;
+    viewportWidth?: number;
+    viewportHeight?: number;
   }) =>
     jsonReq<RunningLinuxSession>('/api/apps/launch', {
       method: 'POST',

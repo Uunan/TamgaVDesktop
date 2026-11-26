@@ -14,7 +14,11 @@ interface WindowFrameControlContextValue {
   startExternalDrag: (init: ExternalDragInit) => void;
   toggleMaximize: () => void;
   setMaximized: (maximized: boolean) => void;
-  resizeFrame: (contentWidth: number, contentHeight: number) => void;
+  resizeFrame: (
+    contentWidth: number,
+    contentHeight: number,
+    options?: { center?: boolean }
+  ) => void;
   focusWindow: () => void;
   setTitlebarMetrics: (top: number, height: number) => void;
 }
@@ -397,7 +401,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
   }, []);
 
   const resizeFrame = useCallback(
-    (contentWidth: number, contentHeight: number) => {
+    (contentWidth: number, contentHeight: number, options?: { center?: boolean }) => {
       const w = winRef.current;
       const vw = window.innerWidth;
       const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
@@ -406,8 +410,12 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
       const chromeH = overlayTitlebar ? 0 : 42;
       const targetW = Math.max(minWidth, Math.min(maxW, Math.round(contentWidth)));
       const targetH = Math.max(minHeight, Math.min(maxH, Math.round(contentHeight + chromeH)));
-      const targetX = Math.max(EDGE_PAD, Math.min(vw - targetW - EDGE_PAD, w.x));
-      const targetY = Math.max(EDGE_PAD, Math.min(vh - targetH, w.y));
+      const targetX = options?.center
+        ? Math.max(EDGE_PAD, Math.round((vw - targetW) / 2))
+        : Math.max(EDGE_PAD, Math.min(vw - targetW - EDGE_PAD, w.x));
+      const targetY = options?.center
+        ? Math.max(EDGE_PAD, Math.round((vh - targetH) / 2))
+        : Math.max(EDGE_PAD, Math.min(vh - targetH, w.y));
       onUpdateBounds(w.id, {
         maximized: false,
         snap: null,
