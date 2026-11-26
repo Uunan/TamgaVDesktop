@@ -21,7 +21,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.2.4';
+export const TAMGA_VERSION = '1.2.5';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',

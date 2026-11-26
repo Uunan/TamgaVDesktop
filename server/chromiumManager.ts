@@ -1036,7 +1036,16 @@ export class ChromiumDesktopSession {
     if (!tab.page || tab.page.isClosed() || tab.mode !== 'web') return;
     try {
       tab.suppressSettleUntil = Date.now() + 900;
-      const pngBuf = await tab.page.screenshot({ type: 'png' });
+      let pngBuf: Buffer;
+      if (tab.cdp) {
+        const res = await tab.cdp.send('Page.captureScreenshot', {
+          format: 'png',
+          fromSurface: true,
+        });
+        pngBuf = Buffer.from(res.data, 'base64');
+      } else {
+        pngBuf = await tab.page.screenshot({ type: 'png', scale: 'device' });
+      }
       tab.lastPngAt = Date.now();
       tab.suppressSettleUntil = tab.lastPngAt + 550;
       const packet = Buffer.allocUnsafe(1 + pngBuf.length);
