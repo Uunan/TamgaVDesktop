@@ -221,9 +221,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     return cells;
   }, [calCursor, now]);
 
-  const browserWin = windows.find(
-    (w) => w.kind === 'browser' || (w.kind === 'linux-app' && w.appId === 'firefox')
-  );
+  const browserWin = windows.find((w) => w.kind === 'browser');
   const terminalWin = windows.find((w) => w.kind === 'terminal');
   const appStoreWin = windows.find((w) => w.kind === 'app-store');
   const otherWindows = windows.filter(

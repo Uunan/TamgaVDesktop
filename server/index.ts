@@ -21,7 +21,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.1.8';
+export const TAMGA_VERSION = '1.2.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -792,6 +792,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           case 'browser_new_tab':
             await browserSession.createTab(msg.url);
             break;
+          case 'browser_activate_tab':
           case 'browser_switch_tab':
             await browserSession.activateTab(msg.tabId);
             break;
@@ -811,7 +812,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
             await browserSession.reload(msg.tabId);
             break;
           case 'browser_viewport':
-            await browserSession.setViewport(Number(msg.width), Number(msg.height));
+            await browserSession.setViewport(
+              Number(msg.width),
+              Number(msg.height),
+              typeof msg.devicePixelRatio === 'number' ? msg.devicePixelRatio : undefined
+            );
             break;
           case 'browser_input':
             browserSession.handleInput(msg);

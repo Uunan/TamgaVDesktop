@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { LinuxAppInfo, LinuxRuntimeStatus } from '../../types/os';
 import { appsApi, buildAppIconUrl } from '../../services/osBridge';
+import { ChromiumLogoIcon } from '../icons/FileIcon';
 
 interface AppStoreWindowProps {
   runtime: LinuxRuntimeStatus | null;
@@ -21,6 +22,7 @@ interface AppStoreWindowProps {
   onLaunchApp: (app: LinuxAppInfo, opts?: { forceNew?: boolean }) => void;
   onLaunchCustomCommand: (command: string, title?: string) => void;
   onOpenTerminal: () => void;
+  onOpenChromium?: () => void;
 }
 
 export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
@@ -31,6 +33,7 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
   onLaunchApp,
   onLaunchCustomCommand,
   onOpenTerminal,
+  onOpenChromium,
 }) => {
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -115,14 +118,39 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
         {/* Installed Apps */}
         <section className="space-y-2.5">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--os-text-subtle)]">
-            Kurulu Uygulamalar ({installedApps.length})
+            Kurulu Uygulamalar ({installedApps.length + (onOpenChromium ? 1 : 0)})
           </div>
-          {installedApps.length === 0 ? (
+          {installedApps.length === 0 && !onOpenChromium ? (
             <div className="p-4 rounded-2xl bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text-muted)]">
               Henüz kurulu yerel Linux GUI uygulaması bulunamadı. Aşağıdan Firefox, VS Code veya Antigravity kurabilirsiniz.
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {onOpenChromium && (
+                <div className="p-3 rounded-2xl bg-[var(--os-bg)] border border-[var(--os-border)] flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[var(--os-surface-3)] flex items-center justify-center shrink-0 overflow-hidden">
+                    <ChromiumLogoIcon size={26} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-[var(--os-text)] truncate">
+                      Chromium
+                    </div>
+                    <div className="text-[11px] text-[var(--os-text-muted)] truncate">
+                      Yerleşik HiDPI tarayıcı (Firefox’tan bağımsız)
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => onOpenChromium()}
+                      data-testid="launch-app-chromium"
+                      className="px-3 py-1.5 rounded-xl bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] hover:opacity-90 text-xs font-semibold flex items-center gap-1 transition-opacity"
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>Aç</span>
+                    </button>
+                  </div>
+                </div>
+              )}
               {installedApps.map((app) => (
                 <div
                   key={app.id}

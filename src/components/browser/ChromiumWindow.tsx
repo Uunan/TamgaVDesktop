@@ -46,6 +46,7 @@ interface ChromiumWindowBodyProps {
   onOpenFolder: (path: string) => void;
   onVfsSaved: () => void;
   onNotify: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
+  browserCursor?: string;
 }
 
 export const ChromiumTabStrip: React.FC<{
@@ -134,6 +135,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
   onOpenFolder,
   onVfsSaved,
   onNotify,
+  browserCursor = 'default',
 }) => {
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
   const [addressInput, setAddressInput] = useState('');
@@ -189,7 +191,15 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
           pendingBytes = null;
           const canvas = canvasRef.current;
           if (canvas) {
-            const blob = new Blob([nextToPaint as BlobPart], { type: 'image/jpeg' });
+            const isPng =
+              nextToPaint.length >= 4 &&
+              nextToPaint[0] === 0x89 &&
+              nextToPaint[1] === 0x50 &&
+              nextToPaint[2] === 0x4e &&
+              nextToPaint[3] === 0x47;
+            const blob = new Blob([nextToPaint as BlobPart], {
+              type: isPng ? 'image/png' : 'image/jpeg',
+            });
             const bmp = await createImageBitmap(blob);
             if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
               canvas.width = bmp.width;
@@ -221,10 +231,12 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
       if (!rect || rect.width < 120 || rect.height < 120) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
+        const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
         sendWs({
           type: 'browser_viewport',
           width: Math.round(rect.width),
           height: Math.round(rect.height),
+          devicePixelRatio: dpr,
         });
       }, 150);
     });
@@ -287,11 +299,23 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const scaleX = (canvas.width || rect.width) / rect.width;
-    const scaleY = (canvas.height || rect.height) / rect.height;
+    if (!rect.width || !rect.height) return { x: 0, y: 0 };
+    const logicalW = Math.round(rect.width);
+    const logicalH = Math.round(rect.height);
+    if (canvas.width > 0 && canvas.height > 0) {
+      const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+      const drawnW = canvas.width * scale;
+      const drawnH = canvas.height * scale;
+      const offsetX = (rect.width - drawnW) / 2;
+      const offsetY = (rect.height - drawnH) / 2;
+      return {
+        x: Math.max(0, Math.min(logicalW, Math.round(((clientX - rect.left - offsetX) / drawnW) * logicalW))),
+        y: Math.max(0, Math.min(logicalH, Math.round(((clientY - rect.top - offsetY) / drawnH) * logicalH))),
+      };
+    }
     return {
-      x: Math.round((clientX - rect.left) * scaleX),
-      y: Math.round((clientY - rect.top) * scaleY),
+      x: Math.max(0, Math.min(logicalW, Math.round(clientX - rect.left))),
+      y: Math.max(0, Math.min(logicalH, Math.round(clientY - rect.top))),
     };
   };
 
@@ -379,6 +403,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
             value={addressInput}
             onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => setAddressInput(e.target.value)}
+            data-testid="chromium-address-input"
             placeholder="Web adresi veya arama terimi yazın..."
             className="flex-1 bg-transparent text-xs text-[var(--os-text)] focus:outline-none"
           />
@@ -427,6 +452,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
                   autoFocus
                   value={newTabQuery}
                   onChange={(e) => setNewTabQuery(e.target.value)}
+                  data-testid="chromium-newtab-input"
                   placeholder="Google'da arayın veya adres girin..."
                   className="w-full pl-11 pr-20 py-3.5 rounded-2xl bg-[var(--os-bg)] border border-[var(--os-border-strong)] focus:border-[var(--os-text-muted)] focus:outline-none text-sm text-[var(--os-text)]"
                 />
@@ -842,7 +868,9 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
                   });
                 }
               }}
-              className="w-full h-full object-fill focus:outline-none touch-none cursor-default"
+              data-testid="chromium-canvas"
+              className="w-full h-full object-contain focus:outline-none touch-none"
+              style={{ cursor: browserCursor || 'default' }}
             />
           </div>
         )}

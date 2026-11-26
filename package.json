@@ -1,9 +1,9 @@
 {
   "name": "tamga-vdesktop",
-  "version": "1.1.8",
+  "version": "1.2.0",
   "private": false,
   "type": "module",
-  "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, and seamless native Linux GUI apps (Firefox, VS Code, Antigravity).",
+  "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, built-in HiDPI Playwright Chromium browser, and seamless native Linux GUI apps.",
   "license": "MIT",
   "author": "Uunan",
   "homepage": "https://github.com/Uunan/TamgaVDesktop#readme",
@@ -22,6 +22,7 @@
     "cloud-desktop",
     "web-os",
     "self-hosted",
+    "chromium",
     "firefox",
     "vscode",
     "terminal"
@@ -50,6 +51,7 @@
     "build:server": "node scripts/build-server.mjs",
     "build": "rm -rf dist && tsc && npm run build:client && npm run build:server",
     "start": "node dist/cli.js start",
+    "postinstall": "node dist/cli.js install-browser --quiet || true",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -57,6 +59,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "multer": "^1.4.5-lts.2",
+    "playwright-core": "^1.51.1",
     "ws": "^8.18.1"
   },
   "devDependencies": {
@@ -74,7 +77,6 @@
     "@xterm/xterm": "^5.5.0",
     "concurrently": "^9.1.2",
     "lucide-react": "^0.503.0",
-    "playwright-core": "^1.51.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.1.4",

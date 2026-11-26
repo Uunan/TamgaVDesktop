@@ -13,6 +13,11 @@ import {
   saveConfig,
 } from './config';
 import { LinuxAppManager } from './linuxAppManager';
+import {
+  findChromiumExecutable,
+  findPlaywrightManagedBrowser,
+  installPlaywrightBrowserSync,
+} from './chromiumManager';
 import { startTamgaServer, TAMGA_VERSION } from './index';
 
 function parseFlags(argv: string[]) {
@@ -64,7 +69,8 @@ TamgaVDesktop v${TAMGA_VERSION} — Linux Sanal Masaüstü Platformu
 Kullanım:
   tamga-vdesktop start [seçenekler]         Sunucuyu başlatır
   tamga-vdesktop init [seçenekler]          Yapılandırma dosyasını oluşturur
-  tamga-vdesktop setup-linux [seçenekler]   Linux GUI bağımlılıklarını kurar (Ubuntu/Debian)
+  tamga-vdesktop install-browser            Yerleşik Playwright Chromium tarayıcısını kurar
+  tamga-vdesktop setup-linux [seçenekler]   Linux GUI + Playwright Chromium ortamını kurar
   tamga-vdesktop service <komut>            systemd servisini yönetir (install|start|stop|restart|status|logs|uninstall)
   tamga-vdesktop passwd <yeni-parola>       Yönetici parolasını günceller
   tamga-vdesktop doctor                     Sistem ve bağımlılık teşhisi yapar
@@ -132,6 +138,20 @@ async function cmdInit(flags: Record<string, string | boolean>) {
   console.log(`7/24 servis için: tamga-vdesktop service install --config "${configPath}"\n`);
 }
 
+function cmdInstallBrowser(flags: Record<string, string | boolean>) {
+  const quiet = Boolean(flags.quiet);
+  const withDeps = Boolean(flags['with-deps']);
+  const ok = installPlaywrightBrowserSync({ quiet, withDeps });
+  if (!ok && !quiet) {
+    console.error('✗ Playwright Chromium kurulumu tamamlanamadı.');
+    process.exit(1);
+  }
+  if (ok && !quiet) {
+    const p = findPlaywrightManagedBrowser();
+    console.log(`✓ Yerleşik Playwright Chromium hazır -> ${p || 'ms-playwright'}`);
+  }
+}
+
 function cmdSetupLinux(flags: Record<string, string | boolean>) {
   if (process.platform !== 'linux') {
     console.error('setup-linux komutu yalnızca Ubuntu/Debian Linux sunucularda çalışır.');
@@ -144,7 +164,7 @@ function cmdSetupLinux(flags: Record<string, string | boolean>) {
     'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -y',
-    'apt-get install -y --no-install-recommends xvfb openbox ffmpeg libturbojpeg libxdamage1 libxtst6 libx11-6 libxfixes3 libxext6 xclip xdotool wmctrl dbus-x11 x11-utils dmz-cursor-theme pulseaudio pulseaudio-utils fonts-dejavu-core fonts-liberation fonts-noto-color-emoji desktop-file-utils hicolor-icon-theme wget gnupg ca-certificates curl',
+    'apt-get install -y --no-install-recommends xvfb openbox ffmpeg libturbojpeg libxdamage1 libxtst6 libx11-6 libxfixes3 libxext6 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxrandr2 libgbm1 libasound2t64 xclip xdotool wmctrl dbus-x11 x11-utils dmz-cursor-theme pulseaudio pulseaudio-utils fonts-noto-core fonts-dejavu-core fonts-liberation fonts-noto-color-emoji desktop-file-utils hicolor-icon-theme wget gnupg ca-certificates curl || apt-get install -y --no-install-recommends xvfb openbox ffmpeg libturbojpeg libxdamage1 libxtst6 libx11-6 libxfixes3 libxext6 xclip xdotool wmctrl dbus-x11 x11-utils dmz-cursor-theme pulseaudio pulseaudio-utils fonts-dejavu-core fonts-liberation fonts-noto-color-emoji desktop-file-utils hicolor-icon-theme wget gnupg ca-certificates curl',
   ];
 
   if (withFirefox) {
@@ -168,12 +188,15 @@ if ! command -v code >/dev/null 2>&1; then
 fi`);
   }
 
-  console.log('TamgaVDesktop Linux GUI çalışma ortamı kuruluyor...');
+  parts.push('apt-get clean');
+
+  console.log('TamgaVDesktop Linux GUI çalışma ortamı ve Playwright Chromium kuruluyor...');
   const res = spawnSync('/bin/bash', ['-c', parts.join('\n')], { stdio: 'inherit' });
   if (res.status !== 0) {
     process.exit(res.status || 1);
   }
-  console.log('\n✓ Linux GUI çalışma ortamı hazır!');
+  installPlaywrightBrowserSync({ quiet: false, withDeps: true });
+  console.log('\n✓ Linux GUI çalışma ortamı ve yerleşik Chromium hazır!');
 }
 
 function cmdService(subCmd: string | undefined, flags: Record<string, string | boolean>) {
@@ -266,6 +289,7 @@ function cmdDoctor(flags: Record<string, string | boolean>) {
   const appMgr = new LinuxAppManager();
   const status = appMgr.getRuntimeStatus();
   const apps = appMgr.listApps().filter((a) => a.installed);
+  const pwPath = findPlaywrightManagedBrowser() || findChromiumExecutable();
 
   console.log(`\nTamgaVDesktop v${TAMGA_VERSION} — Sistem Teşhisi`);
   console.log(`──────────────────────────────────────────`);
@@ -275,6 +299,7 @@ function cmdDoctor(flags: Record<string, string | boolean>) {
   console.log(`Dinleme Adresi  : ${config.host}:${config.port}`);
   console.log(`Veri Dizini     : ${config.dataDir}`);
   console.log(`Giriş Koruması  : ${config.auth.enabled ? `Aktif (${config.auth.username})` : 'Kapalı'}`);
+  console.log(`Yerleşik Chromium: ${pwPath ? `HAZIR (${pwPath})` : "Eksik ('tamga-vdesktop install-browser' çalıştırın)"}`);
   console.log(`Linux GUI Motor : ${status.guiReady ? 'HAZIR (Xvfb + Openbox + FFmpeg + X11)' : `Eksik: ${status.missingDeps.join(', ')}`}`);
   console.log(`Linux Ses Motor : ${status.hasAudio ? 'HAZIR (PulseAudio)' : 'Devre Dışı'}`);
   console.log(`Kurulu Uygulama : ${apps.length > 0 ? apps.map((a) => a.name).join(', ') : 'Yok'}`);
@@ -306,6 +331,9 @@ async function main() {
       break;
     case 'setup-linux':
       cmdSetupLinux(flags);
+      break;
+    case 'install-browser':
+      cmdInstallBrowser(flags);
       break;
     case 'service':
       cmdService(positional[1], flags);

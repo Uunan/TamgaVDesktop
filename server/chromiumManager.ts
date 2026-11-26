@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import type {
   Browser,
   BrowserContext,
@@ -9,12 +11,14 @@ import type {
 } from 'playwright-core';
 import type { VFSManager } from './vfsManager.js';
 
+const require = createRequire(import.meta.url);
+
 async function loadPlaywrightChromium() {
   try {
     const pw = await import('playwright-core');
     return pw.chromium;
   } catch {
-    throw new Error('Yerleşik Playwright Chromium yüklü değil. Linux sunucuda Firefox veya diğer yerel uygulamaları kullanın.');
+    throw new Error('Yerleşik Playwright Chromium yüklü değil.');
   }
 }
 
@@ -47,49 +51,89 @@ interface InternalTab {
   cdp?: CDPSession;
   lastFrameBuffer?: Buffer;
   streaming: boolean;
+  settleTimer?: ReturnType<typeof setTimeout>;
+  suppressSettleUntil?: number;
 }
 
 export type JsonEventCallback = (msg: Record<string, unknown>) => void;
 export type BinaryEventCallback = (packet: Buffer) => void;
 
 // Binary packet headers:
-// 0x01 = JPEG Screencast Video Frame
+// 0x01 = Screencast/Snapshot Image Frame (JPEG during motion, lossless PNG when settled)
 // 0x02 = 24000Hz Mono Int16 PCM Audio Frame
 export const PACKET_VIDEO_JPEG = 0x01;
 export const PACKET_AUDIO_PCM = 0x02;
 
-function findChromiumExecutable(chromiumRef?: { executablePath: () => string }): string | undefined {
+function collectPlaywrightRoots(): string[] {
+  const home = os.homedir();
+  return Array.from(
+    new Set(
+      [
+        process.env.PLAYWRIGHT_BROWSERS_PATH || '',
+        path.join(home, 'Library', 'Caches', 'ms-playwright'),
+        path.join(home, '.cache', 'ms-playwright'),
+        '/root/.cache/ms-playwright',
+        '/var/cache/tamga-playwright',
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'ms-playwright') : '',
+      ].filter(Boolean)
+    )
+  );
+}
+
+export function findChromiumExecutable(chromiumRef?: { executablePath: () => string }): string | undefined {
   try {
     const defaultPath = chromiumRef?.executablePath();
     if (defaultPath && fs.existsSync(defaultPath)) {
       return defaultPath;
     }
   } catch {
-    // check fallbacks
+    // check ms-playwright cache & fallback paths
   }
 
-  const home = os.homedir();
-  const cacheRoots = [
-    path.join(home, 'Library', 'Caches', 'ms-playwright'),
-    path.join(home, '.cache', 'ms-playwright'),
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'ms-playwright') : '',
-  ].filter(Boolean);
-
-  for (const root of cacheRoots) {
+  for (const root of collectPlaywrightRoots()) {
     if (!fs.existsSync(root)) continue;
-    const dirs = fs
-      .readdirSync(root)
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+
+    const shellDirs = entries
+      .filter((d) => d.startsWith('chromium_headless_shell-'))
+      .sort()
+      .reverse();
+    for (const dir of shellDirs) {
+      const shellCandidates = [
+        path.join(root, dir, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-linux', 'headless_shell'),
+        path.join(root, dir, 'chrome-headless-shell-mac-arm64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-headless-shell-mac-x64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-mac', 'headless_shell'),
+        path.join(root, dir, 'chrome-mac-arm64', 'headless_shell'),
+        path.join(root, dir, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'),
+        path.join(root, dir, 'chrome-win', 'headless_shell.exe'),
+      ];
+      for (const candidate of shellCandidates) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+
+    const fullDirs = entries
       .filter((d) => d.startsWith('chromium-'))
       .sort()
       .reverse();
-    for (const dir of dirs) {
-      const candidates = [
+    for (const dir of fullDirs) {
+      const fullCandidates = [
+        path.join(root, dir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+        path.join(root, dir, 'chrome-mac', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
         path.join(root, dir, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
         path.join(root, dir, 'chrome-mac-arm64', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
         path.join(root, dir, 'chrome-linux', 'chrome'),
+        path.join(root, dir, 'chrome-linux64', 'chrome'),
         path.join(root, dir, 'chrome-win', 'chrome.exe'),
       ];
-      for (const candidate of candidates) {
+      for (const candidate of fullCandidates) {
         if (fs.existsSync(candidate)) return candidate;
       }
     }
@@ -102,6 +146,7 @@ function findChromiumExecutable(chromiumRef?: { executablePath: () => string }):
     '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome-stable',
     '/usr/bin/google-chrome',
   ];
   for (const candidate of systemCandidates) {
@@ -109,6 +154,106 @@ function findChromiumExecutable(chromiumRef?: { executablePath: () => string }):
   }
 
   return undefined;
+}
+
+export function findPlaywrightManagedBrowser(chromiumRef?: { executablePath: () => string }): string | undefined {
+  try {
+    const defaultPath = chromiumRef?.executablePath();
+    if (defaultPath && fs.existsSync(defaultPath)) return defaultPath;
+  } catch {}
+  for (const root of collectPlaywrightRoots()) {
+    if (!fs.existsSync(root)) continue;
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const dir of entries.filter((d) => d.startsWith('chromium_headless_shell-') || d.startsWith('chromium-')).sort().reverse()) {
+      const cands = [
+        path.join(root, dir, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-linux', 'headless_shell'),
+        path.join(root, dir, 'chrome-linux', 'chrome'),
+        path.join(root, dir, 'chrome-linux64', 'chrome'),
+        path.join(root, dir, 'chrome-headless-shell-mac-arm64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-headless-shell-mac-x64', 'chrome-headless-shell'),
+        path.join(root, dir, 'chrome-mac', 'headless_shell'),
+        path.join(root, dir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+        path.join(root, dir, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+      ];
+      for (const c of cands) {
+        if (fs.existsSync(c)) return c;
+      }
+    }
+  }
+  return undefined;
+}
+
+export function resolvePlaywrightCliPath(): string | null {
+  try {
+    return require.resolve('playwright-core/cli.js');
+  } catch {
+    return null;
+  }
+}
+
+export function installPlaywrightBrowserSync(opts?: { quiet?: boolean; withDeps?: boolean }): boolean {
+  const existing = findPlaywrightManagedBrowser();
+  if (existing) return true;
+
+  const cliPath = resolvePlaywrightCliPath();
+  if (!cliPath) {
+    if (!opts?.quiet) {
+      console.error('[TamgaVDesktop] playwright-core/cli.js bulunamadı.');
+    }
+    return false;
+  }
+
+  const args = [cliPath, 'install', 'chromium-headless-shell'];
+  if (opts?.withDeps && process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0) {
+    args.push('--with-deps');
+  }
+  if (opts?.quiet) {
+    args.push('--no-progress');
+  }
+
+  if (!opts?.quiet) {
+    console.log('[TamgaVDesktop] Yerleşik Playwright Chromium tarayıcısı kuruluyor...');
+  }
+  const res = spawnSync(process.execPath, args, {
+    stdio: opts?.quiet ? 'ignore' : 'inherit',
+    env: {
+      ...process.env,
+      PLAYWRIGHT_SKIP_BROWSER_GC: '1',
+    },
+  });
+  if (res.status === 0 && findPlaywrightManagedBrowser()) {
+    return true;
+  }
+
+  // Fallback for Playwright versions without chromium-headless-shell target alias
+  const fallbackArgs = [cliPath, 'install', '--only-shell', 'chromium'];
+  if (opts?.quiet) fallbackArgs.push('--no-progress');
+  const res2 = spawnSync(process.execPath, fallbackArgs, {
+    stdio: opts?.quiet ? 'ignore' : 'inherit',
+  });
+  return res2.status === 0 && Boolean(findPlaywrightManagedBrowser());
+}
+
+async function installPlaywrightBrowserAsync(): Promise<void> {
+  if (findPlaywrightManagedBrowser()) return;
+  const cliPath = resolvePlaywrightCliPath();
+  if (!cliPath) return;
+
+  await new Promise<void>((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [cliPath, 'install', 'chromium-headless-shell', '--no-progress'],
+      { stdio: 'ignore' }
+    );
+    child.on('exit', () => resolve());
+    child.on('error', () => resolve());
+  });
 }
 
 function normalizeUserUrl(rawInput: string): {
@@ -144,9 +289,32 @@ function normalizeUserUrl(rawInput: string): {
   };
 }
 
-// Audio capture script injected into every Chromium page for real-time PCM audio streaming
-const AUDIO_CAPTURE_INIT_SCRIPT = `
+// Audio capture + anti-detection + pointer cursor sync injected into every Chromium page
+const PAGE_ENHANCEMENT_INIT_SCRIPT = `
 (() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch {}
+
+  if (!window.__rcCursorHooked) {
+    window.__rcCursorHooked = true;
+    let lastCursor = '';
+    let lastCheck = 0;
+    window.addEventListener('mousemove', (ev) => {
+      const now = performance.now();
+      if (now - lastCheck < 75) return;
+      lastCheck = now;
+      try {
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const cur = el ? getComputedStyle(el).cursor || 'default' : 'default';
+        if (cur !== lastCursor && typeof window.__rcCursorChange === 'function') {
+          lastCursor = cur;
+          window.__rcCursorChange(cur).catch(() => {});
+        }
+      } catch {}
+    }, { passive: true, capture: true });
+  }
+
   if (window.__rcAudioHooked) return;
   window.__rcAudioHooked = true;
 
@@ -225,7 +393,6 @@ const AUDIO_CAPTURE_INIT_SCRIPT = `
     } catch {}
   }
 
-  // Also capture WebAudio API sounds (synths, games, web apps) connected to ctx.destination
   const origConnect = AudioNode.prototype.connect;
   AudioNode.prototype.connect = function (dest, ...rest) {
     const result = origConnect.call(this, dest, ...rest);
@@ -289,8 +456,18 @@ export class ChromiumCluster {
     }
     this.launching = (async () => {
       const chromiumApi = await loadPlaywrightChromium();
-      const executablePath = findChromiumExecutable(chromiumApi);
-      if (executablePath) this.executableUsed = executablePath;
+      // Prefer Playwright's own managed Chromium binary, downloading on demand if absent
+      let executablePath = findPlaywrightManagedBrowser(chromiumApi);
+      if (!executablePath) {
+        await installPlaywrightBrowserAsync();
+        executablePath = findChromiumExecutable(chromiumApi);
+      }
+      if (!executablePath) {
+        throw new Error(
+          "Playwright Chromium ikilisi bulunamadı. Sunucuda 'tamga-vdesktop install-browser' çalıştırın."
+        );
+      }
+      this.executableUsed = executablePath;
 
       const launched = await chromiumApi.launch({
         executablePath,
@@ -301,7 +478,13 @@ export class ChromiumCluster {
           '--disable-dev-shm-usage',
           '--disable-blink-features=AutomationControlled',
           '--autoplay-policy=no-user-gesture-required',
-          '--font-render-hinting=none',
+          '--font-render-hinting=medium',
+          '--enable-font-antialiasing',
+          '--force-color-profile=srgb',
+          '--use-gl=angle',
+          '--use-angle=swiftshader-webgl',
+          '--enable-webgl',
+          '--ignore-gpu-blocklist',
         ],
       });
       this.browser = launched;
@@ -341,6 +524,7 @@ export class ChromiumCluster {
     }
     return {
       ready: Boolean(this.browser?.isConnected()),
+      installed: Boolean(findChromiumExecutable()),
       executable: path.basename(this.executableUsed),
       isolatedDesktopsLoaded: this.sessions.size,
       totalTabs,
@@ -360,6 +544,7 @@ export class ChromiumDesktopSession {
   private tabOrder: string[] = [];
   private activeTabId: string | null = null;
   private viewport = { width: 1160, height: 700 };
+  private dpr = 1;
 
   private jsonListeners: Set<JsonEventCallback> = new Set();
   private binaryListeners: Set<BinaryEventCallback> = new Set();
@@ -461,12 +646,12 @@ export class ChromiumDesktopSession {
 
     this.contextCreating = (async () => {
       const browser = await this.cluster.getBrowser();
+      const majorVer = browser.version().split('.')[0] || '134';
       const ctx = await browser.newContext({
         viewport: this.viewport,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: this.dpr,
         locale: 'tr-TR',
-        userAgent:
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVer}.0.0.0 Safari/537.36`,
         acceptDownloads: true,
       });
 
@@ -475,7 +660,6 @@ export class ChromiumDesktopSession {
         const matchingTab = Array.from(this.tabs.values()).find((t) => t.page === source.page);
         if (!matchingTab) return;
         matchingTab.lastAudioAt = Date.now();
-        // Stream audio only from active tab
         if (matchingTab.id !== this.activeTabId || matchingTab.mode !== 'web') return;
 
         const pcmBuf = Buffer.from(b64, 'base64');
@@ -485,7 +669,13 @@ export class ChromiumDesktopSession {
         this.broadcastBinary(packet);
       });
 
-      await ctx.addInitScript(AUDIO_CAPTURE_INIT_SCRIPT);
+      await ctx.exposeBinding('__rcCursorChange', (source, cursor: string) => {
+        const matchingTab = Array.from(this.tabs.values()).find((t) => t.page === source.page);
+        if (!matchingTab || matchingTab.id !== this.activeTabId || matchingTab.mode !== 'web') return;
+        this.broadcastJson({ type: 'browser_cursor', cursor: String(cursor || 'default') });
+      });
+
+      await ctx.addInitScript(PAGE_ENHANCEMENT_INIT_SCRIPT);
 
       ctx.on('page', async (newPage) => {
         if (this.internalPageCreating > 0) return;
@@ -560,6 +750,23 @@ export class ChromiumDesktopSession {
     return tab.id;
   }
 
+  private async applyTabMetrics(tab: InternalTab) {
+    if (!tab.page || tab.page.isClosed()) return;
+    try {
+      await tab.page.setViewportSize(this.viewport);
+    } catch {}
+    if (tab.cdp) {
+      try {
+        await tab.cdp.send('Emulation.setDeviceMetricsOverride', {
+          width: this.viewport.width,
+          height: this.viewport.height,
+          deviceScaleFactor: this.dpr,
+          mobile: false,
+        });
+      } catch {}
+    }
+  }
+
   public async activateTab(tabId: string): Promise<void> {
     const next = this.tabs.get(tabId);
     if (!next) return;
@@ -573,15 +780,12 @@ export class ChromiumDesktopSession {
     this.broadcastTabs();
 
     if (next.mode === 'web' && next.page) {
-      try {
-        await next.page.setViewportSize(this.viewport);
-      } catch {
-        // ignore
-      }
+      await this.applyTabMetrics(next);
       if (next.lastFrameBuffer) {
         this.broadcastBinary(next.lastFrameBuffer);
       }
       await this.startScreencast(next);
+      await this.captureImmediateFrame(next);
     }
   }
 
@@ -610,6 +814,10 @@ export class ChromiumDesktopSession {
   }
 
   private async cleanupTabPage(tab: InternalTab) {
+    if (tab.settleTimer) {
+      clearTimeout(tab.settleTimer);
+      tab.settleTimer = undefined;
+    }
     await this.stopScreencast(tab);
     if (tab.cdp) {
       try {
@@ -626,9 +834,9 @@ export class ChromiumDesktopSession {
   }
 
   private async attachPageHandlers(tab: InternalTab, page: Page) {
-    await page.setViewportSize(this.viewport);
     const cdp = await page.context().newCDPSession(page);
     tab.cdp = cdp;
+    await this.applyTabMetrics(tab);
 
     cdp.on('Page.screencastFrame', (payload) => {
       cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => {});
@@ -643,6 +851,16 @@ export class ChromiumDesktopSession {
 
       if (this.activeTabId === tab.id && tab.mode === 'web') {
         this.broadcastBinary(packet);
+
+        // Send a lossless PNG frame shortly after motion settles for native Retina text clarity
+        if (Date.now() > (tab.suppressSettleUntil || 0)) {
+          if (tab.settleTimer) clearTimeout(tab.settleTimer);
+          tab.settleTimer = setTimeout(() => {
+            if (this.activeTabId === tab.id && tab.mode === 'web') {
+              this.captureImmediateFrame(tab).catch(() => {});
+            }
+          }, 220);
+        }
       }
     });
 
@@ -684,10 +902,12 @@ export class ChromiumDesktopSession {
     page.on('domcontentloaded', () => {
       tab.isLoading = false;
       syncPageMeta();
+      this.captureImmediateFrame(tab).catch(() => {});
     });
     page.on('load', () => {
       tab.isLoading = false;
       syncPageMeta();
+      this.captureImmediateFrame(tab).catch(() => {});
     });
 
     page.on('download', async (download) => {
@@ -737,9 +957,9 @@ export class ChromiumDesktopSession {
     try {
       await tab.cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 76,
-        maxWidth: this.viewport.width,
-        maxHeight: this.viewport.height,
+        quality: 92,
+        maxWidth: Math.round(this.viewport.width * this.dpr),
+        maxHeight: Math.round(this.viewport.height * this.dpr),
         everyNthFrame: 1,
       });
       tab.streaming = true;
@@ -749,6 +969,10 @@ export class ChromiumDesktopSession {
   }
 
   private async stopScreencast(tab: InternalTab) {
+    if (tab.settleTimer) {
+      clearTimeout(tab.settleTimer);
+      tab.settleTimer = undefined;
+    }
     if (!tab.cdp || !tab.streaming) return;
     try {
       await tab.cdp.send('Page.stopScreencast');
@@ -759,10 +983,14 @@ export class ChromiumDesktopSession {
   private async captureImmediateFrame(tab: InternalTab) {
     if (!tab.page || tab.page.isClosed() || tab.mode !== 'web') return;
     try {
-      const jpegBuf = await tab.page.screenshot({ type: 'jpeg', quality: 78 });
-      const packet = Buffer.allocUnsafe(1 + jpegBuf.length);
+      tab.suppressSettleUntil = Date.now() + 380;
+      const pngBuf = await tab.page.screenshot({ type: 'png' });
+      const packet = Buffer.allocUnsafe(1 + pngBuf.length);
       packet[0] = PACKET_VIDEO_JPEG;
-      jpegBuf.copy(packet, 1);
+      pngBuf.copy(packet, 1);
+      if (tab.lastFrameBuffer && tab.lastFrameBuffer.length === packet.length && tab.lastFrameBuffer.equals(packet)) {
+        return;
+      }
       tab.lastFrameBuffer = packet;
       if (this.activeTabId === tab.id) {
         this.broadcastBinary(packet);
@@ -877,17 +1105,23 @@ export class ChromiumDesktopSession {
     }
   }
 
-  public async setViewport(width: number, height: number) {
+  public async setViewport(width: number, height: number, dpr?: number) {
     const w = Math.max(360, Math.min(1920, Math.round(width)));
     const h = Math.max(260, Math.min(1200, Math.round(height)));
-    if (Math.abs(this.viewport.width - w) < 4 && Math.abs(this.viewport.height - h) < 4) return;
+    const nextDpr = dpr && Number.isFinite(dpr) ? Math.max(1, Math.min(2, Number(dpr))) : this.dpr;
+
+    const sizeChanged = Math.abs(this.viewport.width - w) >= 4 || Math.abs(this.viewport.height - h) >= 4;
+    const dprChanged = Math.abs(this.dpr - nextDpr) >= 0.05;
+    if (!sizeChanged && !dprChanged) return;
+
     this.viewport = { width: w, height: h };
+    this.dpr = nextDpr;
 
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
     if (active?.mode === 'web' && active.page && !active.page.isClosed()) {
       try {
         await this.stopScreencast(active);
-        await active.page.setViewportSize(this.viewport);
+        await this.applyTabMetrics(active);
         await this.startScreencast(active);
         await this.captureImmediateFrame(active);
       } catch {}

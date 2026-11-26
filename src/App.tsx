@@ -112,6 +112,7 @@ export default function App() {
 
   const [tabs, setTabs] = useState<TabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [browserCursor, setBrowserCursor] = useState<string>('default');
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [pingMs, setPingMs] = useState<number>(2);
 
@@ -513,27 +514,11 @@ export default function App() {
     [pushToast, openVSCodeWindow]
   );
 
-  const firefoxApp = useMemo(
-    () => linuxApps.find((a) => a.id === 'firefox' && a.installed),
-    [linuxApps]
-  );
-  const useFirefoxAsPrimary = Boolean(linuxRuntime?.guiReady && firefoxApp);
-
   const openPrimaryBrowser = useCallback(
     (initialUrl?: string) => {
-      // Local VFS files open inside our instant local file viewer/editor; web browser launches native Firefox on Linux
-      if (!initialUrl && useFirefoxAsPrimary && firefoxApp) {
-        launchLinuxApp({
-          appId: firefoxApp.id,
-          command: firefoxApp.command,
-          appName: firefoxApp.name,
-          needsNoSandbox: firefoxApp.needsNoSandbox,
-        });
-        return;
-      }
       openChromiumWindow(initialUrl);
     },
-    [useFirefoxAsPrimary, firefoxApp, launchLinuxApp, openChromiumWindow]
+    [openChromiumWindow]
   );
 
   const openPropertiesWindow = useCallback((node: VFSNode) => {
@@ -618,6 +603,9 @@ export default function App() {
             case 'tabs_state':
               setTabs(msg.tabs || []);
               setActiveTabId(msg.activeTabId || null);
+              break;
+            case 'browser_cursor':
+              setBrowserCursor(String(msg.cursor || 'default'));
               break;
             case 'telemetry':
               setTelemetry(msg.data);
@@ -1096,8 +1084,8 @@ export default function App() {
         onSetRenamingPath={setRenamingPath}
         onRenameCommit={handleRenameCommit}
         onOpenNode={handleOpenNode}
-        primaryBrowserLabel={useFirefoxAsPrimary ? 'Firefox' : 'Chromium'}
-        useFirefoxIcon={useFirefoxAsPrimary}
+        primaryBrowserLabel="Chromium"
+        useFirefoxIcon={false}
         onOpenChromium={openPrimaryBrowser}
         onOpenTerminal={openTerminalWindow}
         onOpenAppStore={openAppStoreWindow}
@@ -1174,6 +1162,7 @@ export default function App() {
                 onOpenFolder={openFolderWindow}
                 onVfsSaved={refreshVfs}
                 onNotify={pushToast}
+                browserCursor={browserCursor}
               />
             )}
 
@@ -1274,6 +1263,7 @@ export default function App() {
                   })
                 }
                 onOpenTerminal={openTerminalWindow}
+                onOpenChromium={() => openChromiumWindow()}
               />
             )}
 
@@ -1439,8 +1429,8 @@ export default function App() {
         desktops={desktops}
         linuxApps={linuxApps}
         linuxGuiReady={Boolean(linuxRuntime?.guiReady)}
-        useFirefoxIcon={useFirefoxAsPrimary}
-        primaryBrowserLabel={useFirefoxAsPrimary ? 'Firefox' : 'Chromium'}
+        useFirefoxIcon={false}
+        primaryBrowserLabel="Chromium"
         authEnabled={authStatus.enabled}
         onSwitchDesktop={handleSwitchDesktop}
         onCreateDesktop={handleCreateDesktop}
