@@ -8,7 +8,6 @@ import {
   FileIcon,
   FirefoxLogoIcon,
   RecycleBinIcon,
-  SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
 import type { ContextMenuItemTarget } from './ContextMenu';
@@ -29,7 +28,6 @@ interface DesktopCanvasProps {
   onOpenChromium: (initialUrl?: string) => void;
   onOpenTerminal: () => void;
   onOpenAppStore: () => void;
-  onOpenSettings: () => void;
   onOpenFolderWindow: (path: string) => void;
   onMoveNodesToFolder: (paths: string[], targetDir: string) => void;
   onTrashNodes: (paths: string[]) => void;
@@ -58,7 +56,6 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   onOpenChromium,
   onOpenTerminal,
   onOpenAppStore,
-  onOpenSettings,
   onOpenFolderWindow,
   onMoveNodesToFolder,
   onTrashNodes,
@@ -153,7 +150,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       if (saved) {
         map[node.path] = saved;
       } else {
-        const slotIndex = idx + 6;
+        const slotIndex = idx + 5;
         const col = Math.floor(slotIndex / maxRows);
         const row = slotIndex % maxRows;
         map[node.path] = {
@@ -398,22 +395,9 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         }),
     },
     {
-      id: 'sys-settings',
-      label: 'Ayarlar',
-      row: 3,
-      dropFolder: undefined,
-      renderIcon: () => <SettingsAppIcon size={sizeConfig.iconPx} />,
-      onOpen: () => onOpenSettings(),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'desktop',
-          dirPath: '/Desktop',
-        }),
-    },
-    {
       id: 'sys-compute',
       label: 'Dosyalar',
-      row: 4,
+      row: 3,
       dropFolder: undefined,
       renderIcon: () => <ComputeSystemIcon size={sizeConfig.iconPx} />,
       onOpen: () => onOpenFolderWindow('/'),
@@ -427,7 +411,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     {
       id: 'sys-trash',
       label: 'Çöp Kutusu',
-      row: 5,
+      row: 4,
       dropFolder: '/.trash',
       renderIcon: () => <RecycleBinIcon size={sizeConfig.iconPx} hasItems={trashCount > 0} />,
       onOpen: () => onOpenFolderWindow('/.trash'),
@@ -438,6 +422,16 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         }),
     },
   ];
+
+  const dockPos = meta.preferences.dock?.position || 'bottom';
+  const dockInsetClass =
+    dockPos === 'top'
+      ? 'inset-0 top-[74px]'
+      : dockPos === 'left'
+      ? 'inset-0 left-[78px]'
+      : dockPos === 'right'
+      ? 'inset-0 right-[78px]'
+      : 'inset-0 bottom-[74px]';
 
   return (
     <div
@@ -502,7 +496,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
           } catch {}
         }
       }}
-      className="fixed inset-0 bottom-[72px] overflow-hidden select-none touch-none"
+      className={`fixed ${dockInsetClass} overflow-hidden select-none touch-none`}
     >
       {hostDragActive && (
         <div className="absolute inset-6 rounded-3xl border-2 border-dashed border-white/40 bg-black/35 flex items-center justify-center z-40 pointer-events-none">

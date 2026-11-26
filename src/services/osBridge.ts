@@ -280,11 +280,12 @@ export const vfsApi = {
   updateMeta: (partial: {
     positions?: Record<string, { x: number; y: number }>;
     preferences?: Partial<
-      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui'> & {
+      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui' | 'dock'> & {
         stream?: Partial<DesktopMeta['preferences']['stream']>;
         browser?: Partial<DesktopMeta['preferences']['browser']>;
         terminal?: Partial<DesktopMeta['preferences']['terminal']>;
         ui?: Partial<DesktopMeta['preferences']['ui']>;
+        dock?: Partial<DesktopMeta['preferences']['dock']>;
       }
     >;
   }) =>

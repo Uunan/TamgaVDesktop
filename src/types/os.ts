@@ -39,6 +39,17 @@ export interface UiPreferences {
   showFullscreenNotice: boolean;
 }
 
+export interface DockPreferences {
+  position: 'bottom' | 'top' | 'left' | 'right';
+  style: 'floating' | 'macos' | 'full' | 'minimal';
+  size: 'sm' | 'md' | 'lg';
+  color: 'auto' | 'dark' | 'light' | 'obsidian' | 'midnight' | 'emerald' | 'amethyst' | 'custom';
+  customColor?: string;
+  opacity: number;
+  blur: number;
+  showLabels: boolean;
+}
+
 export interface DesktopMeta {
   positions: Record<string, { x: number; y: number }>;
   trashOrigins: Record<string, string>;
@@ -53,6 +64,7 @@ export interface DesktopMeta {
     browser: BrowserPreferences;
     terminal: TerminalPreferences;
     ui: UiPreferences;
+    dock: DockPreferences;
   };
 }
 
@@ -82,6 +94,17 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showFullscreenNotice: true,
+};
+
+export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
+  position: 'bottom',
+  style: 'floating',
+  size: 'md',
+  color: 'auto',
+  customColor: '#18181b',
+  opacity: 86,
+  blur: 18,
+  showLabels: true,
 };
 
 export interface VirtualDesktopInfo {
@@ -185,7 +208,7 @@ export interface TabSummary {
   filePath?: string;
 }
 
-export type SettingsTabId = 'stream' | 'appearance' | 'browser' | 'terminal' | 'system';
+export type SettingsTabId = 'stream' | 'dock' | 'appearance' | 'terminal' | 'system';
 
 export type WindowKind =
   | 'browser'
@@ -207,6 +230,8 @@ export interface OSWindow {
   appSessionId?: string;
   appViewId?: string;
   appId?: string;
+  appIconName?: string;
+  launching?: boolean;
   terminalSessionId?: string;
   terminalCwd?: string;
   settingsTab?: SettingsTabId;
@@ -242,6 +267,9 @@ export interface WallpaperPreset {
 
 export const WALLPAPERS: WallpaperPreset[] = [
   { id: 'mono-peaks', name: 'Geometrik Dağ' },
-  { id: 'graphite-flat', name: 'Koyu Grafit' },
-  { id: 'obsidian-flat', name: 'Mat Siyah' },
+  { id: 'geo-dunes', name: 'Çöl Kumulları' },
+  { id: 'geo-prism', name: 'Kristal Prizma' },
+  { id: 'geo-waves', name: 'Topo Dalgalar' },
+  { id: 'geo-aurora', name: 'Kuzey Işıkları' },
+  { id: 'geo-horizon', name: 'Minimal Ufuk' },
 ];

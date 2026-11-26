@@ -23,7 +23,6 @@ import {
   Settings,
   SlidersHorizontal,
   Sun,
-  Terminal,
   Trash2,
   Volume2,
   VolumeX,
@@ -31,6 +30,7 @@ import {
 import {
   WALLPAPERS,
   type DesktopMeta,
+  type DockPreferences,
   type LinuxAppInfo,
   type OSWindow,
   type SettingsTabId,
@@ -48,6 +48,7 @@ import {
   SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
+import { WallpaperThumb } from '../desktop/WallpaperLayer';
 import { formatUptime, getFileTypeLabel } from '../../utils/format';
 
 interface TaskbarProps {
@@ -60,6 +61,7 @@ interface TaskbarProps {
   wallpaperId: string;
   customWallpaper?: string;
   theme: 'dark' | 'light';
+  dock: DockPreferences;
   brightness: number;
   volume: number;
   muted: boolean;
@@ -104,6 +106,86 @@ function getOriginFromEvent(e: React.MouseEvent<HTMLButtonElement>): { x: number
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 }
 
+function parseHexColor(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace('#', '').trim();
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean.padEnd(6, '0').slice(0, 6);
+  const num = parseInt(full, 16);
+  if (Number.isNaN(num)) return { r: 24, g: 24, b: 27 };
+  return {
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255,
+  };
+}
+
+function resolveDockPalette(dock: DockPreferences, theme: 'dark' | 'light') {
+  const presets: Record<string, string> = {
+    auto: theme === 'dark' ? '#141418' : '#ffffff',
+    dark: '#141418',
+    light: '#f8fafc',
+    obsidian: '#09090b',
+    midnight: '#0f172a',
+    emerald: '#06281e',
+    amethyst: '#1e1136',
+    custom: dock.customColor || '#18181b',
+  };
+  const hex = presets[dock.color] || presets.auto;
+  const { r, g, b } = parseHexColor(hex);
+  const alpha = Math.max(0.2, Math.min(1, (dock.opacity ?? 86) / 100));
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  const isLight = luminance > 160;
+
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})`,
+    borderColor: isLight ? 'rgba(15, 23, 42, 0.14)' : 'rgba(255, 255, 255, 0.14)',
+    color: isLight ? '#0f172a' : '#f4f4f5',
+    mutedColor: isLight ? 'rgba(15, 23, 42, 0.62)' : 'rgba(244, 244, 245, 0.65)',
+    hoverBg: isLight ? 'hover:bg-black/[0.07]' : 'hover:bg-white/[0.11]',
+    activeBg: isLight ? 'bg-black/[0.11]' : 'bg-white/[0.15]',
+    chipBg: isLight ? 'bg-black/[0.06] hover:bg-black/[0.10]' : 'bg-white/[0.08] hover:bg-white/[0.14]',
+    dividerBg: isLight ? 'bg-black/15' : 'bg-white/15',
+    indicatorActive: isLight ? '#0f172a' : '#ffffff',
+    indicatorIdle: isLight ? 'rgba(15, 23, 42, 0.35)' : 'rgba(255, 255, 255, 0.45)',
+    isLight,
+  };
+}
+
+const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) => {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  if (win.kind === 'browser') return <ChromiumLogoIcon size={size} />;
+  if (win.kind === 'terminal') return <TerminalAppIcon size={size} />;
+  if (win.kind === 'app-store') return <AppStoreIcon size={size} />;
+  if (win.kind === 'settings') return <SettingsAppIcon size={size} />;
+  if (win.kind === 'folder') {
+    return <Folder style={{ width: size - 4, height: size - 4 }} className="shrink-0" />;
+  }
+  if (win.kind === 'linux-app' && win.appId === 'firefox') {
+    return <FirefoxLogoIcon size={size} />;
+  }
+  if ((win.kind === 'linux-app' || win.kind === 'vscode') && (win.appIconName || win.kind === 'vscode') && !imgFailed) {
+    const iconName = win.appIconName || (win.kind === 'vscode' ? 'code' : '');
+    if (iconName) {
+      return (
+        <img
+          src={buildAppIconUrl(iconName)}
+          alt={win.title}
+          onError={() => setImgFailed(true)}
+          style={{ width: size, height: size }}
+          className="object-contain shrink-0 rounded-sm"
+        />
+      );
+    }
+  }
+  return <AppWindow style={{ width: size - 4, height: size - 4 }} className="shrink-0" />;
+};
+
 export const Taskbar: React.FC<TaskbarProps> = ({
   windows,
   focusedWindowId,
@@ -114,6 +196,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   wallpaperId,
   customWallpaper,
   theme,
+  dock,
   brightness,
   volume,
   muted,
@@ -230,13 +313,11 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   const browserWin = windows.find((w) => w.kind === 'browser');
   const terminalWin = windows.find((w) => w.kind === 'terminal');
   const appStoreWin = windows.find((w) => w.kind === 'app-store');
-  const settingsWin = windows.find((w) => w.kind === 'settings');
   const otherWindows = windows.filter(
     (w) =>
       w.id !== browserWin?.id &&
       w.id !== terminalWin?.id &&
-      w.id !== appStoreWin?.id &&
-      w.id !== settingsWin?.id
+      w.id !== appStoreWin?.id
   );
   const customWallpaperUrl = customWallpaper ? buildWallpaperUrl(customWallpaper) : undefined;
 
@@ -258,13 +339,169 @@ export const Taskbar: React.FC<TaskbarProps> = ({
     year: 'numeric',
   });
 
+  // Dock layout calculations
+  const pos = dock.position || 'bottom';
+  const styleMode = dock.style || 'floating';
+  const sizeMode = dock.size || 'md';
+  const isVertical = pos === 'left' || pos === 'right';
+  const isCompactDock = styleMode === 'macos' || styleMode === 'minimal';
+  const showTextLabels = !isVertical && Boolean(dock.showLabels) && styleMode !== 'minimal';
+
+  const palette = useMemo(() => resolveDockPalette(dock, theme), [dock, theme]);
+
+  const sizeTokens = useMemo(() => {
+    if (sizeMode === 'sm') {
+      return {
+        icon: 19,
+        btnSize: 'h-8 w-8',
+        btnPill: 'h-8 px-2',
+        barThickH: 'h-[46px]',
+        barThickW: 'w-[50px]',
+        pad: isVertical ? 'py-2 px-1.5' : 'px-2 py-1',
+      };
+    }
+    if (sizeMode === 'lg') {
+      return {
+        icon: 27,
+        btnSize: 'h-12 w-12',
+        btnPill: 'h-12 px-3',
+        barThickH: 'h-[64px]',
+        barThickW: 'w-[68px]',
+        pad: isVertical ? 'py-3 px-2' : 'px-3.5 py-1.5',
+      };
+    }
+    return {
+      icon: 23,
+      btnSize: 'h-10 w-10',
+      btnPill: 'h-10 px-2.5',
+      barThickH: 'h-[54px]',
+      barThickW: 'w-[58px]',
+      pad: isVertical ? 'py-2.5 px-1.5' : 'px-3 py-1',
+    };
+  }, [sizeMode, isVertical]);
+
+  const dockContainerClass = useMemo(() => {
+    const base = 'fixed z-[9950] border transition-all duration-300 flex items-center gap-1.5';
+    const dir = isVertical ? 'flex-col justify-between' : 'flex-row justify-between';
+
+    if (styleMode === 'full') {
+      if (pos === 'top') return `${base} ${dir} top-0 left-0 right-0 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-none border-t-0 border-x-0`;
+      if (pos === 'left') return `${base} ${dir} left-0 top-0 bottom-0 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-none border-l-0 border-y-0`;
+      if (pos === 'right') return `${base} ${dir} right-0 top-0 bottom-0 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-none border-r-0 border-y-0`;
+      return `${base} ${dir} bottom-0 left-0 right-0 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-none border-b-0 border-x-0`;
+    }
+
+    if (styleMode === 'macos' || styleMode === 'minimal') {
+      const radius = styleMode === 'minimal' ? 'rounded-full' : 'rounded-[22px]';
+      if (pos === 'top') {
+        const edge = styleMode === 'minimal' ? 'top-2.5' : 'top-3';
+        return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${sizeTokens.barThickH} ${sizeTokens.pad} ${radius}`;
+      }
+      if (pos === 'left') {
+        const edge = styleMode === 'minimal' ? 'left-2.5' : 'left-3';
+        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${sizeTokens.barThickW} ${sizeTokens.pad} ${radius}`;
+      }
+      if (pos === 'right') {
+        const edge = styleMode === 'minimal' ? 'right-2.5' : 'right-3';
+        return `${base} ${dir} ${edge} top-1/2 -translate-y-1/2 max-h-[calc(100vh-24px)] ${sizeTokens.barThickW} ${sizeTokens.pad} ${radius}`;
+      }
+      const edge = styleMode === 'minimal' ? 'bottom-2.5' : 'bottom-3';
+      return `${base} ${dir} ${edge} left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] ${sizeTokens.barThickH} ${sizeTokens.pad} ${radius}`;
+    }
+
+    // Default: floating full-width inset bar
+    if (pos === 'top') return `${base} ${dir} top-3 left-4 right-4 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-2xl`;
+    if (pos === 'left') return `${base} ${dir} left-3 top-4 bottom-4 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-2xl`;
+    if (pos === 'right') return `${base} ${dir} right-3 top-4 bottom-4 ${sizeTokens.barThickW} ${sizeTokens.pad} rounded-2xl`;
+    return `${base} ${dir} bottom-3 left-4 right-4 ${sizeTokens.barThickH} ${sizeTokens.pad} rounded-2xl`;
+  }, [pos, styleMode, isVertical, sizeTokens]);
+
+  const getFlyoutPositionClass = (anchor: 'start' | 'spaces' | 'end') => {
+    const isLarge = sizeMode === 'lg';
+    if (pos === 'top') {
+      const edge = isLarge ? 'top-24' : 'top-20';
+      if (anchor === 'start') return `${edge} left-4`;
+      if (anchor === 'spaces') return `${edge} left-16`;
+      return `${edge} right-4`;
+    }
+    if (pos === 'left') {
+      const edge = isLarge ? 'left-24' : 'left-20';
+      if (anchor === 'start') return `${edge} top-4`;
+      if (anchor === 'spaces') return `${edge} top-16`;
+      return `${edge} bottom-4`;
+    }
+    if (pos === 'right') {
+      const edge = isLarge ? 'right-24' : 'right-20';
+      if (anchor === 'start') return `${edge} top-4`;
+      if (anchor === 'spaces') return `${edge} top-16`;
+      return `${edge} bottom-4`;
+    }
+    const edge = isLarge ? 'bottom-24' : 'bottom-20';
+    if (anchor === 'start') return `${edge} left-4`;
+    if (anchor === 'spaces') return `${edge} left-16`;
+    return `${edge} right-4`;
+  };
+
+  const renderIndicator = (active: boolean, launching?: boolean) => {
+    const color = active || launching ? palette.indicatorActive : palette.indicatorIdle;
+    if (pos === 'left') {
+      return (
+        <span
+          style={{ backgroundColor: color }}
+          className={`absolute left-0.5 top-1/2 -translate-y-1/2 w-1 rounded-full transition-all ${
+            launching ? 'h-2.5 animate-pulse' : active ? 'h-4' : 'h-1.5'
+          }`}
+        />
+      );
+    }
+    if (pos === 'right') {
+      return (
+        <span
+          style={{ backgroundColor: color }}
+          className={`absolute right-0.5 top-1/2 -translate-y-1/2 w-1 rounded-full transition-all ${
+            launching ? 'h-2.5 animate-pulse' : active ? 'h-4' : 'h-1.5'
+          }`}
+        />
+      );
+    }
+    if (pos === 'top') {
+      return (
+        <span
+          style={{ backgroundColor: color }}
+          className={`absolute top-0.5 left-1/2 -translate-x-1/2 h-1 rounded-full transition-all ${
+            launching ? 'w-2.5 animate-pulse' : active ? 'w-4' : 'w-1.5'
+          }`}
+        />
+      );
+    }
+    return (
+      <span
+        style={{ backgroundColor: color }}
+        className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 h-1 rounded-full transition-all ${
+          launching ? 'w-2.5 animate-pulse' : active ? 'w-4' : 'w-1.5'
+        }`}
+      />
+    );
+  };
+
+  const dockStyleObj: React.CSSProperties = {
+    backgroundColor: palette.backgroundColor,
+    borderColor: palette.borderColor,
+    color: palette.color,
+    backdropFilter: `blur(${dock.blur ?? 18}px)`,
+    WebkitBackdropFilter: `blur(${dock.blur ?? 18}px)`,
+    boxShadow: styleMode === 'full' ? 'none' : 'var(--os-dock-shadow)',
+  };
+
+  const btnShapeClass = styleMode === 'minimal' ? 'rounded-full' : 'rounded-xl';
+
   return (
     <div ref={containerRef} className="select-none">
       {/* 1. LAUNCHER MENU */}
       {flyout === 'launcher' && (
         <div
           style={{ boxShadow: 'var(--os-shadow)' }}
-          className="fixed bottom-20 left-4 z-[9980] w-[390px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] overflow-hidden text-[var(--os-text)]"
+          className={`fixed ${getFlyoutPositionClass('start')} z-[9980] w-[390px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] overflow-hidden text-[var(--os-text)]`}
         >
           <div className="p-4 space-y-4">
             <div className="relative">
@@ -281,7 +518,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
 
             {startSearch.trim() ? (
               <div className="space-y-1 max-h-64 overflow-y-auto">
-                {'terminal bash shell konsol'.includes(startSearch.toLowerCase()) && (
+                {'terminal bash shell konsol uç birim'.includes(startSearch.toLowerCase()) && (
                   <button
                     onClick={() => {
                       onOpenTerminal();
@@ -291,7 +528,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                   >
                     <TerminalAppIcon size={28} />
                     <div>
-                      <div className="text-xs font-medium text-[var(--os-text)]">Terminal</div>
+                      <div className="text-xs font-medium text-[var(--os-text)]">Uç Birim</div>
                       <div className="text-[11px] text-[var(--os-text-muted)]">Linux Kabuğu</div>
                     </div>
                   </button>
@@ -305,7 +542,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     }}
                     className="w-full p-2.5 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-3 text-left transition-colors"
                   >
-                    <Package className="w-5 h-5 text-[var(--os-text-secondary)] shrink-0" />
+                    {app.id === 'firefox' ? (
+                      <FirefoxLogoIcon size={22} />
+                    ) : app.iconName ? (
+                      <img src={buildAppIconUrl(app.iconName)} alt="" className="w-5 h-5 object-contain shrink-0" />
+                    ) : (
+                      <Package className="w-5 h-5 text-[var(--os-text-secondary)] shrink-0" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-medium text-[var(--os-text)] truncate">{app.name}</div>
                       <div className="text-[10px] text-[var(--os-text-muted)] truncate">{app.description}</div>
@@ -354,7 +597,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     className="p-2.5 rounded-xl bg-[var(--os-surface-3)] hover:bg-[var(--os-surface-4)] border border-[var(--os-border)] flex flex-col items-center gap-1.5 text-center transition-colors"
                   >
                     <TerminalAppIcon size={32} />
-                    <span className="text-[11px] font-medium text-[var(--os-text)]">Terminal</span>
+                    <span className="text-[11px] font-medium text-[var(--os-text)]">Uç Birim</span>
                   </button>
 
                   <button
@@ -373,7 +616,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 {linuxGuiReady && installedLinuxApps.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)] px-1">
-                      Kurulu Linux Uygulamaları
+                      Kurulu Uygulamalar
                     </div>
                     <div className="grid grid-cols-2 gap-1.5 max-h-32 overflow-y-auto">
                       {installedLinuxApps.map((app) => (
@@ -385,7 +628,9 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                           }}
                           className="p-2 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] flex items-center gap-2 text-left transition-colors"
                         >
-                          {app.iconName ? (
+                          {app.id === 'firefox' ? (
+                            <FirefoxLogoIcon size={20} />
+                          ) : app.iconName ? (
                             <img
                               src={buildAppIconUrl(app.iconName)}
                               alt=""
@@ -499,12 +744,12 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       {flyout === 'spaces' && (
         <div
           style={{ boxShadow: 'var(--os-shadow)' }}
-          className="fixed bottom-20 left-16 z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)]"
+          className={`fixed ${getFlyoutPositionClass('spaces')} z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)]`}
         >
           <div>
-            <div className="text-xs font-semibold text-[var(--os-text)]">Bağımsız Sanal Masaüstleri</div>
+            <div className="text-xs font-semibold text-[var(--os-text)]">Sanal Masaüstleri</div>
             <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-              Her masaüstünün dosya sistemi, profilleri ve oturumları izoledir.
+              İzole çalışma alanları
             </div>
           </div>
 
@@ -540,7 +785,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                         setCopiedId(d.id);
                         setTimeout(() => setCopiedId(null), 1500);
                       }}
-                      title="Doğrudan masaüstü bağlantısını kopyala"
+                      title="Bağlantıyı kopyala"
                       className="p-1.5 rounded-lg hover:bg-[var(--os-hover)] text-[var(--os-text-muted)] hover:text-[var(--os-text)] transition-colors"
                     >
                       {copiedId === d.id ? (
@@ -591,14 +836,46 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* 3. CLEAN CONTROL CENTER */}
+      {/* 3. CLEAN CONTROL CENTER (Appearance + Settings + Stream Quality + Wallpapers) */}
       {flyout === 'controls' && (
         <div
           style={{ boxShadow: 'var(--os-shadow)' }}
-          className="fixed bottom-20 right-4 z-[9980] w-[356px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-4 text-[var(--os-text)]"
+          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-[364px] max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)]`}
         >
+          {/* Quick Settings Entry Row */}
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => {
+                onOpenSettings('dock');
+                setFlyout(null);
+              }}
+              data-testid="control-center-settings-btn"
+              className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] transition-colors text-left"
+            >
+              <Settings className="w-4 h-4 text-[var(--os-text)] shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-[var(--os-text)] truncate">Sistem Ayarları</div>
+                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Dock, Tema, Sistem</div>
+              </div>
+            </button>
+            <button
+              onClick={() => {
+                onOpenSettings('stream');
+                setFlyout(null);
+              }}
+              data-testid="control-center-stream-btn"
+              className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] transition-colors text-left"
+            >
+              <Gauge className="w-4 h-4 text-emerald-500 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-[var(--os-text)] truncate">Akış & Kalite</div>
+                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Hız & Netlik</div>
+              </div>
+            </button>
+          </div>
+
           {/* Theme Switcher */}
-          <div className="space-y-2">
+          <div className="space-y-1.5 pt-2.5 border-t border-[var(--os-border)]">
             <div className="text-[11px] text-[var(--os-text-muted)]">Görünüm</div>
             <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
               <button
@@ -611,7 +888,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 }`}
               >
                 <Moon className="w-3.5 h-3.5" />
-                <span>Koyu Tema</span>
+                <span>Koyu</span>
               </button>
               <button
                 onClick={(e) => onToggleTheme('light', getOriginFromEvent(e))}
@@ -623,13 +900,14 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 }`}
               >
                 <Sun className="w-3.5 h-3.5" />
-                <span>Açık Tema</span>
+                <span>Açık</span>
               </button>
             </div>
           </div>
 
-          <div className="space-y-3 pt-3 border-t border-[var(--os-border)]">
-            <div className="space-y-1.5">
+          {/* Audio & Brightness */}
+          <div className="space-y-2.5 pt-2.5 border-t border-[var(--os-border)]">
+            <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
                 <span>Ses</span>
                 <span className="font-mono">%{muted ? 0 : volume}</span>
@@ -657,9 +935,9 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               </div>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
-                <span>Ekran Parlaklığı</span>
+                <span>Parlaklık</span>
                 <span className="font-mono">%{brightness}</span>
               </div>
               <div className="flex items-center gap-2.5">
@@ -679,8 +957,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             </div>
           </div>
 
-          {/* Wallpaper Picker + Custom Image Upload */}
-          <div className="space-y-2 pt-3 border-t border-[var(--os-border)]">
+          {/* Day/Night Geometric Wallpaper Picker */}
+          <div className="space-y-2 pt-2.5 border-t border-[var(--os-border)]">
             <div className="flex items-center justify-between">
               <span className="text-[11px] text-[var(--os-text-muted)]">Arka Plan</span>
               <button
@@ -689,27 +967,34 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                 className="text-[11px] font-medium text-[var(--os-text)] hover:opacity-80 flex items-center gap-1 transition-opacity"
               >
                 <ImagePlus className="w-3.5 h-3.5" />
-                <span>Resim Seç...</span>
+                <span>Resim Seç</span>
               </button>
             </div>
 
             <div className="grid grid-cols-3 gap-1.5">
-              {WALLPAPERS.map((wp) => (
-                <button
-                  key={wp.id}
-                  onClick={() => onSelectWallpaper(wp.id)}
-                  className={`px-1.5 py-2 rounded-xl text-[11px] font-medium border transition-colors whitespace-nowrap ${
-                    wallpaperId === wp.id
-                      ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
-                      : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:bg-[var(--os-surface-3)]'
-                  }`}
-                >
-                  {wp.name}
-                </button>
-              ))}
+              {WALLPAPERS.map((wp) => {
+                const active = wallpaperId === wp.id;
+                return (
+                  <button
+                    key={wp.id}
+                    onClick={() => onSelectWallpaper(wp.id)}
+                    data-testid={`cc-wallpaper-${wp.id}`}
+                    className={`group rounded-xl overflow-hidden border p-1 transition-all text-left ${
+                      active
+                        ? 'border-[var(--os-accent-bg)] bg-[var(--os-surface-3)] ring-1 ring-[var(--os-accent-bg)]'
+                        : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
+                    }`}
+                  >
+                    <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-9 rounded-lg" />
+                    <div className="text-[10px] font-medium text-[var(--os-text-secondary)] truncate px-1 pt-1">
+                      {wp.name}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
-            {customWallpaperUrl ? (
+            {customWallpaperUrl && (
               <div className="flex items-center gap-1.5 pt-0.5">
                 <button
                   onClick={() => onSelectWallpaper('custom')}
@@ -726,26 +1011,12 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                   />
                   <span className="text-[11px] font-medium truncate">Özel Resim</span>
                 </button>
-                <button
-                  onClick={() => onTriggerWallpaperUpload()}
-                  title="Farklı Resim Seç"
-                  className="px-2.5 py-2.5 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] text-[var(--os-text-secondary)] transition-colors shrink-0"
-                >
-                  <ImagePlus className="w-3.5 h-3.5" />
-                </button>
               </div>
-            ) : (
-              <button
-                onClick={() => onTriggerWallpaperUpload()}
-                className="w-full py-2 px-3 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-dashed border-[var(--os-border-strong)] text-[11px] font-medium text-[var(--os-text-secondary)] flex items-center justify-center gap-2 transition-colors"
-              >
-                <ImagePlus className="w-3.5 h-3.5" />
-                <span>Cihazdan Arka Plan Resmi Seç</span>
-              </button>
             )}
           </div>
 
-          <div className="pt-3 border-t border-[var(--os-border)] grid grid-cols-3 gap-2 text-[11px]">
+          {/* System Telemetry Strip */}
+          <div className="pt-2.5 border-t border-[var(--os-border)] grid grid-cols-3 gap-2 text-[11px]">
             <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
               <div className="text-[var(--os-text-subtle)]">CPU</div>
               <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">
@@ -774,7 +1045,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       {flyout === 'notifications' && (
         <div
           style={{ boxShadow: 'var(--os-shadow)' }}
-          className="fixed bottom-20 right-4 z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3 text-[var(--os-text)]"
+          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-80 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3 text-[var(--os-text)]`}
         >
           <div className="flex items-center justify-between pb-2 border-b border-[var(--os-border)]">
             <span className="text-xs font-semibold">Bildirimler</span>
@@ -809,7 +1080,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
       {flyout === 'calendar' && (
         <div
           style={{ boxShadow: 'var(--os-shadow)' }}
-          className="fixed bottom-20 right-4 z-[9980] w-76 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-4 text-[var(--os-text)]"
+          className={`fixed ${getFlyoutPositionClass('end')} z-[9980] w-76 max-w-[calc(100vw-32px)] rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-4 text-[var(--os-text)]`}
         >
           <div className="pb-3 border-b border-[var(--os-border)]">
             <div className="text-3xl font-light font-mono tracking-tight text-[var(--os-text)]">
@@ -875,21 +1146,30 @@ export const Taskbar: React.FC<TaskbarProps> = ({
         </div>
       )}
 
-      {/* FLOATING PADDED MACOS-STYLE BOTTOM BAR */}
+      {/* CUSTOMIZABLE DOCK / PANEL */}
       <div
-        style={{ boxShadow: 'var(--os-dock-shadow)' }}
-        className="fixed bottom-3 left-4 right-4 h-[54px] z-[9950] rounded-2xl bg-[var(--os-dock)] backdrop-blur-md border border-[var(--os-border-strong)] px-3 flex items-center justify-between gap-2"
+        data-testid="dock-bar"
+        data-dock-position={pos}
+        data-dock-style={styleMode}
+        style={dockStyleObj}
+        className={dockContainerClass}
       >
-        {/* Left: Launcher + Spaces + Core Pinned Apps + Open Windows */}
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+        {/* Start Section: Launcher + Spaces + Core Pinned Apps + Running Windows */}
+        <div
+          className={`flex items-center gap-1 min-w-0 ${
+            isVertical
+              ? 'flex-col flex-1 overflow-y-auto no-scrollbar'
+              : isCompactDock
+              ? 'flex-row'
+              : 'flex-row flex-1'
+          }`}
+        >
           <button
             onClick={() => toggleFlyout('launcher')}
             data-testid="dock-launcher-btn"
             title="Menü"
-            className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
-              flyout === 'launcher'
-                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text)]'
+            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors shrink-0 ${
+              flyout === 'launcher' ? palette.activeBg : palette.hoverBg
             }`}
           >
             <div className="grid grid-cols-2 gap-1">
@@ -902,20 +1182,26 @@ export const Taskbar: React.FC<TaskbarProps> = ({
 
           <button
             onClick={() => toggleFlyout('spaces')}
-            title="Sanal Masaüstleri"
-            className={`h-10 px-3 rounded-xl flex items-center gap-2 text-xs font-medium transition-colors shrink-0 ${
-              flyout === 'spaces'
-                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
-                : 'bg-[var(--os-surface-3)] hover:bg-[var(--os-surface-4)] text-[var(--os-text)]'
+            title={`Masaüstü: ${currentDesktop.name}`}
+            className={`${
+              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+            } ${btnShapeClass} flex items-center justify-center gap-2 text-xs font-medium transition-colors shrink-0 ${
+              flyout === 'spaces' ? palette.activeBg : palette.chipBg
             }`}
           >
-            <Layers className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden sm:inline max-w-[110px] truncate">{currentDesktop.name}</span>
+            <Layers className="w-4 h-4 shrink-0" />
+            {showTextLabels && !isCompactDock && (
+              <span className="hidden sm:inline max-w-[100px] truncate">{currentDesktop.name}</span>
+            )}
           </button>
 
-          <div className="h-5 w-[1px] bg-[var(--os-border-strong)] mx-1 shrink-0" />
+          <div
+            className={`${
+              isVertical ? 'w-5 h-[1px] my-1' : 'h-5 w-[1px] mx-1'
+            } ${palette.dividerBg} shrink-0`}
+          />
 
-          {/* Pinned Browser (Firefox on Linux / Chromium fallback) */}
+          {/* Pinned Browser */}
           <button
             onClick={() => {
               if (browserWin) onToggleWindowFromTaskbar(browserWin.id);
@@ -923,23 +1209,24 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             }}
             data-testid="dock-browser-btn"
             title={primaryBrowserLabel}
-            className={`relative h-10 px-2.5 rounded-xl flex items-center gap-2 transition-colors shrink-0 ${
+            className={`relative ${
+              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
               browserWin && !browserWin.minimized && focusedWindowId === browserWin.id
-                ? 'bg-[var(--os-active)] text-[var(--os-text)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]'
+                ? palette.activeBg
+                : palette.hoverBg
             }`}
           >
-            {useFirefoxIcon ? <FirefoxLogoIcon size={23} /> : <ChromiumLogoIcon size={23} />}
-            <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
-            {browserWin && (
-              <span
-                className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
-                  !browserWin.minimized && focusedWindowId === browserWin.id
-                    ? 'w-4 bg-[var(--os-accent-bg)]'
-                    : 'w-1.5 bg-[var(--os-text-subtle)]'
-                }`}
-              />
+            {useFirefoxIcon ? (
+              <FirefoxLogoIcon size={sizeTokens.icon} />
+            ) : (
+              <ChromiumLogoIcon size={sizeTokens.icon} />
             )}
+            {showTextLabels && !isCompactDock && (
+              <span className="text-xs font-medium hidden lg:inline">{primaryBrowserLabel}</span>
+            )}
+            {browserWin &&
+              renderIndicator(!browserWin.minimized && focusedWindowId === browserWin.id)}
           </button>
 
           {/* Pinned Real Linux Terminal */}
@@ -949,24 +1236,21 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               else onOpenTerminal();
             }}
             data-testid="dock-terminal-btn"
-            title="Terminal"
-            className={`relative h-10 px-2.5 rounded-xl flex items-center gap-2 transition-colors shrink-0 ${
+            title="Uç Birim"
+            className={`relative ${
+              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
               terminalWin && !terminalWin.minimized && focusedWindowId === terminalWin.id
-                ? 'bg-[var(--os-active)] text-[var(--os-text)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]'
+                ? palette.activeBg
+                : palette.hoverBg
             }`}
           >
-            <TerminalAppIcon size={23} />
-            <span className="text-xs font-medium hidden lg:inline">Terminal</span>
-            {terminalWin && (
-              <span
-                className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
-                  !terminalWin.minimized && focusedWindowId === terminalWin.id
-                    ? 'w-4 bg-[var(--os-accent-bg)]'
-                    : 'w-1.5 bg-[var(--os-text-subtle)]'
-                }`}
-              />
+            <TerminalAppIcon size={sizeTokens.icon} />
+            {showTextLabels && !isCompactDock && (
+              <span className="text-xs font-medium hidden lg:inline">Uç Birim</span>
             )}
+            {terminalWin &&
+              renderIndicator(!terminalWin.minimized && focusedWindowId === terminalWin.id)}
           </button>
 
           {/* Pinned Linux App Manager */}
@@ -977,160 +1261,150 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             }}
             data-testid="dock-apps-btn"
             title="Uygulamalar"
-            className={`relative h-10 px-2.5 rounded-xl flex items-center gap-2 transition-colors shrink-0 ${
+            className={`relative ${
+              showTextLabels && !isCompactDock ? sizeTokens.btnPill : sizeTokens.btnSize
+            } ${btnShapeClass} flex items-center justify-center gap-2 transition-transform hover:scale-105 shrink-0 ${
               appStoreWin && !appStoreWin.minimized && focusedWindowId === appStoreWin.id
-                ? 'bg-[var(--os-active)] text-[var(--os-text)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]'
+                ? palette.activeBg
+                : palette.hoverBg
             }`}
           >
-            <AppStoreIcon size={23} />
-            <span className="text-xs font-medium hidden xl:inline">Uygulamalar</span>
-            {appStoreWin && (
-              <span
-                className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
-                  !appStoreWin.minimized && focusedWindowId === appStoreWin.id
-                    ? 'w-4 bg-[var(--os-accent-bg)]'
-                    : 'w-1.5 bg-[var(--os-text-subtle)]'
-                }`}
-              />
+            <AppStoreIcon size={sizeTokens.icon} />
+            {showTextLabels && !isCompactDock && (
+              <span className="text-xs font-medium hidden xl:inline">Uygulamalar</span>
             )}
+            {appStoreWin &&
+              renderIndicator(!appStoreWin.minimized && focusedWindowId === appStoreWin.id)}
           </button>
 
-          {/* Pinned System Settings */}
-          <button
-            onClick={() => {
-              if (settingsWin) onToggleWindowFromTaskbar(settingsWin.id);
-              else onOpenSettings('stream');
-            }}
-            data-testid="dock-settings-btn"
-            title="Ayarlar"
-            className={`relative h-10 px-2.5 rounded-xl flex items-center gap-2 transition-colors shrink-0 ${
-              settingsWin && !settingsWin.minimized && focusedWindowId === settingsWin.id
-                ? 'bg-[var(--os-active)] text-[var(--os-text)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)]'
-            }`}
-          >
-            <SettingsAppIcon size={23} />
-            <span className="text-xs font-medium hidden xl:inline">Ayarlar</span>
-            {settingsWin && (
-              <span
-                className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
-                  !settingsWin.minimized && focusedWindowId === settingsWin.id
-                    ? 'w-4 bg-[var(--os-accent-bg)]'
-                    : 'w-1.5 bg-[var(--os-text-subtle)]'
-                }`}
-              />
-            )}
-          </button>
-
-          {/* Open Other Windows (Folders, Linux Apps, Properties) */}
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
-            {otherWindows.map((w) => {
-              const active = !w.minimized && focusedWindowId === w.id;
-              return (
-                <button
-                  key={w.id}
-                  onClick={() => onToggleWindowFromTaskbar(w.id)}
-                  className={`relative h-10 px-3 rounded-xl flex items-center gap-2 max-w-[165px] shrink-0 text-xs transition-colors ${
-                    active
-                      ? 'bg-[var(--os-active)] text-[var(--os-text)]'
-                      : 'hover:bg-[var(--os-hover)] text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                  }`}
-                >
-                  {w.kind === 'terminal' ? (
-                    <Terminal className="w-4 h-4 shrink-0" />
-                  ) : w.kind === 'linux-app' || w.kind === 'vscode' ? (
-                    <AppWindow className="w-4 h-4 shrink-0" />
-                  ) : w.kind === 'app-store' ? (
-                    <LayoutGrid className="w-4 h-4 shrink-0" />
-                  ) : w.kind === 'settings' ? (
-                    <Settings className="w-4 h-4 shrink-0" />
-                  ) : (
-                    <Folder className="w-4 h-4 shrink-0" />
-                  )}
-                  <span className="truncate">{w.title}</span>
-                  <span
-                    className={`absolute bottom-1 left-1/2 -translate-x-1/2 h-1 rounded-full ${
-                      active ? 'w-3.5 bg-[var(--os-accent-bg)]' : 'w-1.5 bg-[var(--os-text-subtle)]'
+          {/* Open Other Windows (Linux Apps w/ macOS Launch Bounce, Folders, Settings when open) */}
+          {otherWindows.length > 0 && (
+            <div
+              className={`flex items-center gap-1 min-w-0 ${
+                isVertical ? 'flex-col' : 'flex-row overflow-x-auto no-scrollbar'
+              }`}
+            >
+              {otherWindows.map((w) => {
+                const active = !w.minimized && focusedWindowId === w.id && !w.launching;
+                const isLaunching = Boolean(w.launching);
+                const bounceClass = isLaunching
+                  ? isVertical
+                    ? 'dock-bounce-x'
+                    : 'dock-bounce-y'
+                  : '';
+                return (
+                  <button
+                    key={w.id}
+                    onClick={() => onToggleWindowFromTaskbar(w.id)}
+                    data-testid={`dock-win-${w.appId || w.kind}`}
+                    data-launching={isLaunching ? 'true' : 'false'}
+                    title={isLaunching ? `${w.title} açılıyor...` : w.title}
+                    className={`relative ${
+                      showTextLabels && !isCompactDock
+                        ? `${sizeTokens.btnPill} max-w-[165px]`
+                        : sizeTokens.btnSize
+                    } ${btnShapeClass} flex items-center justify-center gap-2 shrink-0 text-xs transition-all hover:scale-105 ${
+                      active ? palette.activeBg : palette.hoverBg
                     }`}
-                  />
-                </button>
-              );
-            })}
-          </div>
+                  >
+                    <span className={`inline-flex items-center justify-center ${bounceClass}`}>
+                      <DockAppIcon win={w} size={sizeTokens.icon} />
+                    </span>
+                    {showTextLabels && !isCompactDock && (
+                      <span className="truncate">{w.title}</span>
+                    )}
+                    {renderIndicator(active, isLaunching)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* Right: Quick Stream Quality, Theme Toggle, Volume, Control Center, Notifications, Clock */}
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => onOpenSettings('stream')}
-            data-testid="dock-stream-quality-btn"
-            title="Akış & Kalite Ayarları"
-            className="h-10 w-9 rounded-xl flex items-center justify-center hover:bg-[var(--os-hover)] text-emerald-400 hover:text-emerald-300 transition-colors"
-          >
-            <Gauge className="w-4 h-4" />
-          </button>
+        {/* Separator for compact macOS/minimal dock */}
+        {isCompactDock && (
+          <div
+            className={`${
+              isVertical ? 'w-5 h-[1px] my-0.5' : 'h-5 w-[1px] mx-0.5'
+            } ${palette.dividerBg} shrink-0`}
+          />
+        )}
 
+        {/* End Section: Theme, Audio, Control Center (with Settings), Notifications, Clock */}
+        <div
+          className={`flex items-center gap-1 shrink-0 ${
+            isVertical ? 'flex-col' : 'flex-row'
+          }`}
+        >
           <button
             onClick={(e) => onToggleTheme(theme === 'dark' ? 'light' : 'dark', getOriginFromEvent(e))}
             data-testid="dock-theme-toggle"
-            title={theme === 'dark' ? 'Açık Temaya Geç' : 'Koyu Temaya Geç'}
-            className="h-10 w-9 rounded-xl flex items-center justify-center hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)] hover:text-[var(--os-text)] transition-colors"
+            title={theme === 'dark' ? 'Açık Tema' : 'Koyu Tema'}
+            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${palette.hoverBg}`}
           >
             {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
 
-          <button
-            onClick={onToggleMute}
-            title={muted ? 'Sesi Aç' : 'Sessize Al'}
-            className="h-10 w-9 rounded-xl flex items-center justify-center hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)] hover:text-[var(--os-text)] transition-colors"
-          >
-            {muted || volume === 0 ? (
-              <VolumeX className="w-4 h-4 text-red-500" />
-            ) : (
-              <Volume2 className="w-4 h-4" />
-            )}
-          </button>
+          {!isCompactDock && (
+            <button
+              onClick={onToggleMute}
+              title={muted ? 'Sesi Aç' : 'Sessize Al'}
+              className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${palette.hoverBg}`}
+            >
+              {muted || volume === 0 ? (
+                <VolumeX className="w-4 h-4 text-red-500" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
+            </button>
+          )}
 
           <button
             onClick={() => toggleFlyout('controls')}
             data-testid="dock-controls-btn"
-            title="Kontrol Merkezi"
-            className={`h-10 px-2.5 rounded-xl flex items-center gap-2 text-xs transition-colors ${
-              flyout === 'controls'
-                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)] hover:text-[var(--os-text)]'
+            title="Kontrol Merkezi & Ayarlar"
+            className={`${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
+              flyout === 'controls' ? palette.activeBg : palette.hoverBg
             }`}
           >
             <SlidersHorizontal className="w-4 h-4" />
           </button>
 
-          <button
-            onClick={() => toggleFlyout('notifications')}
-            title="Bildirimler"
-            className={`relative h-10 w-9 rounded-xl flex items-center justify-center transition-colors ${
-              flyout === 'notifications'
-                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text-secondary)] hover:text-[var(--os-text)]'
-            }`}
-          >
-            <Bell className="w-4 h-4" />
-            {notificationHistory.length > 0 && (
-              <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-[var(--os-accent-bg)]" />
-            )}
-          </button>
+          {!isCompactDock && (
+            <button
+              onClick={() => toggleFlyout('notifications')}
+              title="Bildirimler"
+              className={`relative ${sizeTokens.btnSize} ${btnShapeClass} flex items-center justify-center transition-colors ${
+                flyout === 'notifications' ? palette.activeBg : palette.hoverBg
+              }`}
+            >
+              <Bell className="w-4 h-4" />
+              {notificationHistory.length > 0 && (
+                <span
+                  style={{ backgroundColor: palette.indicatorActive }}
+                  className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
+                />
+              )}
+            </button>
+          )}
 
           <button
             onClick={() => toggleFlyout('calendar')}
-            title="Saat ve Takvim"
-            className={`h-10 px-3 rounded-xl flex flex-col items-end justify-center leading-tight transition-colors ${
-              flyout === 'calendar'
-                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
-                : 'hover:bg-[var(--os-hover)] text-[var(--os-text)]'
+            title={`${timeShort} · ${dateShort}`}
+            className={`${
+              isVertical ? `${sizeTokens.btnSize} px-0.5` : `${sizeTokens.btnPill}`
+            } ${btnShapeClass} flex flex-col items-center justify-center leading-tight transition-colors ${
+              flyout === 'calendar' ? palette.activeBg : palette.hoverBg
             }`}
           >
-            <span className="text-xs font-semibold font-mono">{timeShort}</span>
-            <span className="text-[10px] opacity-65 font-mono">{dateShort}</span>
+            <span className={`${isVertical ? 'text-[11px]' : 'text-xs'} font-semibold font-mono`}>
+              {timeShort}
+            </span>
+            {!isVertical && !isCompactDock && (
+              <span style={{ color: palette.mutedColor }} className="text-[10px] font-mono">
+                {dateShort}
+              </span>
+            )}
           </button>
         </div>
       </div>

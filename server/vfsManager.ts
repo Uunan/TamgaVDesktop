@@ -43,6 +43,17 @@ export interface UiPreferences {
   showFullscreenNotice: boolean;
 }
 
+export interface DockPreferences {
+  position: 'bottom' | 'top' | 'left' | 'right';
+  style: 'floating' | 'macos' | 'full' | 'minimal';
+  size: 'sm' | 'md' | 'lg';
+  color: 'auto' | 'dark' | 'light' | 'obsidian' | 'midnight' | 'emerald' | 'amethyst' | 'custom';
+  customColor?: string;
+  opacity: number;
+  blur: number;
+  showLabels: boolean;
+}
+
 export interface DesktopMeta {
   positions: Record<string, { x: number; y: number }>;
   trashOrigins: Record<string, string>;
@@ -57,6 +68,7 @@ export interface DesktopMeta {
     browser: BrowserPreferences;
     terminal: TerminalPreferences;
     ui: UiPreferences;
+    dock: DockPreferences;
   };
 }
 
@@ -86,6 +98,17 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showFullscreenNotice: true,
+};
+
+export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
+  position: 'bottom',
+  style: 'floating',
+  size: 'md',
+  color: 'auto',
+  customColor: '#18181b',
+  opacity: 86,
+  blur: 18,
+  showLabels: true,
 };
 
 export interface VirtualDesktopInfo {
@@ -346,6 +369,10 @@ export class VFSManager {
               ...DEFAULT_UI_PREFERENCES,
               ...(parsed.preferences?.ui || {}),
             },
+            dock: {
+              ...DEFAULT_DOCK_PREFERENCES,
+              ...(parsed.preferences?.dock || {}),
+            },
           },
         };
       } catch {
@@ -365,6 +392,7 @@ export class VFSManager {
         browser: { ...DEFAULT_BROWSER_PREFERENCES },
         terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
         ui: { ...DEFAULT_UI_PREFERENCES },
+        dock: { ...DEFAULT_DOCK_PREFERENCES },
       },
     };
   }
@@ -843,11 +871,12 @@ export class VFSManager {
   public updateMeta(partial: {
     positions?: Record<string, { x: number; y: number }>;
     preferences?: Partial<
-      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui'> & {
+      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui' | 'dock'> & {
         stream?: Partial<StreamPreferences>;
         browser?: Partial<BrowserPreferences>;
         terminal?: Partial<TerminalPreferences>;
         ui?: Partial<UiPreferences>;
+        dock?: Partial<DockPreferences>;
       }
     >;
   }): DesktopMeta {
@@ -855,7 +884,7 @@ export class VFSManager {
       this.meta.positions = { ...this.meta.positions, ...partial.positions };
     }
     if (partial.preferences) {
-      const { stream, browser, terminal, ui, ...rest } = partial.preferences;
+      const { stream, browser, terminal, ui, dock, ...rest } = partial.preferences;
       this.meta.preferences = {
         ...this.meta.preferences,
         ...rest,
@@ -869,6 +898,7 @@ export class VFSManager {
           ? { ...this.meta.preferences.terminal, ...terminal }
           : this.meta.preferences.terminal,
         ui: ui ? { ...this.meta.preferences.ui, ...ui } : this.meta.preferences.ui,
+        dock: dock ? { ...this.meta.preferences.dock, ...dock } : this.meta.preferences.dock,
       };
       if (!this.meta.preferences.customWallpaper) {
         delete this.meta.preferences.customWallpaper;

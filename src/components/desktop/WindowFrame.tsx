@@ -44,6 +44,8 @@ interface WindowFrameProps {
   ) => void;
   headerContent?: React.ReactNode;
   overlayTitlebar?: boolean;
+  hiddenUntilReady?: boolean;
+  dockPosition?: 'bottom' | 'top' | 'left' | 'right';
   minWidth?: number;
   minHeight?: number;
   children: React.ReactNode;
@@ -64,6 +66,8 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
   onUpdateBounds,
   headerContent,
   overlayTitlebar = false,
+  hiddenUntilReady = false,
+  dockPosition = 'bottom',
   minWidth = 380,
   minHeight = 280,
   children,
@@ -450,14 +454,18 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
   if (win.minimized) return null;
 
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
-  const vh = (typeof window !== 'undefined' ? window.innerHeight : 900) - BOTTOM_BAR_RESERVE;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const padTop = dockPosition === 'top' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
+  const padBottom = dockPosition === 'bottom' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
+  const padLeft = dockPosition === 'left' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
+  const padRight = dockPosition === 'right' ? BOTTOM_BAR_RESERVE : EDGE_PAD;
 
   const computedStyle: React.CSSProperties = win.maximized
     ? {
-        left: EDGE_PAD,
-        top: EDGE_PAD,
-        width: Math.max(320, vw - EDGE_PAD * 2),
-        height: Math.max(240, vh - EDGE_PAD),
+        left: padLeft,
+        top: padTop,
+        width: Math.max(320, vw - padLeft - padRight),
+        height: Math.max(240, vh - padTop - padBottom),
         zIndex: win.zIndex,
       }
     : {
@@ -558,13 +566,13 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         <div
           style={{
             zIndex: win.zIndex - 1,
-            left: snapPreview === 'right' ? '50%' : EDGE_PAD,
-            top: EDGE_PAD,
+            left: snapPreview === 'right' ? '50%' : padLeft,
+            top: padTop,
             width:
               snapPreview === 'max'
-                ? `calc(100vw - ${EDGE_PAD * 2}px)`
+                ? `calc(100vw - ${padLeft + padRight}px)`
                 : `calc(50vw - ${EDGE_PAD * 1.5}px)`,
-            height: `calc(100vh - ${BOTTOM_BAR_RESERVE + EDGE_PAD}px)`,
+            height: `calc(100vh - ${padTop + padBottom}px)`,
           }}
           className="fixed rounded-2xl bg-[var(--os-active)] border border-[var(--os-border-strong)] pointer-events-none"
         />
@@ -575,15 +583,20 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         style={{
           ...computedStyle,
           boxShadow: isFocused ? 'var(--os-shadow)' : 'var(--os-dock-shadow)',
+          ...(hiddenUntilReady
+            ? { opacity: 0, transform: 'scale(0.95) translateY(8px)', pointerEvents: 'none' }
+            : {}),
         }}
         onPointerDown={() => onFocus(win.id)}
         {...(dropDatasetProps || {})}
-        className={`fixed flex flex-col overflow-hidden rounded-2xl bg-[var(--os-surface)] text-[var(--os-text)] transition-shadow ${
+        className={`fixed flex flex-col overflow-hidden rounded-2xl bg-[var(--os-surface)] text-[var(--os-text)] transition-[opacity,transform,box-shadow] duration-300 ease-out ${
+          !hiddenUntilReady ? 'window-appear' : ''
+        } ${
           isDropHighlighted
             ? 'ring-2 ring-[var(--os-accent-bg)]'
             : isFocused
             ? 'border border-[var(--os-border-strong)]'
-            : 'border border-[var(--os-border)] opacity-[0.97]'
+            : 'border border-[var(--os-border)]'
         }`}
       >
         {!win.maximized && (

@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { remoteAudio } from '../../services/audioPlayer';
 import { useWindowFrameControls } from '../desktop/WindowFrame';
 
@@ -16,6 +15,7 @@ interface LinuxAppWindowProps {
   appName: string;
   isFocused?: boolean;
   onTitleChange?: (title: string) => void;
+  onReady?: () => void;
   onAppExit?: () => void;
   onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
 }
@@ -26,6 +26,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   appName,
   isFocused = true,
   onTitleChange,
+  onReady,
   onAppExit,
   onWindowOpened,
 }) => {
@@ -39,18 +40,20 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   const dimsRef = useRef({ width: 720, height: 480 });
   const hasGeometryRef = useRef(false);
   const serverDimsRef = useRef({ width: 0, height: 0 });
+  const readyFiredRef = useRef(false);
 
   const frameControls = useWindowFrameControls();
   const controlsRef = useRef(frameControls);
   controlsRef.current = frameControls;
   const onTitleRef = useRef(onTitleChange);
   onTitleRef.current = onTitleChange;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
   const onExitRef = useRef(onAppExit);
   onExitRef.current = onAppExit;
   const onWindowOpenedRef = useRef(onWindowOpened);
   onWindowOpenedRef.current = onWindowOpened;
 
-  const [hasFrame, setHasFrame] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
 
@@ -71,6 +74,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     let closed = false;
     hasGeometryRef.current = false;
     serverDimsRef.current = { width: 0, height: 0 };
+    readyFiredRef.current = false;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(
       `${proto}//${window.location.host}/ws/app?sessionId=${encodeURIComponent(sessionId)}&view=${encodeURIComponent(viewId)}`
@@ -95,7 +99,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           }
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(bitmap, 0, 0);
-          setHasFrame(true);
+          if (!readyFiredRef.current) {
+            readyFiredRef.current = true;
+            onReadyRef.current?.();
+          }
         }
         bitmap.close();
       } catch {
@@ -156,6 +163,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           onExitRef.current?.();
         } else if (msg.type === 'error' && msg.message) {
           setErrorMsg(String(msg.message));
+          if (!readyFiredRef.current) {
+            readyFiredRef.current = true;
+            onReadyRef.current?.();
+          }
         } else if (msg.type === 'clipboard' && typeof msg.text === 'string') {
           navigator.clipboard?.writeText(msg.text).catch(() => {});
         }
@@ -323,16 +334,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         style={{ cursor: cursorStyle }}
         className="w-full h-full block object-contain outline-none touch-none"
       />
-
-      {!hasFrame && !errorMsg && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[var(--os-bg)] text-[var(--os-text-muted)]">
-          <Loader2 className="w-6 h-6 animate-spin text-[var(--os-text)]" />
-          <div className="text-xs font-medium text-[var(--os-text)]">{appName} başlatılıyor...</div>
-          <div className="text-[11px] text-[var(--os-text-subtle)]">
-            Linux çekirdeği üzerinde yerel pencere hazırlanıyor
-          </div>
-        </div>
-      )}
 
       {errorMsg && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6 text-center bg-[var(--os-bg)]">

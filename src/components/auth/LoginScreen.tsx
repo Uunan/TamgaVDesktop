@@ -37,7 +37,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <div className="relative w-screen h-screen overflow-hidden select-none flex items-center justify-center bg-[var(--os-bg)] text-[var(--os-text)]">
-      <WallpaperLayer wallpaperId="mono-peaks" />
+      <WallpaperLayer wallpaperId="mono-peaks" theme="dark" />
       <div className="fixed inset-0 bg-black/45 backdrop-blur-md" />
 
       <form

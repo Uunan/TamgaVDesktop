@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { CheckCircle2, Info, Lock, TriangleAlert, X } from 'lucide-react';
 import {
   DEFAULT_BROWSER_PREFERENCES,
+  DEFAULT_DOCK_PREFERENCES,
   DEFAULT_STREAM_PREFERENCES,
   DEFAULT_TERMINAL_PREFERENCES,
   DEFAULT_UI_PREFERENCES,
@@ -10,6 +11,7 @@ import {
   type AuthStatus,
   type ClipboardState,
   type DesktopMeta,
+  type DockPreferences,
   type LinuxAppInfo,
   type LinuxRuntimeStatus,
   type OSWindow,
@@ -53,6 +55,7 @@ const DEFAULT_META: DesktopMeta = {
     browser: { ...DEFAULT_BROWSER_PREFERENCES },
     terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     ui: { ...DEFAULT_UI_PREFERENCES },
+    dock: { ...DEFAULT_DOCK_PREFERENCES },
   },
 };
 
@@ -512,6 +515,7 @@ export default function App() {
       appId?: string;
       command?: string;
       appName?: string;
+      iconName?: string;
       needsNoSandbox?: boolean;
       forceNew?: boolean;
     }) => {
@@ -528,6 +532,11 @@ export default function App() {
         openVSCodeWindow({ folderPath: '/Projects', forceNew: params.forceNew });
         return;
       }
+
+      const foundApp = linuxApps.find(
+        (a) => a.id === params.appId || (params.command && a.command === params.command)
+      );
+      const resolvedIconName = params.iconName || foundApp?.iconName;
 
       try {
         const res = await appsApi.launch({
@@ -560,6 +569,8 @@ export default function App() {
               appSessionId: res.sessionId,
               appViewId: 'main',
               appId: res.appId,
+              appIconName: resolvedIconName,
+              launching: true,
               x: Math.max(18, Math.round((vw - width) / 2) + offset - 16),
               y: Math.max(18, Math.round((vh - height) / 2) + offset - 16),
               width,
@@ -571,11 +582,18 @@ export default function App() {
           ];
         });
         setFocusedWindowId(id);
+
+        // Safety fallback: reveal window even if a slow app takes longer than expected
+        setTimeout(() => {
+          setWindows((prev) =>
+            prev.map((w) => (w.id === id && w.launching ? { ...w, launching: false } : w))
+          );
+        }, 15000);
       } catch (e) {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast, openVSCodeWindow]
+    [pushToast, openVSCodeWindow, linuxApps]
   );
 
   const openPrimaryBrowser = useCallback(
@@ -951,9 +969,10 @@ export default function App() {
     browser?: Partial<DesktopMeta['preferences']['browser']>;
     terminal?: Partial<DesktopMeta['preferences']['terminal']>;
     ui?: Partial<DesktopMeta['preferences']['ui']>;
+    dock?: Partial<DockPreferences>;
   }) => {
     setMeta((prev) => {
-      const { stream, browser, terminal, ui, ...rest } = partial;
+      const { stream, browser, terminal, ui, dock, ...rest } = partial;
       return {
         ...prev,
         preferences: {
@@ -971,6 +990,9 @@ export default function App() {
           ui: ui
             ? { ...DEFAULT_UI_PREFERENCES, ...(prev.preferences.ui || {}), ...ui }
             : prev.preferences.ui || { ...DEFAULT_UI_PREFERENCES },
+          dock: dock
+            ? { ...DEFAULT_DOCK_PREFERENCES, ...(prev.preferences.dock || {}), ...dock }
+            : prev.preferences.dock || { ...DEFAULT_DOCK_PREFERENCES },
         },
       };
     });
@@ -1140,9 +1162,10 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden select-none bg-[var(--os-bg)] text-[var(--os-text)]">
-      {/* Animated Wallpaper Layer (Custom Image or Built-in Presets) */}
+      {/* Animated Wallpaper Layer (Custom Image or Built-in Day/Night Geometric Presets) */}
       <WallpaperLayer
         wallpaperId={meta.preferences.wallpaper}
+        theme={meta.preferences.theme || 'dark'}
         customWallpaper={meta.preferences.customWallpaper}
       />
 
@@ -1191,7 +1214,6 @@ export default function App() {
         onOpenChromium={openPrimaryBrowser}
         onOpenTerminal={() => openTerminalWindow('/Desktop')}
         onOpenAppStore={openAppStoreWindow}
-        onOpenSettings={() => openSettingsWindow('stream')}
         onOpenFolderWindow={openFolderWindow}
         onMoveNodesToFolder={handleMoveNodes}
         onTrashNodes={handleTrashPaths}
@@ -1221,6 +1243,8 @@ export default function App() {
             win={win}
             isFocused={focusedWindowId === win.id}
             isDropHighlighted={isWinDropHighlighted}
+            hiddenUntilReady={Boolean(win.launching)}
+            dockPosition={meta.preferences.dock?.position || 'bottom'}
             onFocus={focusWindow}
             onClose={(id) => {
               const target = windows.find((w) => w.id === id);
@@ -1323,6 +1347,12 @@ export default function App() {
                 viewId={win.appViewId || 'main'}
                 appName={win.title}
                 isFocused={focusedWindowId === win.id}
+                onReady={() => {
+                  setWindows((prev) =>
+                    prev.map((w) => (w.id === win.id && w.launching ? { ...w, launching: false } : w))
+                  );
+                  focusWindow(win.id);
+                }}
                 onTitleChange={(nextTitle) =>
                   setWindows((prev) =>
                     prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
@@ -1346,6 +1376,8 @@ export default function App() {
                         appSessionId: win.appSessionId,
                         appViewId: extra.view,
                         appId: win.appId,
+                        appIconName: win.appIconName,
+                        launching: true,
                         x: Math.max(18, Math.min(vw - extraW - 18, win.x + 34)),
                         y: Math.max(18, Math.min(vh - extraH - 12, win.y + 34)),
                         width: extraW,
@@ -1375,6 +1407,7 @@ export default function App() {
                     appId: app.id,
                     command: app.command,
                     appName: app.name,
+                    iconName: app.iconName,
                     needsNoSandbox: app.needsNoSandbox,
                     forceNew: opts?.forceNew,
                   })
@@ -1449,10 +1482,6 @@ export default function App() {
                   if (v > 0 && muted) setMuted(false);
                 }}
                 onToggleMute={() => setMuted((m) => !m)}
-                onResetBrowserTabs={() => {
-                  lastVideoBytesRef.current = null;
-                  sendWs({ type: 'browser_reset' });
-                }}
                 onOpenTerminal={(dir) => openTerminalWindow(dir || '/Desktop')}
                 onSwitchDesktop={handleSwitchDesktop}
                 onCreateDesktop={handleCreateDesktop}
@@ -1533,7 +1562,15 @@ export default function App() {
       {(meta.preferences.ui?.showFullscreenNotice ?? true) && <FullscreenNotice locked={locked} />}
 
       {/* TOAST NOTIFICATIONS */}
-      <div className="fixed bottom-20 right-5 z-[9970] flex flex-col gap-2 w-76 pointer-events-none">
+      <div
+        className={`fixed ${
+          (meta.preferences.dock?.position || 'bottom') === 'bottom'
+            ? 'bottom-20 right-5'
+            : (meta.preferences.dock?.position || 'bottom') === 'right'
+            ? 'bottom-5 right-20'
+            : 'bottom-5 right-5'
+        } z-[9970] flex flex-col gap-2 w-76 pointer-events-none`}
+      >
         {toasts.map((t) => (
           <div
             key={t.id}
@@ -1572,7 +1609,7 @@ export default function App() {
         ))}
       </div>
 
-      {/* FLOATING BOTTOM BAR */}
+      {/* CUSTOMIZABLE DOCK / PANEL */}
       <Taskbar
         windows={windows}
         focusedWindowId={focusedWindowId}
@@ -1583,6 +1620,7 @@ export default function App() {
         wallpaperId={meta.preferences.wallpaper}
         customWallpaper={meta.preferences.customWallpaper}
         theme={meta.preferences.theme || 'dark'}
+        dock={{ ...DEFAULT_DOCK_PREFERENCES, ...(meta.preferences.dock || {}) }}
         brightness={brightness}
         volume={volume}
         muted={muted}
@@ -1616,6 +1654,7 @@ export default function App() {
             appId: app.id,
             command: app.command,
             appName: app.name,
+            iconName: app.iconName,
             needsNoSandbox: app.needsNoSandbox,
           })
         }

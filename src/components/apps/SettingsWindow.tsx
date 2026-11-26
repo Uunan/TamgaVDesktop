@@ -3,7 +3,6 @@ import {
   Check,
   Cpu,
   Gauge,
-  Globe,
   HardDrive,
   ImagePlus,
   KeyRound,
@@ -13,23 +12,23 @@ import {
   Monitor,
   Moon,
   Palette,
-  RefreshCw,
+  PanelBottom,
   Shield,
   Sliders,
   Sparkles,
   Sun,
   Terminal,
-  Volume2,
   Zap,
 } from 'lucide-react';
 import {
-  DEFAULT_BROWSER_PREFERENCES,
+  DEFAULT_DOCK_PREFERENCES,
   DEFAULT_STREAM_PREFERENCES,
   DEFAULT_TERMINAL_PREFERENCES,
   DEFAULT_UI_PREFERENCES,
   WALLPAPERS,
   type AuthStatus,
   type DesktopMeta,
+  type DockPreferences,
   type SettingsTabId,
   type StreamPreferences,
   type SystemInfoResponse,
@@ -37,21 +36,20 @@ import {
   type VirtualDesktopInfo,
 } from '../../types/os';
 import { authApi, buildWallpaperUrl, systemApi } from '../../services/osBridge';
+import { WallpaperThumb } from '../desktop/WallpaperLayer';
 import { formatUptime } from '../../utils/format';
 
 export const STREAM_PRESETS: Record<
   'performance' | 'balanced' | 'ultra',
   {
     label: string;
-    subtitle: string;
-    badge: string;
+    tag: string;
     config: Omit<StreamPreferences, 'audioEnabled'>;
   }
 > = {
   performance: {
-    label: 'Hız Öncelikli',
-    subtitle: 'Düşük ping, akıcı kaydırma ve hafif veri tüketimi',
-    badge: 'En Hızlı',
+    label: 'Hız',
+    tag: '1x • Düşük Gecikme',
     config: {
       preset: 'performance',
       dynamicQualityDrop: true,
@@ -67,8 +65,7 @@ export const STREAM_PRESETS: Record<
   },
   balanced: {
     label: 'Dengeli',
-    subtitle: 'Kaydırırken hızlı, durunca 2x Retina kayıpsız netlik',
-    badge: 'Önerilen',
+    tag: '2x • Akıllı',
     config: {
       preset: 'balanced',
       dynamicQualityDrop: true,
@@ -83,9 +80,8 @@ export const STREAM_PRESETS: Record<
     },
   },
   ultra: {
-    label: 'Maksimum Kalite',
-    subtitle: 'Her karede tam 2x Retina keskinlik ve en yüksek detay',
-    badge: 'Retina 2x',
+    label: 'Maksimum',
+    tag: '2x • Kayıpsız',
     config: {
       preset: 'ultra',
       dynamicQualityDrop: false,
@@ -100,6 +96,78 @@ export const STREAM_PRESETS: Record<
     },
   },
 };
+
+const DOCK_COLOR_SWATCHES: Array<{
+  id: DockPreferences['color'];
+  label: string;
+  preview: string;
+}> = [
+  { id: 'auto', label: 'Otomatik', preview: 'linear-gradient(135deg, #27272a 50%, #f4f4f5 50%)' },
+  { id: 'dark', label: 'Koyu Cam', preview: '#18181b' },
+  { id: 'light', label: 'Açık Cam', preview: '#f4f4f6' },
+  { id: 'obsidian', label: 'Saf Siyah', preview: '#09090b' },
+  { id: 'midnight', label: 'Gece Mavisi', preview: '#111a2e' },
+  { id: 'emerald', label: 'Zümrüt', preview: '#0d2620' },
+  { id: 'amethyst', label: 'Ametist', preview: '#1e132b' },
+];
+
+/* Minimalist circular "i" hover info popover */
+const InfoTip: React.FC<{ text: string }> = ({ text }) => (
+  <span className="relative inline-flex items-center group/tip ml-1.5 align-middle">
+    <span
+      tabIndex={0}
+      aria-label={text}
+      className="w-[15px] h-[15px] rounded-full border border-[var(--os-border-strong)] text-[var(--os-text-subtle)] hover:text-[var(--os-text)] hover:border-[var(--os-text-muted)] text-[9.5px] font-semibold leading-none inline-flex items-center justify-center cursor-help transition-colors select-none"
+    >
+      i
+    </span>
+    <span
+      style={{ boxShadow: 'var(--os-shadow)' }}
+      className="pointer-events-none opacity-0 translate-y-1 group-hover/tip:opacity-100 group-hover/tip:translate-y-0 group-focus-within/tip:opacity-100 group-focus-within/tip:translate-y-0 transition-all duration-150 absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-56 px-3 py-2 rounded-xl bg-[var(--os-surface-3)] border border-[var(--os-border-strong)] text-[11px] font-normal leading-relaxed text-[var(--os-text)] z-[999] text-left whitespace-normal"
+    >
+      {text}
+    </span>
+  </span>
+);
+
+const Toggle: React.FC<{
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  testId?: string;
+}> = ({ checked, onChange, testId }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    data-testid={testId}
+    onClick={() => onChange(!checked)}
+    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+      checked ? 'bg-[var(--os-accent-bg)]' : 'bg-[var(--os-surface-3)] border border-[var(--os-border-strong)]'
+    }`}
+  >
+    <span
+      className={`inline-block h-3.5 w-3.5 transform rounded-full transition-transform ${
+        checked
+          ? 'translate-x-[18px] bg-[var(--os-accent-fg)]'
+          : 'translate-x-[3px] bg-[var(--os-text-muted)]'
+      }`}
+    />
+  </button>
+);
+
+const Row: React.FC<{
+  label: string;
+  tip?: string;
+  right: React.ReactNode;
+}> = ({ label, tip, right }) => (
+  <div className="px-4 py-3 flex items-center justify-between gap-4">
+    <div className="text-xs font-medium text-[var(--os-text)] flex items-center">
+      <span>{label}</span>
+      {tip && <InfoTip text={tip} />}
+    </div>
+    <div className="shrink-0">{right}</div>
+  </div>
+);
 
 interface SettingsWindowProps {
   initialTab?: SettingsTabId;
@@ -121,16 +189,15 @@ interface SettingsWindowProps {
     autoArrange?: boolean;
     sortBy?: 'name' | 'extension' | 'size' | 'modifiedAt';
     stream?: Partial<StreamPreferences>;
-    browser?: Partial<DesktopMeta['preferences']['browser']>;
     terminal?: Partial<DesktopMeta['preferences']['terminal']>;
     ui?: Partial<DesktopMeta['preferences']['ui']>;
+    dock?: Partial<DockPreferences>;
   }) => void;
   onToggleTheme: (nextTheme: 'dark' | 'light', origin?: { x: number; y: number }) => void;
   onTriggerWallpaperUpload: () => void;
   onChangeBrightness: (v: number) => void;
   onChangeVolume: (v: number) => void;
   onToggleMute: () => void;
-  onResetBrowserTabs: () => void;
   onOpenTerminal: (cwd?: string) => void;
   onSwitchDesktop: (id: string) => void;
   onCreateDesktop: (name?: string) => void;
@@ -139,36 +206,17 @@ interface SettingsWindowProps {
   onNotify: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
-const NAV_ITEMS: Array<{ id: SettingsTabId; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+const NAV_ITEMS: Array<{
+  id: SettingsTabId;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
   { id: 'stream', label: 'Akış & Kalite', icon: Gauge },
+  { id: 'dock', label: 'Dock & Panel', icon: PanelBottom },
   { id: 'appearance', label: 'Görünüm', icon: Palette },
-  { id: 'browser', label: 'Tarayıcı', icon: Globe },
   { id: 'terminal', label: 'Uç Birim', icon: Terminal },
-  { id: 'system', label: 'Sistem & Güvenlik', icon: Shield },
+  { id: 'system', label: 'Sistem', icon: Shield },
 ];
-
-const Toggle: React.FC<{
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  testId?: string;
-}> = ({ checked, onChange, testId }) => (
-  <button
-    type="button"
-    role="switch"
-    aria-checked={checked}
-    data-testid={testId}
-    onClick={() => onChange(!checked)}
-    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-      checked ? 'bg-emerald-500' : 'bg-[var(--os-surface-3)] border border-[var(--os-border-strong)]'
-    }`}
-  >
-    <span
-      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-        checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
-      }`}
-    />
-  </button>
-);
 
 export const SettingsWindow: React.FC<SettingsWindowProps> = ({
   initialTab = 'stream',
@@ -188,7 +236,6 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
   onChangeBrightness,
   onChangeVolume,
   onToggleMute,
-  onResetBrowserTabs,
   onOpenTerminal,
   onSwitchDesktop,
   onCreateDesktop,
@@ -202,13 +249,14 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [savingPass, setSavingPass] = useState(false);
 
+  const theme = meta.preferences.theme || 'dark';
   const stream: StreamPreferences = {
     ...DEFAULT_STREAM_PREFERENCES,
     ...(meta.preferences.stream || {}),
   };
-  const browser = {
-    ...DEFAULT_BROWSER_PREFERENCES,
-    ...(meta.preferences.browser || {}),
+  const dock: DockPreferences = {
+    ...DEFAULT_DOCK_PREFERENCES,
+    ...(meta.preferences.dock || {}),
   };
   const terminal = {
     ...DEFAULT_TERMINAL_PREFERENCES,
@@ -219,15 +267,9 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
     ...(meta.preferences.ui || {}),
   };
 
-  const [urlDraft, setUrlDraft] = useState(browser.defaultUrl);
-
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
-
-  useEffect(() => {
-    setUrlDraft(browser.defaultUrl);
-  }, [browser.defaultUrl]);
 
   useEffect(() => {
     systemApi
@@ -254,21 +296,18 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
     });
   };
 
-  const handleSaveDefaultUrl = (nextUrl: string) => {
-    const trimmed = nextUrl.trim() || 'https://www.google.com';
-    setUrlDraft(trimmed);
-    onUpdatePreferences({ browser: { defaultUrl: trimmed } });
-    onNotify('Tarayıcı Ayarı', `Varsayılan sekme adresi güncellendi: ${trimmed}`, 'success');
+  const updateDock = (partial: Partial<DockPreferences>) => {
+    onUpdatePreferences({ dock: partial });
   };
 
   const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newPassword.length < 4) {
-      onNotify('Parola Hatası', 'Parola en az 4 karakter olmalıdır.', 'warning');
+      onNotify('Parola', 'En az 4 karakter girin.', 'warning');
       return;
     }
     if (newPassword !== confirmPassword) {
-      onNotify('Parola Hatası', 'Parolalar eşleşmiyor.', 'warning');
+      onNotify('Parola', 'Parolalar eşleşmiyor.', 'warning');
       return;
     }
     setSavingPass(true);
@@ -276,7 +315,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
       await authApi.changePassword(newPassword);
       setNewPassword('');
       setConfirmPassword('');
-      onNotify('Güvenlik', 'Yönetici parolası başarıyla güncellendi.', 'success');
+      onNotify('Güvenlik', 'Parola güncellendi.', 'success');
     } catch (err) {
       onNotify('Hata', (err as Error).message, 'error');
     } finally {
@@ -293,18 +332,9 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
       data-testid="settings-window"
       className="flex-1 min-h-0 flex bg-[var(--os-surface)] text-[var(--os-text)] select-none"
     >
-      {/* Left Minimalist Sidebar */}
-      <aside className="w-52 shrink-0 border-r border-[var(--os-border)] bg-[var(--os-surface-2)]/70 p-3 flex flex-col justify-between">
-        <div className="space-y-1">
-          <div className="px-2.5 pb-2.5 pt-1">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--os-text-subtle)]">
-              Sistem Ayarları
-            </div>
-            <div className="text-[11px] text-[var(--os-text-muted)] truncate mt-0.5">
-              {currentDesktop.name}
-            </div>
-          </div>
-
+      {/* Clean Minimal Sidebar */}
+      <aside className="w-48 shrink-0 border-r border-[var(--os-border)] bg-[var(--os-sidebar)] p-2.5 flex flex-col justify-between">
+        <div className="space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -313,98 +343,44 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 key={item.id}
                 data-testid={`settings-tab-${item.id}`}
                 onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
                   active
-                    ? 'bg-[var(--os-text)] text-[var(--os-bg)] shadow-sm'
+                    ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)]'
                     : 'text-[var(--os-text-secondary)] hover:bg-[var(--os-hover)] hover:text-[var(--os-text)]'
                 }`}
               >
-                <Icon className="w-4 h-4 shrink-0" />
+                <Icon className="w-3.5 h-3.5 shrink-0" />
                 <span>{item.label}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Bottom mini status */}
-        <div className="rounded-xl bg-[var(--os-surface)] border border-[var(--os-border)] p-2.5 space-y-1.5 text-[11px]">
-          <div className="flex items-center justify-between text-[var(--os-text-muted)]">
-            <span>Gecikme</span>
-            <span className="font-mono text-[var(--os-text)]">{pingMs} ms</span>
-          </div>
-          <div className="flex items-center justify-between text-[var(--os-text-muted)]">
-            <span>Sürüm</span>
-            <span className="font-mono text-[var(--os-text)]">
-              v{sysInfo?.version || authStatus.version || '1.3.0'}
-            </span>
-          </div>
+        <div className="px-2.5 py-2 text-[10px] font-mono text-[var(--os-text-subtle)] flex items-center justify-between border-t border-[var(--os-border)]">
+          <span>TamgaOS</span>
+          <span>v{sysInfo?.version || authStatus.version || '1.4.0'}</span>
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <main className="flex-1 min-w-0 overflow-y-auto p-6">
-        <div className="max-w-2xl mx-auto space-y-6">
-          {/* 1. STREAM & QUALITY (GeForce NOW-style minimalist tuner) */}
+      {/* Main Content */}
+      <main className="flex-1 min-w-0 overflow-y-auto px-6 py-5">
+        <div className="max-w-xl mx-auto space-y-5">
+          {/* 1. STREAM & QUALITY — Minimal GeForce NOW Style */}
           {activeTab === 'stream' && (
             <>
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-base font-semibold tracking-tight flex items-center gap-2">
-                    <Gauge className="w-4 h-4 text-emerald-400" />
-                    <span>Akış & Görüntü Kalitesi</span>
-                  </h2>
-                  <p className="text-xs text-[var(--os-text-muted)] mt-1">
-                    Kaydırma ve hareket anında kare kalitesini dinamik düşürüp hız kazanın; görüntü
-                    durduğunda maksimum keskinliğe yükseltin.
-                  </p>
-                </div>
-                <span className="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/12 text-emerald-400 border border-emerald-500/25">
-                  {stream.preset === 'performance'
-                    ? 'Hız Modu'
-                    : stream.preset === 'ultra'
-                    ? 'Maksimum Kalite'
-                    : stream.preset === 'custom'
-                    ? 'Özel Profil'
-                    : 'Dengeli'}
-                </span>
-              </div>
-
-              {/* Live Minimal Telemetry Strip */}
-              <div className="grid grid-cols-4 gap-2.5">
-                <div className="rounded-xl bg-[var(--os-surface-2)] border border-[var(--os-border)] px-3.5 py-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)]">
-                    Ağ Ping
-                  </div>
-                  <div className="text-sm font-semibold font-mono mt-0.5">{pingMs} ms</div>
-                </div>
-                <div className="rounded-xl bg-[var(--os-surface-2)] border border-[var(--os-border)] px-3.5 py-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)]">
-                    Tarayıcı FPS
-                  </div>
-                  <div className="text-sm font-semibold font-mono mt-0.5">
-                    {telemetry?.engine.fps ?? 0} FPS
-                  </div>
-                </div>
-                <div className="rounded-xl bg-[var(--os-surface-2)] border border-[var(--os-border)] px-3.5 py-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)]">
-                    Son Kare
-                  </div>
-                  <div className="text-sm font-semibold font-mono mt-0.5">
-                    {lastFrameKB > 0 ? `${lastFrameKB} KB` : '—'}
-                  </div>
-                </div>
-                <div className="rounded-xl bg-[var(--os-surface-2)] border border-[var(--os-border)] px-3.5 py-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--os-text-subtle)]">
-                    Maks. Keskinlik
-                  </div>
-                  <div className="text-sm font-semibold font-mono mt-0.5">
-                    {stream.maxDpr}x {stream.settlePng ? 'PNG' : 'JPG'}
-                  </div>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold tracking-tight">Akış & Kalite</h2>
+                <div className="flex items-center gap-2 text-[11px] font-mono text-[var(--os-text-muted)] bg-[var(--os-surface-2)] border border-[var(--os-border)] px-2.5 py-1 rounded-full">
+                  <span>{pingMs} ms</span>
+                  <span className="opacity-30">•</span>
+                  <span>{telemetry?.engine.fps ?? 0} FPS</span>
+                  <span className="opacity-30">•</span>
+                  <span>{lastFrameKB > 0 ? `${lastFrameKB} KB` : '—'}</span>
                 </div>
               </div>
 
-              {/* 3 One-Click GeForce NOW Style Presets */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* 3 Compact Preset Pills */}
+              <div className="grid grid-cols-3 gap-2">
                 {(
                   [
                     ['performance', Zap],
@@ -412,104 +388,86 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     ['ultra', Sparkles],
                   ] as const
                 ).map(([key, Icon]) => {
-                  const preset = STREAM_PRESETS[key];
-                  const selected = stream.preset === key;
+                  const p = STREAM_PRESETS[key];
+                  const active = stream.preset === key;
                   return (
                     <button
                       key={key}
                       data-testid={`stream-preset-${key}`}
                       onClick={() => applyPreset(key)}
-                      className={`text-left rounded-2xl p-3.5 border transition-all ${
-                        selected
-                          ? 'bg-emerald-500/10 border-emerald-500/60 ring-1 ring-emerald-500/30'
+                      className={`px-3 py-2.5 rounded-xl border text-left transition-all ${
+                        active
+                          ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
                           : 'bg-[var(--os-surface-2)] border-[var(--os-border)] hover:border-[var(--os-border-strong)]'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-2">
-                        <div
-                          className={`w-7 h-7 rounded-lg flex items-center justify-center ${
-                            selected
-                              ? 'bg-emerald-500 text-white'
-                              : 'bg-[var(--os-surface-3)] text-[var(--os-text-secondary)]'
-                          }`}
-                        >
-                          <Icon className="w-3.5 h-3.5" />
-                        </div>
-                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--os-surface)] border border-[var(--os-border)] text-[var(--os-text-muted)]">
-                          {preset.badge}
-                        </span>
+                      <div className="flex items-center gap-1.5 text-xs font-semibold">
+                        <Icon className="w-3.5 h-3.5" />
+                        <span>{p.label}</span>
                       </div>
-                      <div className="text-xs font-semibold">{preset.label}</div>
-                      <div className="text-[11px] text-[var(--os-text-muted)] mt-1 leading-relaxed">
-                        {preset.subtitle}
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          active ? 'opacity-75' : 'text-[var(--os-text-subtle)]'
+                        }`}
+                      >
+                        {p.tag}
                       </div>
                     </button>
                   );
                 })}
               </div>
 
-              {/* Dynamic Motion Drop Controls */}
+              {/* Dynamic Motion Quality Section */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">
-                      Anlık Hareket Kalite Düşürme (Akıcı Kaydırma)
-                    </div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Kaydırma ve hızlı değişim anlarında kare boyutunu geçici küçültür, durunca
-                      netleştirir.
-                    </div>
-                  </div>
-                  <Toggle
-                    testId="toggle-dynamic-drop"
-                    checked={stream.dynamicQualityDrop}
-                    onChange={(v) => updateStream({ dynamicQualityDrop: v })}
-                  />
-                </div>
+                <Row
+                  label="Hareket Anında Kalite Düşür"
+                  tip="Sayfa kaydırırken veya pencere hareket ederken kare boyutunu geçici küçültür. Düşük internet ve yüksek pingde kaydırmayı çok hızlandırır."
+                  right={
+                    <Toggle
+                      testId="toggle-dynamic-drop"
+                      checked={stream.dynamicQualityDrop}
+                      onChange={(v) => updateStream({ dynamicQualityDrop: v })}
+                    />
+                  }
+                />
 
-                <div className="p-4 space-y-4">
-                  {/* Motion Quality Slider */}
+                <div className="px-4 py-3 space-y-3">
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-[var(--os-text-secondary)]">
-                        Hareket / Kaydırma Kare Kalitesi
+                      <span className="font-medium flex items-center">
+                        Hareket Kalitesi
+                        <InfoTip text="Kaydırma anında gönderilen JPEG sıkıştırma kalitesi. Düşük değer daha küçük kare ve daha akıcı tepki demektir." />
                       </span>
-                      <span className="font-mono font-medium">%{stream.motionQuality}</span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        %{stream.motionQuality}
+                      </span>
                     </div>
                     <input
                       type="range"
                       min={35}
                       max={95}
-                      step={1}
                       disabled={!stream.dynamicQualityDrop}
                       value={stream.motionQuality}
                       onChange={(e) => updateStream({ motionQuality: Number(e.target.value) })}
-                      className="w-full accent-emerald-500 disabled:opacity-40"
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full disabled:opacity-35"
                     />
-                    <div className="flex justify-between text-[10px] text-[var(--os-text-subtle)]">
-                      <span>Daha Hızlı (35%)</span>
-                      <span>Dengeli (65%)</span>
-                      <span>Yüksek Detay (95%)</span>
-                    </div>
                   </div>
 
-                  {/* Motion Resolution Scale */}
-                  <div className="flex items-center justify-between gap-4 pt-1">
-                    <div>
-                      <div className="text-xs font-medium">Hareket Çözünürlük Ölçeği</div>
-                      <div className="text-[11px] text-[var(--os-text-muted)]">
-                        Kaydırma sırasında geçici ölçekleme (0.5x = ~4 kat daha hafif kare)
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 p-1 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border)]">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-xs font-medium flex items-center">
+                      Hareket Ölçeği
+                      <InfoTip text="Kaydırma sırasında geçici çözünürlük çarpanı. 0.5x seçildiğinde kareler yaklaşık 4 kat daha hafif iletilir, durunca tekrar netleşir." />
+                    </span>
+                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
                       {[0.5, 0.75, 1].map((sc) => (
                         <button
                           key={sc}
                           disabled={!stream.dynamicQualityDrop}
                           onClick={() => updateStream({ motionScale: sc })}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-colors disabled:opacity-40 ${
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-mono disabled:opacity-35 ${
                             Math.abs(stream.motionScale - sc) < 0.05
-                              ? 'bg-[var(--os-text)] text-[var(--os-bg)] font-semibold'
+                              ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-semibold'
                               : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
                           }`}
                         >
@@ -519,13 +477,15 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     </div>
                   </div>
 
-                  {/* Settle Delay */}
-                  <div className="space-y-1.5 pt-1">
+                  <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-[var(--os-text-secondary)]">
-                        Durgunlaşma Sonrası Netleştirme Gecikmesi
+                      <span className="font-medium flex items-center">
+                        Netleştirme Gecikmesi
+                        <InfoTip text="Hareket durduktan kaç milisaniye sonra tam çözünürlüklü net karenin gönderileceğini belirler." />
                       </span>
-                      <span className="font-mono font-medium">{stream.settleDelayMs} ms</span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {stream.settleDelayMs} ms
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -534,84 +494,62 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                       step={50}
                       value={stream.settleDelayMs}
                       onChange={(e) => updateStream({ settleDelayMs: Number(e.target.value) })}
-                      className="w-full accent-emerald-500"
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Maximum Quality Controls */}
+              {/* Max Quality & X11 Section */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Maksimum Keskinlik (HiDPI / DPR)</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Retina ekranlarda 2x kristal metin; düşük internette 1x daha hızlı akar.
+                <Row
+                  label="Maksimum Keskinlik"
+                  tip="Görüntünün ulaşacağı tavan piksel yoğunluğu. 2x Retina metinleri yerel uygulama gibi keskinleştirir; 1x daha az bant genişliği kullanır."
+                  right={
+                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
+                      {[
+                        { val: 1, label: '1x' },
+                        { val: 1.5, label: '1.5x' },
+                        { val: 2, label: '2x' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.val}
+                          data-testid={`stream-dpr-${opt.val}`}
+                          onClick={() => updateStream({ maxDpr: opt.val })}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-mono ${
+                            Math.abs(stream.maxDpr - opt.val) < 0.05
+                              ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-semibold'
+                              : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1 p-1 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border)]">
-                    {[
-                      { val: 1, label: '1x' },
-                      { val: 1.5, label: '1.5x' },
-                      { val: 2, label: '2x Retina' },
-                    ].map((opt) => (
-                      <button
-                        key={opt.val}
-                        data-testid={`stream-dpr-${opt.val}`}
-                        onClick={() => updateStream({ maxDpr: opt.val })}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
-                          Math.abs(stream.maxDpr - opt.val) < 0.05
-                            ? 'bg-[var(--os-text)] text-[var(--os-bg)]'
-                            : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                  }
+                />
 
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Kayıpsız PNG Netleştirme</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Hareket durduğunda okuma kalitesi için kayıpsız PNG karesi gönderir.
-                    </div>
-                  </div>
-                  <Toggle
-                    testId="toggle-settle-png"
-                    checked={stream.settlePng}
-                    onChange={(v) => updateStream({ settlePng: v })}
-                  />
-                </div>
-              </div>
-
-              {/* Linux X11 Applications Stream Controls */}
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs font-semibold">
-                      Linux Uygulamaları (Firefox, GIMP, Chrome X11)
-                    </div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Açık pencerelere yeniden başlatmadan anlık uygulanır.
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-[var(--os-text-muted)]">
-                    <Volume2 className="w-3.5 h-3.5" />
-                    <span>Ses</span>
+                <Row
+                  label="Kayıpsız PNG Netleştirme"
+                  tip="Sayfa durduğunda JPEG yerine kayıpsız PNG göndererek küçük metinlerde sıkıştırma izini tamamen sıfırlar."
+                  right={
                     <Toggle
-                      checked={stream.audioEnabled}
-                      onChange={(v) => updateStream({ audioEnabled: v }, false)}
+                      testId="toggle-settle-png"
+                      checked={stream.settlePng}
+                      onChange={(v) => updateStream({ settlePng: v })}
                     />
-                  </div>
-                </div>
+                  }
+                />
 
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="space-y-1.5">
+                <div className="px-4 py-3 grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
                     <div className="flex justify-between text-[11px]">
-                      <span className="text-[var(--os-text-muted)]">Hedef FPS</span>
-                      <span className="font-mono font-medium">{stream.x11Fps}</span>
+                      <span className="text-[var(--os-text-muted)] flex items-center">
+                        X11 FPS
+                        <InfoTip text="Firefox, GIMP gibi yerel Linux uygulamalarının saniyedeki hedef kare hızı." />
+                      </span>
+                      <span className="font-mono">{stream.x11Fps}</span>
                     </div>
                     <input
                       type="range"
@@ -620,334 +558,453 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                       step={2}
                       value={stream.x11Fps}
                       onChange={(e) => updateStream({ x11Fps: Number(e.target.value) })}
-                      className="w-full accent-emerald-500"
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
                     />
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <div className="flex justify-between text-[11px]">
-                      <span className="text-[var(--os-text-muted)]">Hareket Kalitesi</span>
-                      <span className="font-mono font-medium">%{stream.x11MotionQuality}</span>
+                      <span className="text-[var(--os-text-muted)]">X11 Hareket</span>
+                      <span className="font-mono">%{stream.x11MotionQuality}</span>
                     </div>
                     <input
                       type="range"
                       min={30}
                       max={85}
-                      step={1}
                       value={stream.x11MotionQuality}
                       onChange={(e) => updateStream({ x11MotionQuality: Number(e.target.value) })}
-                      className="w-full accent-emerald-500"
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
                     />
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <div className="flex justify-between text-[11px]">
-                      <span className="text-[var(--os-text-muted)]">Maks. Kalite</span>
-                      <span className="font-mono font-medium">%{stream.x11MaxQuality}</span>
+                      <span className="text-[var(--os-text-muted)]">X11 Maks.</span>
+                      <span className="font-mono">%{stream.x11MaxQuality}</span>
                     </div>
                     <input
                       type="range"
                       min={55}
                       max={95}
-                      step={1}
                       value={stream.x11MaxQuality}
                       onChange={(e) => updateStream({ x11MaxQuality: Number(e.target.value) })}
-                      className="w-full accent-emerald-500"
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
                     />
                   </div>
                 </div>
+
+                <Row
+                  label="Uzak Ses Aktarımı"
+                  tip="Linux uygulamalarından çıkan PulseAudio sesini tarayıcıya canlı aktarır."
+                  right={
+                    <Toggle
+                      checked={stream.audioEnabled}
+                      onChange={(v) => updateStream({ audioEnabled: v }, false)}
+                    />
+                  }
+                />
               </div>
             </>
           )}
 
-          {/* 2. APPEARANCE & DESKTOP */}
-          {activeTab === 'appearance' && (
+          {/* 2. DOCK & PANEL — Huge Customization Suite */}
+          {activeTab === 'dock' && (
             <>
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">Görünüm & Masaüstü</h2>
-                <p className="text-xs text-[var(--os-text-muted)] mt-1">
-                  Tema, duvar kağıdı, simge boyutu ve ekran tercihlerinizi özelleştirin.
-                </p>
-              </div>
+              <h2 className="text-sm font-semibold tracking-tight">Dock & Panel</h2>
 
-              {/* Theme */}
+              {/* Dock Position */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
-                <div className="text-xs font-semibold">Tema</div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="text-xs font-medium flex items-center">
+                  Konum
+                  <InfoTip text="Dock'u ekranın alt, üst, sol veya sağ kenarına yerleştirebilirsiniz. Pencereler ve menüler otomatik uyum sağlar." />
+                </div>
+                <div className="grid grid-cols-4 gap-2">
                   {(
                     [
-                      ['dark', 'Koyu Tema', Moon],
-                      ['light', 'Açık Tema', Sun],
+                      ['bottom', 'Alt'],
+                      ['top', 'Üst'],
+                      ['left', 'Sol'],
+                      ['right', 'Sağ'],
                     ] as const
-                  ).map(([tKey, label, Icon]) => {
-                    const active = (meta.preferences.theme || 'dark') === tKey;
+                  ).map(([pos, label]) => {
+                    const active = dock.position === pos;
                     return (
                       <button
-                        key={tKey}
-                        onClick={(e) =>
-                          onToggleTheme(tKey, { x: e.clientX, y: e.clientY })
-                        }
-                        className={`flex items-center justify-between px-4 py-3 rounded-xl border text-xs font-medium transition-all ${
+                        key={pos}
+                        data-testid={`dock-pos-${pos}`}
+                        onClick={() => updateDock({ position: pos })}
+                        className={`p-2.5 rounded-xl border flex flex-col items-center gap-2 transition-all ${
                           active
-                            ? 'bg-[var(--os-text)] text-[var(--os-bg)] border-transparent'
-                            : 'bg-[var(--os-surface)] border-[var(--os-border)] hover:bg-[var(--os-hover)]'
+                            ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
+                            : 'bg-[var(--os-bg)] border-[var(--os-border)] hover:border-[var(--os-border-strong)]'
                         }`}
                       >
-                        <span className="flex items-center gap-2.5">
-                          <Icon className="w-4 h-4" />
-                          <span>{label}</span>
-                        </span>
-                        {active && <Check className="w-4 h-4" />}
+                        <div className="w-12 h-8 rounded-md border border-current/25 relative overflow-hidden">
+                          <span
+                            className={`absolute bg-current rounded-full ${
+                              pos === 'bottom'
+                                ? 'bottom-1 left-2 right-2 h-1.5'
+                                : pos === 'top'
+                                ? 'top-1 left-2 right-2 h-1.5'
+                                : pos === 'left'
+                                ? 'left-1 top-1.5 bottom-1.5 w-1.5'
+                                : 'right-1 top-1.5 bottom-1.5 w-1.5'
+                            }`}
+                          />
+                        </div>
+                        <span className="text-[11px] font-medium">{label}</span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Wallpaper */}
+              {/* Dock Shape / Style */}
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
+                <div className="text-xs font-medium flex items-center">
+                  Dock Şekli
+                  <InfoTip text="Yüzen ada, ortalanmış macOS dock, tam genişlik bar veya çerçevesiz minimal stil arasında anında geçiş yapın." />
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {(
+                    [
+                      ['floating', 'Yüzen'],
+                      ['macos', 'macOS'],
+                      ['full', 'Tam Bar'],
+                      ['minimal', 'Minimal'],
+                    ] as const
+                  ).map(([st, label]) => {
+                    const active = dock.style === st;
+                    return (
+                      <button
+                        key={st}
+                        data-testid={`dock-style-${st}`}
+                        onClick={() => updateDock({ style: st })}
+                        className={`py-2 px-2 rounded-xl border text-xs font-medium transition-all ${
+                          active
+                            ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
+                            : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:border-[var(--os-border-strong)]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Color, Opacity, Blur, Size & Labels */}
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
+                <div className="px-4 py-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium flex items-center">
+                      Renk
+                      <InfoTip text="Hazır cam tonlarından seçebilir veya sağdaki renk seçiciyle kendi Dock renginizi belirleyebilirsiniz." />
+                    </span>
+                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--os-text-muted)] cursor-pointer">
+                      <span>Özel</span>
+                      <input
+                        type="color"
+                        value={dock.customColor || '#18181b'}
+                        onChange={(e) =>
+                          updateDock({ color: 'custom', customColor: e.target.value })
+                        }
+                        className="w-5 h-5 rounded cursor-pointer bg-transparent border-0"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {DOCK_COLOR_SWATCHES.map((sw) => {
+                      const active = dock.color === sw.id;
+                      return (
+                        <button
+                          key={sw.id}
+                          title={sw.label}
+                          data-testid={`dock-color-${sw.id}`}
+                          onClick={() => updateDock({ color: sw.id })}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] transition-all ${
+                            active
+                              ? 'border-[var(--os-text)] bg-[var(--os-surface-3)] font-medium'
+                              : 'border-[var(--os-border)] bg-[var(--os-bg)] text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                          }`}
+                        >
+                          <span
+                            className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0"
+                            style={{ background: sw.preview }}
+                          />
+                          <span>{sw.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="px-4 py-3 space-y-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Opaklık (Şeffaflık)
+                        <InfoTip text="Dock arka planının opaklık yüzdesi. Düşürdükçe arkasındaki duvar kağıdı daha belirgin görünür." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        %{dock.opacity}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={20}
+                      max={100}
+                      value={dock.opacity}
+                      onChange={(e) => updateDock({ opacity: Number(e.target.value) })}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Cam Bulanıklığı
+                        <InfoTip text="Dock arkasındaki buzlu cam (backdrop blur) şiddeti." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {dock.blur} px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={28}
+                      value={dock.blur}
+                      onChange={(e) => updateDock({ blur: Number(e.target.value) })}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <Row
+                  label="Boyut"
+                  right={
+                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
+                      {(
+                        [
+                          ['sm', 'Küçük'],
+                          ['md', 'Orta'],
+                          ['lg', 'Büyük'],
+                        ] as const
+                      ).map(([sz, label]) => (
+                        <button
+                          key={sz}
+                          onClick={() => updateDock({ size: sz })}
+                          className={`px-2.5 py-1 rounded-md text-[11px] ${
+                            dock.size === sz
+                              ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
+                              : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  }
+                />
+
+                <Row
+                  label="Uygulama Etiketleri"
+                  tip="Yatay Dock'ta sabit simgelerin yanında isimlerini göster veya yalnızca ikon kullan."
+                  right={
+                    <Toggle
+                      checked={dock.showLabels}
+                      onChange={(v) => updateDock({ showLabels: v })}
+                    />
+                  }
+                />
+              </div>
+            </>
+          )}
+
+          {/* 3. APPEARANCE & DAY/NIGHT GEOMETRIC WALLPAPERS */}
+          {activeTab === 'appearance' && (
+            <>
+              <h2 className="text-sm font-semibold tracking-tight">Görünüm</h2>
+
+              {/* Theme */}
+              <div className="grid grid-cols-2 gap-2.5">
+                {(
+                  [
+                    ['dark', 'Gece (Koyu)', Moon],
+                    ['light', 'Gündüz (Açık)', Sun],
+                  ] as const
+                ).map(([tKey, label, Icon]) => {
+                  const active = theme === tKey;
+                  return (
+                    <button
+                      key={tKey}
+                      onClick={(e) => onToggleTheme(tKey, { x: e.clientX, y: e.clientY })}
+                      className={`flex items-center justify-between px-4 py-3 rounded-2xl border text-xs font-medium transition-all ${
+                        active
+                          ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
+                          : 'bg-[var(--os-surface-2)] border-[var(--os-border)] hover:border-[var(--os-border-strong)]'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Icon className="w-4 h-4" />
+                        <span>{label}</span>
+                      </span>
+                      {active && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Geometric Wallpapers (Dynamic Day/Night) */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold">Duvar Kağıdı</div>
+                  <span className="text-xs font-medium flex items-center">
+                    Geometrik Duvar Kağıtları
+                    <InfoTip text="Her geometrik tasarım Gece (Koyu) ve Gündüz (Açık) temasında otomatik olarak farklı renk paleti ve atmosfer sunar." />
+                  </span>
                   <button
                     onClick={onTriggerWallpaperUpload}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--os-surface)] border border-[var(--os-border-strong)] hover:bg-[var(--os-hover)]"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)]"
                   >
                     <ImagePlus className="w-3.5 h-3.5" />
-                    <span>Özel Resim Yükle</span>
+                    <span>Özel Resim</span>
                   </button>
                 </div>
 
-                <div className="grid grid-cols-4 gap-2.5">
+                <div className="grid grid-cols-3 gap-2.5">
                   {WALLPAPERS.map((wp) => {
                     const active = meta.preferences.wallpaper === wp.id;
                     return (
                       <button
                         key={wp.id}
+                        data-testid={`wp-card-${wp.id}`}
                         onClick={() => onUpdatePreferences({ wallpaper: wp.id })}
-                        className={`rounded-xl p-3 text-left border transition-all ${
+                        className={`rounded-xl p-1.5 text-left border transition-all ${
                           active
                             ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
-                            : 'border-[var(--os-border)] bg-[var(--os-surface)] hover:border-[var(--os-border-strong)]'
+                            : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
                         }`}
                       >
-                        <div
-                          className={`h-12 rounded-lg mb-2 ${
-                            wp.id === 'mono-peaks'
-                              ? 'bg-gradient-to-br from-zinc-700 via-zinc-900 to-black'
-                              : wp.id === 'graphite-flat'
-                              ? 'bg-zinc-800'
-                              : 'bg-neutral-950'
-                          }`}
-                        />
-                        <div className="text-[11px] font-medium truncate">{wp.name}</div>
+                        <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-14" />
+                        <div className="text-[11px] font-medium truncate px-1 pt-1.5">
+                          {wp.name}
+                        </div>
                       </button>
                     );
                   })}
                   {customWallpaperUrl && (
                     <button
                       onClick={() => onUpdatePreferences({ wallpaper: 'custom' })}
-                      className={`rounded-xl p-3 text-left border transition-all ${
+                      className={`rounded-xl p-1.5 text-left border transition-all ${
                         meta.preferences.wallpaper === 'custom'
                           ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
-                          : 'border-[var(--os-border)] bg-[var(--os-surface)]'
+                          : 'border-[var(--os-border)] bg-[var(--os-bg)]'
                       }`}
                     >
                       <img
                         src={customWallpaperUrl}
                         alt="Özel"
-                        className="h-12 w-full object-cover rounded-lg mb-2"
+                        className="w-full h-14 object-cover rounded-lg"
                       />
-                      <div className="text-[11px] font-medium truncate">Özel Resim</div>
+                      <div className="text-[11px] font-medium truncate px-1 pt-1.5">Özel Resim</div>
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Icons, Brightness, Audio, Fullscreen Notice */}
+              {/* Desktop & Display controls */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Masaüstü Simge Boyutu</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)]">
-                      Simgelerin kapladığı alan ve yazı boyutu
+                <Row
+                  label="Simge Boyutu"
+                  right={
+                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
+                      {(
+                        [
+                          ['sm', 'Küçük'],
+                          ['md', 'Orta'],
+                          ['lg', 'Büyük'],
+                        ] as const
+                      ).map(([sz, label]) => (
+                        <button
+                          key={sz}
+                          onClick={() => onUpdatePreferences({ iconSize: sz })}
+                          className={`px-2.5 py-1 rounded-md text-[11px] ${
+                            meta.preferences.iconSize === sz
+                              ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
+                              : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1 p-1 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border)]">
-                    {(
-                      [
-                        ['sm', 'Küçük'],
-                        ['md', 'Orta'],
-                        ['lg', 'Büyük'],
-                      ] as const
-                    ).map(([sz, label]) => (
-                      <button
-                        key={sz}
-                        onClick={() => onUpdatePreferences({ iconSize: sz })}
-                        className={`px-3 py-1 rounded-lg text-[11px] font-medium ${
-                          meta.preferences.iconSize === sz
-                            ? 'bg-[var(--os-text)] text-[var(--os-bg)]'
-                            : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                  }
+                />
 
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Simgeleri Otomatik Hizala</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)]">
-                      Masaüstü öğelerini ızgarada düzenli tutar
-                    </div>
-                  </div>
-                  <Toggle
-                    checked={Boolean(meta.preferences.autoArrange)}
-                    onChange={(v) => onUpdatePreferences({ autoArrange: v })}
-                  />
-                </div>
-
-                <div className="p-4 space-y-3">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium">Ekran Parlaklığı</span>
-                    <span className="font-mono text-[var(--os-text-muted)]">%{brightness}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={40}
-                    max={100}
-                    value={brightness}
-                    onChange={(e) => onChangeBrightness(Number(e.target.value))}
-                    className="w-full accent-[var(--os-text)]"
-                  />
-
-                  <div className="flex items-center justify-between text-xs pt-1">
-                    <span className="font-medium">Sistem Sesi</span>
-                    <button
-                      onClick={onToggleMute}
-                      className="font-mono text-[var(--os-text-muted)] hover:text-[var(--os-text)]"
-                    >
-                      {muted ? 'Sessiz' : `%${volume}`}
-                    </button>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={muted ? 0 : volume}
-                    onChange={(e) => onChangeVolume(Number(e.target.value))}
-                    className="w-full accent-[var(--os-text)]"
-                  />
-                </div>
-
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Tam Ekran Öneri Bildirimi</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)]">
-                      Girişte sağ üstte tam ekran önerisini göster
-                    </div>
-                  </div>
-                  <Toggle
-                    checked={ui.showFullscreenNotice}
-                    onChange={(v) => onUpdatePreferences({ ui: { showFullscreenNotice: v } })}
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* 3. BROWSER (CHROMIUM) */}
-          {activeTab === 'browser' && (
-            <>
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">Yerleşik Chromium Ayarları</h2>
-                <p className="text-xs text-[var(--os-text-muted)] mt-1">
-                  Varsayılan açılış sekmesi, pencere kapanış davranışı ve oturum yönetimi.
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
-                <div className="p-4 space-y-3">
-                  <div>
-                    <div className="text-xs font-semibold">Varsayılan Sekme / Başlangıç Adresi</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Chromium ilk açıldığında ve yeni sekme (+) eklendiğinde açılacak adres.
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      data-testid="settings-browser-default-url"
-                      value={urlDraft}
-                      onChange={(e) => setUrlDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSaveDefaultUrl(urlDraft);
-                      }}
-                      placeholder="https://www.google.com"
-                      className="flex-1 px-3 py-2 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border-strong)] text-xs font-mono focus:outline-none focus:border-[var(--os-text)]"
+                <Row
+                  label="Otomatik Hizala"
+                  right={
+                    <Toggle
+                      checked={Boolean(meta.preferences.autoArrange)}
+                      onChange={(v) => onUpdatePreferences({ autoArrange: v })}
                     />
-                    <button
-                      onClick={() => handleSaveDefaultUrl(urlDraft)}
-                      className="px-4 py-2 rounded-xl bg-[var(--os-text)] text-[var(--os-bg)] text-xs font-medium hover:opacity-90"
-                    >
-                      Kaydet
-                    </button>
+                  }
+                />
+
+                <div className="px-4 py-3 grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium">Parlaklık</span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        %{brightness}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={45}
+                      max={100}
+                      value={brightness}
+                      onChange={(e) => onChangeBrightness(Number(e.target.value))}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
                   </div>
-                  <div className="flex items-center gap-2 pt-0.5">
-                    {[
-                      { label: 'Google', url: 'https://www.google.com' },
-                      { label: 'DuckDuckGo', url: 'https://duckduckgo.com' },
-                      { label: 'Yeni Sekme Ekranı', url: 'compute://newtab' },
-                    ].map((opt) => (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium">Ses</span>
                       <button
-                        key={opt.url}
-                        onClick={() => handleSaveDefaultUrl(opt.url)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${
-                          browser.defaultUrl === opt.url
-                            ? 'bg-[var(--os-text)] text-[var(--os-bg)] border-transparent'
-                            : 'bg-[var(--os-surface)] border-[var(--os-border)] text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                        }`}
+                        onClick={onToggleMute}
+                        className="font-mono text-[11px] text-[var(--os-text-muted)]"
                       >
-                        {opt.label}
+                        {muted ? 'Sessiz' : `%${volume}`}
                       </button>
-                    ))}
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={muted ? 0 : volume}
+                      onChange={(e) => onChangeVolume(Number(e.target.value))}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
                   </div>
                 </div>
 
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">
-                      Pencere Kapatılınca Sekmeleri Otomatik Kapat
-                    </div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Chromium kapatıldığında (X) tüm sekmeleri kapatır ve sunucu RAM&apos;ini anında
-                      boşaltır. Alta alındığında sekmeler korunur.
-                    </div>
-                  </div>
-                  <Toggle
-                    testId="toggle-close-tabs-on-exit"
-                    checked={browser.closeTabsOnExit}
-                    onChange={(v) => onUpdatePreferences({ browser: { closeTabsOnExit: v } })}
-                  />
-                </div>
-
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Aktif Sekme Oturumunu Sıfırla</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)] mt-0.5">
-                      Açık tüm Chromium sekmelerini hemen kapatır ve bellek kullanımını sıfırlar.
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      onResetBrowserTabs();
-                      onNotify('Chromium', 'Tüm açık sekmeler kapatıldı.', 'info');
-                    }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium bg-[var(--os-surface)] border border-[var(--os-border-strong)] hover:bg-red-500/12 hover:text-red-400 hover:border-red-500/30 transition-colors"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Sekmeleri Temizle</span>
-                  </button>
-                </div>
+                <Row
+                  label="Tam Ekran Bildirimi"
+                  tip="Açılışta sağ üstte çıkan tam ekran öneri kartını gösterir."
+                  right={
+                    <Toggle
+                      checked={ui.showFullscreenNotice}
+                      onChange={(v) => onUpdatePreferences({ ui: { showFullscreenNotice: v } })}
+                    />
+                  }
+                />
               </div>
             </>
           )}
@@ -955,72 +1012,59 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
           {/* 4. TERMINAL */}
           {activeTab === 'terminal' && (
             <>
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">Uç Birim (Terminal)</h2>
-                <p className="text-xs text-[var(--os-text-muted)] mt-1">
-                  Linux PTY kabuğu görünüm ve davranış tercihleri. Masaüstünde veya herhangi bir
-                  klasörde sağ tıklayarak &quot;Uç Birim&quot; açabilirsiniz.
-                </p>
-              </div>
+              <h2 className="text-sm font-semibold tracking-tight">Uç Birim</h2>
 
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
                 <div className="p-4 space-y-3">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold">Yazı Tipi Boyutu</span>
-                    <span className="font-mono font-medium">{terminal.fontSize} px</span>
+                    <span className="font-medium">Yazı Boyutu</span>
+                    <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                      {terminal.fontSize} px
+                    </span>
                   </div>
                   <input
                     type="range"
                     min={11}
                     max={18}
-                    step={1}
                     value={terminal.fontSize}
                     onChange={(e) =>
                       onUpdatePreferences({ terminal: { fontSize: Number(e.target.value) } })
                     }
-                    className="w-full accent-emerald-500"
+                    style={{ accentColor: 'var(--os-accent-bg)' }}
+                    className="w-full"
                   />
-                  {/* Live preview */}
                   <div
                     style={{ fontSize: `${terminal.fontSize}px` }}
-                    className="rounded-xl bg-[#141416] text-[#f5f5f7] font-mono p-3.5 border border-[var(--os-border)] leading-relaxed"
+                    className="rounded-xl bg-[#141416] text-[#f5f5f7] font-mono px-3.5 py-2.5 border border-[var(--os-border)]"
                   >
-                    <div>
-                      <span className="text-emerald-400">root@tamga</span>:
-                      <span className="text-blue-400">~/Desktop</span>$ ls -la
-                    </div>
-                    <div className="text-zinc-400">drwxr-xr-x 2 root root 4096 Projects</div>
+                    <span className="text-emerald-400">root@tamga</span>:
+                    <span className="text-blue-400">~/Desktop</span>$ ls
                   </div>
                 </div>
 
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Yanıp Sönen İmleç</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)]">
-                      Açık terminallerde anında uygulanır
-                    </div>
-                  </div>
-                  <Toggle
-                    checked={terminal.cursorBlink}
-                    onChange={(v) => onUpdatePreferences({ terminal: { cursorBlink: v } })}
-                  />
-                </div>
+                <Row
+                  label="Yanıp Sönen İmleç"
+                  right={
+                    <Toggle
+                      checked={terminal.cursorBlink}
+                      onChange={(v) => onUpdatePreferences({ terminal: { cursorBlink: v } })}
+                    />
+                  }
+                />
 
-                <div className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-semibold">Hızlı Başlat</div>
-                    <div className="text-[11px] text-[var(--os-text-muted)]">
-                      Masaüstü dizininde yeni bir Uç Birim penceresi aç
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => onOpenTerminal('/Desktop')}
-                    className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[var(--os-text)] text-[var(--os-bg)] text-xs font-medium"
-                  >
-                    <Terminal className="w-3.5 h-3.5" />
-                    <span>Uç Birim Aç</span>
-                  </button>
-                </div>
+                <Row
+                  label="Yeni Pencere"
+                  tip="Masaüstünde veya herhangi bir klasörde sağ tıklayıp Uç Birim seçerek de doğrudan o dizinde açabilirsiniz."
+                  right={
+                    <button
+                      onClick={() => onOpenTerminal('/Desktop')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] text-xs font-medium"
+                    >
+                      <Terminal className="w-3.5 h-3.5" />
+                      <span>Aç</span>
+                    </button>
+                  }
+                />
               </div>
             </>
           )}
@@ -1028,90 +1072,62 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
           {/* 5. SYSTEM & SECURITY */}
           {activeTab === 'system' && (
             <>
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">Sistem & Güvenlik</h2>
-                <p className="text-xs text-[var(--os-text-muted)] mt-1">
-                  Sunucu kaynakları, sanal masaüstleri ve yönetici oturum güvenliği.
-                </p>
-              </div>
+              <h2 className="text-sm font-semibold tracking-tight">Sistem</h2>
 
-              {/* Resource Cards */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-1.5 text-[var(--os-text-muted)]">
-                      <Cpu className="w-3.5 h-3.5" /> CPU
-                    </span>
-                    <span className="font-mono font-semibold">{telemetry?.cpuPercent ?? 0}%</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[var(--os-surface-3)] overflow-hidden">
-                    <div
-                      className="h-full bg-emerald-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, telemetry?.cpuPercent ?? 0)}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-[var(--os-text-subtle)]">
-                    {telemetry?.cpuCores ?? 0} Çekirdek
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-1.5 text-[var(--os-text-muted)]">
-                      <Monitor className="w-3.5 h-3.5" /> RAM
-                    </span>
-                    <span className="font-mono font-semibold">{telemetry?.ramPercent ?? 0}%</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[var(--os-surface-3)] overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, telemetry?.ramPercent ?? 0)}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-[var(--os-text-subtle)]">
-                    {telemetry ? `${telemetry.ramUsedGB} / ${telemetry.ramTotalGB} GB` : '—'}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-1.5 text-[var(--os-text-muted)]">
-                      <HardDrive className="w-3.5 h-3.5" /> Disk
-                    </span>
-                    <span className="font-mono font-semibold">
-                      {sysInfo?.disk ? `${sysInfo.disk.percent}%` : '—'}
-                    </span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[var(--os-surface-3)] overflow-hidden">
-                    <div
-                      className="h-full bg-amber-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, sysInfo?.disk?.percent ?? 0)}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-[var(--os-text-subtle)]">
-                    {sysInfo?.disk ? `${sysInfo.disk.usedGB} / ${sysInfo.disk.totalGB} GB` : '—'}
-                  </div>
-                </div>
-              </div>
-
-              {/* System Info Table */}
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-2 text-xs">
+              <div className="grid grid-cols-3 gap-2.5">
                 {[
-                  ['Sunucu Adı', sysInfo?.hostname || telemetry?.hostname || '—'],
-                  ['İşletim Sistemi', sysInfo?.runtime.distro || telemetry?.distro || 'Linux'],
-                  ['TamgaVDesktop', `v${sysInfo?.version || authStatus.version || '1.3.0'}`],
-                  ['Çalışma Süresi', telemetry ? formatUptime(telemetry.uptimeSeconds) : '—'],
-                  ['Dosya Modu', sysInfo?.filesystemMode || 'isolated'],
-                  [
-                    'Yerleşik Chromium',
-                    telemetry?.engine.ready ? 'HAZIR (Playwright HiDPI)' : 'Kurulmadı',
-                  ],
-                  ['Linux GUI Motoru', sysInfo?.runtime.guiReady ? 'HAZIR (X11 + PulseAudio)' : 'Eksik'],
-                ].map(([k, v]) => (
+                  {
+                    icon: Cpu,
+                    label: 'CPU',
+                    val: `${telemetry?.cpuPercent ?? 0}%`,
+                    pct: telemetry?.cpuPercent ?? 0,
+                    sub: `${telemetry?.cpuCores ?? 0} Çekirdek`,
+                  },
+                  {
+                    icon: Monitor,
+                    label: 'RAM',
+                    val: `${telemetry?.ramPercent ?? 0}%`,
+                    pct: telemetry?.ramPercent ?? 0,
+                    sub: telemetry ? `${telemetry.ramUsedGB}/${telemetry.ramTotalGB} GB` : '—',
+                  },
+                  {
+                    icon: HardDrive,
+                    label: 'Disk',
+                    val: sysInfo?.disk ? `${sysInfo.disk.percent}%` : '—',
+                    pct: sysInfo?.disk?.percent ?? 0,
+                    sub: sysInfo?.disk ? `${sysInfo.disk.usedGB}/${sysInfo.disk.totalGB} GB` : '—',
+                  },
+                ].map((m) => (
                   <div
-                    key={k}
-                    className="flex items-center justify-between py-1 border-b border-[var(--os-border)] last:border-0"
+                    key={m.label}
+                    className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-3.5 space-y-2"
                   >
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-[var(--os-text-muted)]">
+                        <m.icon className="w-3.5 h-3.5" /> {m.label}
+                      </span>
+                      <span className="font-mono font-semibold">{m.val}</span>
+                    </div>
+                    <div className="h-1 rounded-full bg-[var(--os-surface-3)] overflow-hidden">
+                      <div
+                        className="h-full bg-[var(--os-accent-bg)] rounded-full transition-all"
+                        style={{ width: `${Math.min(100, m.pct)}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-[var(--os-text-subtle)]">{m.sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] px-4 py-2 divide-y divide-[var(--os-border)] text-xs">
+                {[
+                  ['Sunucu', sysInfo?.hostname || telemetry?.hostname || '—'],
+                  ['Sistem', sysInfo?.runtime.distro || telemetry?.distro || 'Linux'],
+                  ['Çalışma Süresi', telemetry ? formatUptime(telemetry.uptimeSeconds) : '—'],
+                  ['Chromium', telemetry?.engine.ready ? 'Hazır' : 'Yok'],
+                  ['Linux GUI', sysInfo?.runtime.guiReady ? 'Hazır' : 'Eksik'],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between py-2">
                     <span className="text-[var(--os-text-muted)]">{k}</span>
                     <span className="font-mono text-[11px]">{v}</span>
                   </div>
@@ -1119,28 +1135,28 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
               </div>
 
               {/* Virtual Desktops */}
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold flex items-center gap-2">
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>Sanal Masaüstleri ({desktops.length})</span>
-                  </div>
+                  <span className="text-xs font-medium flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                    Masaüstleri
+                  </span>
                   <button
                     onClick={() => onCreateDesktop()}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--os-surface)] border border-[var(--os-border-strong)] hover:bg-[var(--os-hover)]"
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)]"
                   >
-                    + Yeni Masaüstü
+                    + Yeni
                   </button>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1.5">
                   {desktops.map((d) => (
                     <button
                       key={d.id}
                       onClick={() => onSwitchDesktop(d.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs border transition-colors ${
+                      className={`px-3 py-1 rounded-lg text-xs border transition-colors ${
                         d.id === currentDesktop.id
-                          ? 'bg-[var(--os-text)] text-[var(--os-bg)] border-transparent font-medium'
-                          : 'bg-[var(--os-surface)] border-[var(--os-border)] text-[var(--os-text-secondary)] hover:bg-[var(--os-hover)]'
+                          ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent font-medium'
+                          : 'bg-[var(--os-bg)] border-[var(--os-border)] text-[var(--os-text-secondary)]'
                       }`}
                     >
                       {d.name}
@@ -1149,60 +1165,58 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 </div>
               </div>
 
-              {/* Security / Password Change */}
+              {/* Password & Session */}
               <form
                 onSubmit={handlePasswordChange}
                 className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3"
               >
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold flex items-center gap-2">
-                    <KeyRound className="w-3.5 h-3.5" />
-                    <span>Yönetici Parolasını Değiştir ({authStatus.username || 'admin'})</span>
-                  </div>
+                <div className="text-xs font-medium flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                  <span>Parola Değiştir ({authStatus.username || 'admin'})</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-2 gap-2">
                   <input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     placeholder="Yeni parola"
-                    className="px-3 py-2 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border-strong)] text-xs focus:outline-none focus:border-[var(--os-text)]"
+                    className="px-3 py-1.5 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] text-xs focus:outline-none focus:border-[var(--os-border-strong)]"
                   />
                   <input
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Yeni parola (tekrar)"
-                    className="px-3 py-2 rounded-xl bg-[var(--os-surface)] border border-[var(--os-border-strong)] text-xs focus:outline-none focus:border-[var(--os-text)]"
+                    placeholder="Tekrar"
+                    className="px-3 py-1.5 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] text-xs focus:outline-none focus:border-[var(--os-border-strong)]"
                   />
                 </div>
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between pt-0.5">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={onLockScreen}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs bg-[var(--os-surface)] border border-[var(--os-border)] hover:bg-[var(--os-hover)]"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-[var(--os-bg)] border border-[var(--os-border)] hover:bg-[var(--os-hover)]"
                     >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>Ekranı Kilitle</span>
+                      <Lock className="w-3 h-3" />
+                      <span>Kilitle</span>
                     </button>
                     {authStatus.enabled && onLogout && (
                       <button
                         type="button"
                         onClick={onLogout}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20"
                       >
-                        <LogOut className="w-3.5 h-3.5" />
-                        <span>Çıkış Yap</span>
+                        <LogOut className="w-3 h-3" />
+                        <span>Çıkış</span>
                       </button>
                     )}
                   </div>
                   <button
                     type="submit"
                     disabled={savingPass || !newPassword}
-                    className="px-4 py-1.5 rounded-xl bg-[var(--os-text)] text-[var(--os-bg)] text-xs font-medium disabled:opacity-40"
+                    className="px-3.5 py-1.5 rounded-lg bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] text-xs font-medium disabled:opacity-40"
                   >
-                    {savingPass ? 'Kaydediliyor...' : 'Parolayı Güncelle'}
+                    Kaydet
                   </button>
                 </div>
               </form>
