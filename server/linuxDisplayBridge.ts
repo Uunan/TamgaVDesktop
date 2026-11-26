@@ -496,6 +496,14 @@ export class LinuxAppSession {
     const baseBin = path.basename(finalCmd.split(/\s+/)[0] || '');
 
     if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
+      if (!extraNewWindow) {
+        // Prevent Firefox from silently exiting with code 0 after an unclean shutdown/reboot
+        for (const stale of ['.startup-incomplete', '.parentlock', 'lock']) {
+          try {
+            fs.rmSync(path.join(profileDir, stale), { force: true });
+          } catch {}
+        }
+      }
       const userJsPath = path.join(profileDir, 'user.js');
       fs.writeFileSync(
         userJsPath,
@@ -507,6 +515,8 @@ export class LinuxAppSession {
           'user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);',
           'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
           'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
+          'user_pref("toolkit.startup.max_resumed_crashes", -1);',
+          'user_pref("browser.sessionstore.resume_from_crash", false);',
           'user_pref("browser.startup.homepage", "https://www.google.com");',
           'user_pref("browser.tabs.inTitlebar", 0);',
           'user_pref("general.smoothScroll", false);',
@@ -535,6 +545,13 @@ export class LinuxAppSession {
       this.needsNoSandbox ||
       ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'].includes(baseBin)
     ) {
+      if (!extraNewWindow) {
+        for (const stale of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+          try {
+            fs.rmSync(path.join(profileDir, stale), { force: true });
+          } catch {}
+        }
+      }
       const extraFlags: string[] = [];
       if (isRoot && !finalCmd.includes('--no-sandbox')) {
         extraFlags.push('--no-sandbox');
@@ -885,7 +902,7 @@ export class LinuxAppSession {
       try {
         fs.rmSync(this.tempDir, { recursive: true, force: true });
       } catch {}
-    }, 500);
+    }, 1200);
 
     if (this.pulseSinkName) {
       try {
