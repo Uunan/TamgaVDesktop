@@ -918,12 +918,15 @@ export class LinuxAppManager {
   public resolveIconPath(iconName: string): string | null {
     if (!iconName) return null;
     if (path.isAbsolute(iconName) && fs.existsSync(iconName)) return iconName;
-    const safe = path.basename(iconName).replace(/[^a-z0-9._-]/gi, '');
+    const safe = path
+      .basename(iconName)
+      .replace(/\.(svg|png|xpm|ico)$/i, '')
+      .replace(/[^a-z0-9._-]/gi, '');
     if (!safe) return null;
 
     const aliasMap: Record<string, string[]> = {
       chrome: ['google-chrome', 'chromium', 'chromium-browser'],
-      mousepad: ['org.xfce.mousepad', 'mousepad'],
+      mousepad: ['org.xfce.mousepad', 'mousepad', 'accessories-text-editor'],
       vscode: ['com.visualstudio.code', 'vscode', 'visual-studio-code'],
       vscodium: ['vscodium', 'codium'],
       sublime: ['sublime-text'],
@@ -935,20 +938,23 @@ export class LinuxAppManager {
       antigravity: ['antigravity', 'Antigravity'],
     };
     const candidates = Array.from(new Set([safe, ...(aliasMap[safe] || [])]));
+    const themes = ['hicolor', 'Yaru', 'Papirus', 'Adwaita', 'breeze', 'gnome'];
+    const sizes = ['256x256', '128x128', '64x64', '48x48'];
 
     for (const name of candidates) {
-      const searchPaths = [
-        `/usr/share/icons/hicolor/256x256/apps/${name}.png`,
-        `/usr/share/icons/hicolor/128x128/apps/${name}.png`,
-        `/usr/share/icons/hicolor/64x64/apps/${name}.png`,
-        `/usr/share/icons/hicolor/48x48/apps/${name}.png`,
-        `/usr/share/icons/hicolor/scalable/apps/${name}.svg`,
-        `/usr/share/pixmaps/${name}.png`,
-        `/usr/share/pixmaps/${name}.svg`,
-        `/usr/share/pixmaps/${name}.xpm`,
-      ];
-      for (const p of searchPaths) {
-        if (fs.existsSync(p)) return p;
+      for (const theme of themes) {
+        const scalableSvg = `/usr/share/icons/${theme}/scalable/apps/${name}.svg`;
+        if (fs.existsSync(scalableSvg)) return scalableSvg;
+        for (const sz of sizes) {
+          const png = `/usr/share/icons/${theme}/${sz}/apps/${name}.png`;
+          if (fs.existsSync(png)) return png;
+          const svg = `/usr/share/icons/${theme}/${sz}/apps/${name}.svg`;
+          if (fs.existsSync(svg)) return svg;
+        }
+      }
+      for (const ext of ['svg', 'png', 'xpm']) {
+        const pix = `/usr/share/pixmaps/${name}.${ext}`;
+        if (fs.existsSync(pix)) return pix;
       }
     }
     return null;

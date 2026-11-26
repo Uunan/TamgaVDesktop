@@ -20,13 +20,8 @@ import {
   X,
 } from 'lucide-react';
 import type { AptSearchResult, LinuxAppInfo, LinuxRuntimeStatus } from '../../types/os';
-import { appsApi, buildAppIconUrl } from '../../services/osBridge';
-import {
-  AntigravityLogoIcon,
-  FirefoxLogoIcon,
-  GoogleChromeLogoIcon,
-  VSCodeLogoIcon,
-} from '../icons/FileIcon';
+import { appsApi } from '../../services/osBridge';
+import { OriginalAppIcon, resolveBundledAppIconUrl } from '../icons/FileIcon';
 
 interface AppStoreWindowProps {
   runtime: LinuxRuntimeStatus | null;
@@ -59,56 +54,15 @@ const SIDEBAR_ITEMS: Array<{ id: StoreSection; label: string; icon: React.Compon
   { id: 'installed', label: 'Yüklü', icon: Check },
 ];
 
-const StoreAppBadge: React.FC<{ app: LinuxAppInfo; size?: number }> = ({ app, size = 40 }) => {
-  const [imgErr, setImgErr] = useState(false);
-  const [imgLoaded, setImgLoaded] = useState(false);
-
-  if (app.id === 'chrome') return <GoogleChromeLogoIcon size={size} />;
-  if (app.id === 'firefox') return <FirefoxLogoIcon size={size} />;
-  if (app.id === 'vscode') return <VSCodeLogoIcon size={size} />;
-  if (app.id === 'antigravity') return <AntigravityLogoIcon size={size} />;
-
-  const accent = app.accent || '#3f3f46';
-  const initials = app.name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase();
-
-  const fallbackTile = (
-    <div
-      style={{
-        width: size,
-        height: size,
-        background: `linear-gradient(135deg, ${accent}, ${accent}bb)`,
-      }}
-      className="rounded-xl flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-sm shrink-0"
-    >
-      {initials || <Package className="w-4 h-4" />}
-    </div>
-  );
-
-  if (app.installed && app.iconName && !imgErr) {
-    return (
-      <div style={{ width: size, height: size }} className="relative shrink-0">
-        {!imgLoaded && fallbackTile}
-        <img
-          src={buildAppIconUrl(app.iconName)}
-          alt={app.name}
-          onLoad={() => setImgLoaded(true)}
-          onError={() => setImgErr(true)}
-          style={{ width: size, height: size }}
-          className={`object-contain shrink-0 transition-opacity duration-150 ${
-            imgLoaded ? 'opacity-100' : 'opacity-0 absolute inset-0'
-          }`}
-        />
-      </div>
-    );
-  }
-
-  return fallbackTile;
-};
+const StoreAppBadge: React.FC<{ app: LinuxAppInfo; size?: number }> = ({ app, size = 40 }) => (
+  <OriginalAppIcon
+    appId={app.id}
+    iconName={app.iconName}
+    name={app.name}
+    accent={app.accent}
+    size={size}
+  />
+);
 
 export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
   runtime,
@@ -543,9 +497,13 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
                         data-testid={`apt-pkg-${pkg.packageName}`}
                         className="p-3 rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] flex items-center gap-3"
                       >
-                        <div className="w-9 h-9 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] flex items-center justify-center shrink-0">
-                          <Package className="w-4 h-4 text-[var(--os-text-muted)]" />
-                        </div>
+                        {resolveBundledAppIconUrl(pkg.packageName) ? (
+                          <OriginalAppIcon appId={pkg.packageName} name={pkg.packageName} size={36} />
+                        ) : (
+                          <div className="w-9 h-9 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] flex items-center justify-center shrink-0">
+                            <Package className="w-4 h-4 text-[var(--os-text-muted)]" />
+                          </div>
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <span className="text-xs font-mono font-semibold truncate">

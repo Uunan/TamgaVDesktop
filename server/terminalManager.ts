@@ -37,7 +37,8 @@ export class TerminalManager {
     desktopId: string,
     cwd: string,
     cols = 100,
-    rows = 30
+    rows = 30,
+    extraEnv?: Record<string, string>
   ): TerminalSession {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
@@ -48,6 +49,7 @@ export class TerminalManager {
       cwd: safeCwd,
       env: {
         ...process.env,
+        ...(extraEnv || {}),
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
       },

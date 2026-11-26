@@ -16,7 +16,6 @@ import {
   Minimize2,
   Monitor,
   Moon,
-  Package,
   Play,
   Plus,
   RotateCw,
@@ -39,12 +38,12 @@ import {
   type VFSNode,
   type VirtualDesktopInfo,
 } from '../../types/os';
-import { buildAppIconUrl } from '../../services/osBridge';
 import {
   AppStoreIcon,
   FileIcon,
   FirefoxLogoIcon,
   GoogleChromeLogoIcon,
+  OriginalAppIcon,
   SettingsAppIcon,
   TerminalAppIcon,
 } from '../icons/FileIcon';
@@ -285,8 +284,6 @@ const DockMagnifySlot: React.FC<{
 };
 
 const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) => {
-  const [imgFailed, setImgFailed] = useState(false);
-
   if (win.kind === 'browser' || (win.kind === 'linux-app' && win.appId === 'chrome')) {
     return <GoogleChromeLogoIcon size={size} />;
   }
@@ -299,26 +296,18 @@ const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) =
   if (win.kind === 'folder') {
     return <Folder style={{ width: size - 4, height: size - 4 }} className="shrink-0" />;
   }
-  if (win.kind === 'linux-app' && win.appId === 'firefox') {
-    return <FirefoxLogoIcon size={size} />;
+  if (win.kind === 'vscode') {
+    return <OriginalAppIcon appId="vscode" iconName="vscode" name={win.title} size={size} />;
   }
-  if (
-    (win.kind === 'linux-app' || win.kind === 'vscode') &&
-    (win.appIconName || win.kind === 'vscode') &&
-    !imgFailed
-  ) {
-    const iconName = win.appIconName || (win.kind === 'vscode' ? 'code' : '');
-    if (iconName) {
-      return (
-        <img
-          src={buildAppIconUrl(iconName)}
-          alt={win.title}
-          onError={() => setImgFailed(true)}
-          style={{ width: size, height: size }}
-          className="object-contain shrink-0 rounded-sm"
-        />
-      );
-    }
+  if (win.kind === 'linux-app') {
+    return (
+      <OriginalAppIcon
+        appId={win.appId}
+        iconName={win.appIconName || win.appId}
+        name={win.title}
+        size={size}
+      />
+    );
   }
   return <AppWindow style={{ width: size - 4, height: size - 4 }} className="shrink-0" />;
 };
@@ -774,15 +763,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                     }}
                     className="w-full p-2.5 rounded-xl hover:bg-[var(--os-hover)] flex items-center gap-3 text-left transition-colors"
                   >
-                    {app.id === 'chrome' ? (
-                      <GoogleChromeLogoIcon size={22} />
-                    ) : app.id === 'firefox' ? (
-                      <FirefoxLogoIcon size={22} />
-                    ) : app.iconName ? (
-                      <img src={buildAppIconUrl(app.iconName)} alt="" className="w-5 h-5 object-contain shrink-0" />
-                    ) : (
-                      <Package className="w-5 h-5 text-[var(--os-text-secondary)] shrink-0" />
-                    )}
+                    <OriginalAppIcon
+                      appId={app.id}
+                      iconName={app.iconName}
+                      name={app.name}
+                      accent={app.accent}
+                      size={24}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-medium text-[var(--os-text)] truncate">{app.name}</div>
                       <div className="text-[10px] text-[var(--os-text-muted)] truncate">{app.description}</div>
@@ -864,20 +851,13 @@ export const Taskbar: React.FC<TaskbarProps> = ({
                           }}
                           className="p-2 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] flex items-center gap-2 text-left transition-colors"
                         >
-                          {app.id === 'firefox' ? (
-                            <FirefoxLogoIcon size={20} />
-                          ) : app.iconName ? (
-                            <img
-                              src={buildAppIconUrl(app.iconName)}
-                              alt=""
-                              onError={(e) => {
-                                (e.currentTarget as HTMLImageElement).style.display = 'none';
-                              }}
-                              className="w-5 h-5 object-contain shrink-0"
-                            />
-                          ) : (
-                            <Package className="w-4 h-4 text-[var(--os-text-muted)] shrink-0" />
-                          )}
+                          <OriginalAppIcon
+                            appId={app.id}
+                            iconName={app.iconName}
+                            name={app.name}
+                            accent={app.accent}
+                            size={20}
+                          />
                           <span className="text-xs text-[var(--os-text)] truncate">{app.name}</span>
                         </button>
                       ))}

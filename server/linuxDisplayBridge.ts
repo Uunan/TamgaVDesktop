@@ -12,14 +12,21 @@ export interface X11StreamConfig {
   settleMs?: number;
 }
 
+export interface BridgeEndpointInfo {
+  url: string;
+  token: string;
+}
+
 export interface LinuxAppSessionOptions {
   sessionId: string;
   desktopId: string;
   appId: string;
   appName: string;
   command: string;
+  initialUrl?: string;
   needsNoSandbox?: boolean;
   desktopDataRoot: string;
+  bridgeInfo?: BridgeEndpointInfo;
   width?: number;
   height?: number;
   viewportWidth?: number;
@@ -31,6 +38,201 @@ export interface LinuxAppSessionOptions {
   dynamicDrop?: boolean;
   settleMs?: number;
   enableAudio?: boolean;
+}
+
+const TAMGA_OPEN_URL_PYTHON = `#!/usr/bin/env python3
+import json
+import os
+import re
+import sys
+import urllib.request
+
+REAL_XDG_OPEN = '/usr/bin/xdg-open'
+SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*:')
+
+def fallback_xdg(args):
+    if os.path.exists(REAL_XDG_OPEN):
+        os.execv(REAL_XDG_OPEN, [REAL_XDG_OPEN] + args)
+    sys.exit(0)
+
+def load_bridge_cfg():
+    url = os.environ.get('TAMGA_BRIDGE_URL', '')
+    token = os.environ.get('TAMGA_BRIDGE_TOKEN', '')
+    desktop_id = os.environ.get('TAMGA_DESKTOP_ID', '')
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cfg_path = os.path.normpath(os.path.join(here, '..', 'share', 'tamga-bridge.json'))
+        if os.path.exists(cfg_path):
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            url = data.get('bridgeUrl') or url
+            token = data.get('token') or token
+            desktop_id = desktop_id or data.get('desktopId') or 'main'
+    except Exception:
+        pass
+    return url, token, desktop_id or 'main'
+
+def main():
+    args = sys.argv[1:]
+    if not args or '--help' in args or '--version' in args or '--manual' in args:
+        fallback_xdg(args)
+
+    target = None
+    for a in args:
+        if not a.startswith('-'):
+            target = a
+            break
+
+    if not target or not SCHEME_RE.match(target) or target.lower().startswith('file:'):
+        fallback_xdg(args)
+
+    bridge_url, token, desktop_id = load_bridge_cfg()
+    if not bridge_url or not token:
+        fallback_xdg(args)
+
+    payload = json.dumps({
+        'token': token,
+        'desktopId': desktop_id,
+        'sessionId': os.environ.get('TAMGA_SESSION_ID', ''),
+        'appId': os.environ.get('TAMGA_APP_ID', ''),
+        'url': target,
+    }).encode('utf-8')
+
+    try:
+        req = urllib.request.Request(
+            bridge_url,
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+`;
+
+const TAMGA_GIO_PYTHON = `#!/usr/bin/env python3
+import os
+import re
+import sys
+
+REAL_GIO = '/usr/bin/gio'
+SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*:')
+
+args = sys.argv[1:]
+if len(args) >= 2 and args[0] == 'open':
+    target = None
+    for a in args[1:]:
+        if not a.startswith('-'):
+            target = a
+            break
+    if target and SCHEME_RE.match(target) and not target.lower().startswith('file:'):
+        here = os.path.dirname(os.path.abspath(__file__))
+        opener = os.path.join(here, 'tamga-open-url')
+        os.execv(opener, [opener, target])
+
+if os.path.exists(REAL_GIO):
+    os.execv(REAL_GIO, [REAL_GIO] + args)
+sys.exit(0)
+`;
+
+export function ensureDesktopUrlHandlerShims(
+  desktopDataRoot: string,
+  desktopId: string,
+  bridge?: BridgeEndpointInfo
+): { binDir: string; xdgConfigHome: string; xdgDataHome: string } {
+  const localDir = path.join(desktopDataRoot, '.local');
+  const binDir = path.join(localDir, 'bin');
+  const xdgDataHome = path.join(localDir, 'share');
+  const appsDir = path.join(xdgDataHome, 'applications');
+  const xdgConfigHome = path.join(desktopDataRoot, '.config');
+
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(appsDir, { recursive: true });
+    fs.mkdirSync(xdgConfigHome, { recursive: true });
+
+    if (bridge?.url && bridge?.token) {
+      fs.writeFileSync(
+        path.join(xdgDataHome, 'tamga-bridge.json'),
+        JSON.stringify(
+          {
+            bridgeUrl: bridge.url,
+            token: bridge.token,
+            desktopId,
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      );
+    }
+
+    const writeExec = (filePath: string, content: string) => {
+      fs.writeFileSync(filePath, content, { encoding: 'utf-8', mode: 0o755 });
+      fs.chmodSync(filePath, 0o755);
+    };
+
+    const openUrlBin = path.join(binDir, 'tamga-open-url');
+    writeExec(openUrlBin, TAMGA_OPEN_URL_PYTHON);
+    writeExec(path.join(binDir, 'xdg-open'), TAMGA_OPEN_URL_PYTHON);
+    writeExec(path.join(binDir, 'gio'), TAMGA_GIO_PYTHON);
+
+    const browserForwarder = `#!/bin/sh\nexec "${openUrlBin}" "$@"\n`;
+    for (const alias of ['x-www-browser', 'sensible-browser', 'gnome-www-browser']) {
+      writeExec(path.join(binDir, alias), browserForwarder);
+    }
+
+    const schemes = [
+      'x-scheme-handler/http',
+      'x-scheme-handler/https',
+      'text/html',
+      'x-scheme-handler/antigravity',
+      'x-scheme-handler/vscode',
+      'x-scheme-handler/vscode-insiders',
+      'x-scheme-handler/vscodium',
+      'x-scheme-handler/cursor',
+      'x-scheme-handler/obsidian',
+      'x-scheme-handler/discord',
+      'x-scheme-handler/tg',
+    ];
+
+    fs.writeFileSync(
+      path.join(appsDir, 'tamga-url-handler.desktop'),
+      [
+        '[Desktop Entry]',
+        'Version=1.0',
+        'Type=Application',
+        'Name=Google Chrome (TamgaVDesktop)',
+        `Exec="${openUrlBin}" %u`,
+        'StartupNotify=false',
+        'Terminal=false',
+        'NoDisplay=true',
+        `MimeType=${schemes.join(';')};`,
+        '',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    fs.writeFileSync(
+      path.join(xdgConfigHome, 'mimeapps.list'),
+      [
+        '[Default Applications]',
+        ...schemes.map((s) => `${s}=tamga-url-handler.desktop`),
+        '',
+        '[Added Associations]',
+        ...schemes.map((s) => `${s}=tamga-url-handler.desktop;`),
+        '',
+      ].join('\n'),
+      'utf-8'
+    );
+  } catch {}
+
+  return { binDir, xdgConfigHome, xdgDataHome };
 }
 
 export interface LinuxAppSubscriber {
@@ -150,6 +352,8 @@ export class LinuxAppSession {
   private enableAudio: boolean;
   private desktopDataRoot: string;
   private command: string;
+  private initialUrl: string;
+  private bridgeInfo?: BridgeEndpointInfo;
   private needsNoSandbox: boolean;
   private tempDir: string;
   private baseEnv: NodeJS.ProcessEnv = {};
@@ -173,6 +377,8 @@ export class LinuxAppSession {
     this.appName = opts.appName;
     this.title = opts.appName;
     this.command = opts.command;
+    this.initialUrl = opts.initialUrl ? opts.initialUrl.trim() : '';
+    this.bridgeInfo = opts.bridgeInfo;
     this.needsNoSandbox = Boolean(opts.needsNoSandbox);
     this.desktopDataRoot = opts.desktopDataRoot;
     this.displayNum = displayNum;
@@ -286,8 +492,30 @@ export class LinuxAppSession {
       await new Promise((r) => setTimeout(r, 60));
     }
 
+    const { binDir, xdgConfigHome, xdgDataHome } = ensureDesktopUrlHandlerShims(
+      this.desktopDataRoot,
+      this.desktopId,
+      this.bridgeInfo
+    );
+    const sysPath =
+      process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
     const baseEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      PATH: `${binDir}:${sysPath}`,
+      BROWSER: path.join(binDir, 'tamga-open-url'),
+      XDG_CONFIG_HOME: xdgConfigHome,
+      XDG_DATA_HOME: xdgDataHome,
+      XDG_DATA_DIRS: `${xdgDataHome}:/usr/local/share:/usr/share`,
+      TAMGA_DESKTOP_ID: this.desktopId,
+      TAMGA_SESSION_ID: this.sessionId,
+      TAMGA_APP_ID: this.appId,
+      ...(this.bridgeInfo
+        ? {
+            TAMGA_BRIDGE_URL: this.bridgeInfo.url,
+            TAMGA_BRIDGE_TOKEN: this.bridgeInfo.token,
+          }
+        : {}),
       DISPLAY: this.displayStr,
       XDG_RUNTIME_DIR: this.tempDir,
       GDK_SCALE: '1',
@@ -688,9 +916,10 @@ export class LinuxAppSession {
         'utf-8'
       );
       // Omit --no-remote and explicit --width/--height so Firefox picks its own geometry and supports extra windows
+      const safeInitUrl = !extraNewWindow && this.initialUrl ? ` '${this.initialUrl.replace(/'/g, "'\\''")}'` : '';
       finalCmd = extraNewWindow
         ? `${finalCmd} -profile "${profileDir}" --new-window about:home`
-        : `${finalCmd} -profile "${profileDir}"`;
+        : `${finalCmd} -profile "${profileDir}"${safeInitUrl}`;
     } else if (
       this.needsNoSandbox ||
       [
@@ -720,15 +949,22 @@ export class LinuxAppSession {
       ].includes(baseBin);
 
       if (!extraNewWindow) {
-        for (const stale of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-          try {
-            fs.rmSync(path.join(profileDir, stale), { force: true });
-          } catch {}
+        const lockDirs = [profileDir];
+        if (baseBin === 'antigravity') {
+          lockDirs.push(path.join(xdgConfigHome, 'Antigravity'));
+        }
+        for (const dir of lockDirs) {
+          for (const stale of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+            try {
+              fs.rmSync(path.join(dir, stale), { force: true });
+            } catch {}
+          }
         }
       }
 
       if (isChromiumBrowser) {
-        // Ensure Chrome hides duplicate inner min/max/close buttons & routes Downloads straight to VFS/Downloads
+        // Ensure Chrome hides duplicate inner min/max/close buttons, routes Downloads straight to VFS/Downloads,
+        // and allows OAuth custom scheme handoffs (antigravity://, vscode://, obsidian://, discord://, tg://)
         try {
           const defaultDir = path.join(profileDir, 'Default');
           fs.mkdirSync(defaultDir, { recursive: true });
@@ -762,6 +998,29 @@ export class LinuxAppSession {
           prefs.selectfile = {
             ...(prefs.selectfile || {}),
             last_directory: desktopFilesDir,
+          };
+          prefs.protocol_handler = {
+            ...(prefs.protocol_handler || {}),
+            excluded_schemes: {
+              ...((prefs.protocol_handler && prefs.protocol_handler.excluded_schemes) || {}),
+              antigravity: false,
+              vscode: false,
+              'vscode-insiders': false,
+              vscodium: false,
+              cursor: false,
+              obsidian: false,
+              discord: false,
+              tg: false,
+            },
+            allowed_origin_protocol_pairs: {
+              ...((prefs.protocol_handler && prefs.protocol_handler.allowed_origin_protocol_pairs) || {}),
+              'https://antigravity.google': { antigravity: true },
+              'https://accounts.google.com': { antigravity: true },
+              'https://vscode.dev': { vscode: true },
+              'https://github.com': { vscode: true },
+              'https://obsidian.md': { obsidian: true },
+              'https://discord.com': { discord: true },
+            },
           };
           fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf-8');
         } catch {}
@@ -798,6 +1057,9 @@ export class LinuxAppSession {
       }
       if (extraNewWindow && supportsUserDataDir && !finalCmd.includes('--new-window')) {
         extraFlags.push('--new-window');
+      }
+      if (!extraNewWindow && isChromiumBrowser && this.initialUrl) {
+        extraFlags.push(`'${this.initialUrl.replace(/'/g, "'\\''")}'`);
       }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
     } else if (extraNewWindow && baseBin === 'gimp') {
@@ -872,6 +1134,85 @@ export class LinuxAppSession {
       stdio: 'ignore',
     });
     child.unref();
+  }
+
+  public openUrlInBrowser(url: string): void {
+    if (this.closed || !url) return;
+    const { xdgConfigHome, desktopFilesDir, downloadsDir } = this.prepareDesktopXdgConfig();
+    const safeUrl = `'${url.replace(/'/g, "'\\''")}'`;
+    const baseBin = path.basename(this.command.split(/\s+/)[0] || '');
+    const profileDir = this.getProfileDir();
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+    let cmd = `${this.command} ${safeUrl}`;
+    if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
+      cmd = `${this.command} -profile "${profileDir}" --new-tab ${safeUrl}`;
+    } else if (
+      [
+        'google-chrome',
+        'google-chrome-stable',
+        'chromium',
+        'chromium-browser',
+        'brave-browser',
+        'microsoft-edge',
+        'microsoft-edge-stable',
+      ].includes(baseBin)
+    ) {
+      cmd = `${this.command} ${isRoot ? '--no-sandbox' : ''} --test-type --no-first-run --no-default-browser-check --user-data-dir="${profileDir}" --disable-gpu --disable-dev-shm-usage ${safeUrl}`;
+    }
+
+    const child = spawn('/bin/bash', ['-c', cmd], {
+      cwd: desktopFilesDir,
+      detached: true,
+      env: {
+        ...this.baseEnv,
+        HOME: this.baseEnv.HOME || os.homedir(),
+        XDG_CONFIG_HOME: xdgConfigHome,
+        XDG_DOWNLOAD_DIR: downloadsDir,
+        DONT_PROMPT_WSL_INSTALL: '1',
+      },
+      stdio: 'ignore',
+    });
+    child.unref();
+    setTimeout(() => this.requestRefresh('main'), 250).unref();
+  }
+
+  public deliverUriArgument(uri: string): void {
+    if (this.closed || !uri) return;
+    const { xdgConfigHome, desktopFilesDir, downloadsDir } = this.prepareDesktopXdgConfig();
+    const safeUri = `'${uri.replace(/'/g, "'\\''")}'`;
+    const baseBin = path.basename(this.command.split(/\s+/)[0] || '');
+    const profileDir = this.getProfileDir();
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+    const isElectronApp =
+      this.needsNoSandbox || ['antigravity', 'code', 'codium', 'obsidian', 'discord'].includes(baseBin);
+
+    const flags: string[] = [];
+    if (isElectronApp && isRoot) {
+      flags.push('--no-sandbox');
+    }
+    if (baseBin === 'code' || baseBin === 'codium') {
+      flags.push(`--user-data-dir="${profileDir}"`, '--open-url');
+    }
+    if (isElectronApp) {
+      flags.push('--disable-gpu', '--disable-dev-shm-usage');
+    }
+
+    const cmd = `${this.command} ${flags.join(' ')} ${safeUri}`.replace(/\s+/g, ' ').trim();
+    const child = spawn('/bin/bash', ['-c', cmd], {
+      cwd: desktopFilesDir,
+      detached: true,
+      env: {
+        ...this.baseEnv,
+        HOME: this.baseEnv.HOME || os.homedir(),
+        XDG_CONFIG_HOME: xdgConfigHome,
+        XDG_DOWNLOAD_DIR: downloadsDir,
+        DONT_PROMPT_WSL_INSTALL: '1',
+      },
+      stdio: 'ignore',
+    });
+    child.unref();
+    setTimeout(() => this.requestRefresh('main'), 250).unref();
   }
 
   public openFiles(realPaths: string[]): void {
@@ -1248,6 +1589,15 @@ export class LinuxAppSession {
 export class LinuxDisplayBridge {
   private sessions = new Map<string, LinuxAppSession>();
   private usedDisplays = new Set<number>();
+  private bridgeInfo?: BridgeEndpointInfo;
+
+  public setBridgeEndpoint(url: string, token: string): void {
+    this.bridgeInfo = { url, token };
+  }
+
+  public getBridgeEndpoint(): BridgeEndpointInfo | undefined {
+    return this.bridgeInfo;
+  }
 
   public findActiveProfileSession(desktopId: string, appId: string, command: string): LinuxAppSession | undefined {
     const baseBin = path.basename(command.split(/\s+/)[0] || '');
@@ -1262,30 +1612,85 @@ export class LinuxDisplayBridge {
     return undefined;
   }
 
+  public findBrowserSession(desktopId: string, preferredAppId = 'chrome'): LinuxAppSession | undefined {
+    const browserIds =
+      preferredAppId === 'chrome'
+        ? ['chrome', 'google-chrome', 'google-chrome-stable', 'brave', 'firefox']
+        : [preferredAppId, 'chrome', 'firefox'];
+    for (const candidateId of browserIds) {
+      for (const s of this.sessions.values()) {
+        if (s.desktopId === desktopId && s.appId === candidateId) {
+          return s;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  public deliverCustomSchemeUri(desktopId: string, uri: string): LinuxAppSession | undefined {
+    const schemeMatch = uri.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+    if (!schemeMatch) return undefined;
+    const scheme = schemeMatch[1].toLowerCase();
+    const schemeMap: Record<string, string[]> = {
+      antigravity: ['antigravity'],
+      vscode: ['vscode', 'code'],
+      'vscode-insiders': ['vscode', 'code'],
+      vscodium: ['vscodium', 'codium'],
+      cursor: ['cursor'],
+      obsidian: ['obsidian'],
+      discord: ['discord'],
+      tg: ['telegram', 'telegram-desktop'],
+    };
+    const targetIds = new Set(schemeMap[scheme] || [scheme]);
+    const browserSkip = new Set(['chrome', 'google-chrome', 'google-chrome-stable', 'firefox', 'brave']);
+
+    for (const s of this.sessions.values()) {
+      if (s.desktopId !== desktopId) continue;
+      const appLower = s.appId.toLowerCase();
+      if (browserSkip.has(appLower)) continue;
+      if (targetIds.has(appLower)) {
+        s.deliverUriArgument(uri);
+        return s;
+      }
+    }
+    return undefined;
+  }
+
   public async launchApp(
     opts: LinuxAppSessionOptions
   ): Promise<{ session: LinuxAppSession; openedAsExtraWindow: boolean }> {
     const existingById = this.sessions.get(opts.sessionId);
     if (existingById) return { session: existingById, openedAsExtraWindow: false };
 
-    // Avoid profile-lock crash (Firefox/Chrome): spawn extra window inside the existing X11 session!
+    // Avoid profile-lock crash (Firefox/Chrome): open tab if initialUrl provided, else spawn extra window!
     const existingProfileSession = this.findActiveProfileSession(
       opts.desktopId,
       opts.appId,
       opts.command
     );
     if (existingProfileSession) {
-      existingProfileSession.spawnExtraWindow();
-      return { session: existingProfileSession, openedAsExtraWindow: true };
+      if (opts.initialUrl) {
+        existingProfileSession.openUrlInBrowser(opts.initialUrl);
+      } else {
+        existingProfileSession.spawnExtraWindow();
+      }
+      return { session: existingProfileSession, openedAsExtraWindow: !opts.initialUrl };
     }
 
     const displayNum = findFreeDisplay(this.usedDisplays);
     this.usedDisplays.add(displayNum);
 
-    const session = new LinuxAppSession(opts, displayNum, () => {
-      this.sessions.delete(opts.sessionId);
-      this.usedDisplays.delete(displayNum);
-    });
+    const session = new LinuxAppSession(
+      {
+        ...opts,
+        bridgeInfo: opts.bridgeInfo || this.bridgeInfo,
+      },
+      displayNum,
+      () => {
+        this.sessions.delete(opts.sessionId);
+        this.usedDisplays.delete(displayNum);
+      }
+    );
     this.sessions.set(opts.sessionId, session);
     await session.start();
     return { session, openedAsExtraWindow: false };

@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -21,10 +22,10 @@ import { hashPassword, loadConfig, saveConfig, type TamgaConfig } from './config
 import { AuthManager } from './authManager';
 import { TerminalManager } from './terminalManager';
 import { LinuxAppManager } from './linuxAppManager';
-import { LinuxDisplayBridge } from './linuxDisplayBridge';
+import { LinuxDisplayBridge, ensureDesktopUrlHandlerShims } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.7.3';
+export const TAMGA_VERSION = '1.8.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -121,6 +122,12 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   const terminalManager = new TerminalManager();
   const linuxAppManager = new LinuxAppManager();
   const linuxDisplayBridge = new LinuxDisplayBridge();
+  const internalBridgeToken = crypto.randomBytes(24).toString('hex');
+  const bridgeHost =
+    config.host === '0.0.0.0' || config.host === '::' || !config.host ? '127.0.0.1' : config.host;
+  const internalBridgeUrl = `http://${bridgeHost}:${config.port}/api/internal/open-url`;
+  linuxDisplayBridge.setBridgeEndpoint(internalBridgeUrl, internalBridgeToken);
+  let broadcastToDesktop: (desktopId: string, payload: Record<string, unknown>) => void = () => {};
   const bootStartedAt = Date.now();
 
   const vfsWatchers = new Map<string, fs.FSWatcher[]>();
@@ -137,6 +144,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           : undefined;
       vfs = new VFSManager(desktopInfo.id, hostOverride);
       vfsInstances.set(desktopInfo.id, vfs);
+      ensureDesktopUrlHandlerShims(
+        vfs.getInstanceRoot(),
+        desktopInfo.id,
+        linuxDisplayBridge.getBridgeEndpoint()
+      );
 
       // Watch Desktop & Downloads so Chrome/Firefox downloads and GIMP exports appear live immediately
       const targetVfs = vfs;
@@ -270,6 +282,139 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     res.json({ ok: true });
   });
 
+  // Loopback-only internal bridge endpoint invoked by xdg-open / gio / $BROWSER inside X11 apps & PTYs
+  app.post('/api/internal/open-url', async (req, res) => {
+    try {
+      const remoteIp = req.socket.remoteAddress || '';
+      const isLoopback =
+        remoteIp === '127.0.0.1' ||
+        remoteIp === '::1' ||
+        remoteIp === '::ffff:127.0.0.1';
+      if (!isLoopback) {
+        res.status(403).json({ error: 'Yalnızca yerel geri döngü bağlantıları kabul edilir.' });
+        return;
+      }
+
+      const providedToken = String(req.body?.token || '');
+      const aBuf = Buffer.from(providedToken);
+      const bBuf = Buffer.from(internalBridgeToken);
+      if (aBuf.length !== bBuf.length || !crypto.timingSafeEqual(aBuf, bBuf)) {
+        res.status(403).json({ error: 'Geçersiz köprü anahtarı.' });
+        return;
+      }
+
+      const rawUrl = String(req.body?.url || '').trim();
+      if (
+        !rawUrl ||
+        rawUrl.length > 8192 ||
+        !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rawUrl) ||
+        /^(javascript|data|vbscript|file):/i.test(rawUrl)
+      ) {
+        res.status(400).json({ error: 'Geçersiz bağlantı.' });
+        return;
+      }
+
+      const desktopId = sanitizeDesktopId(String(req.body?.desktopId || 'main'));
+      const isHttp = /^https?:\/\//i.test(rawUrl);
+
+      if (isHttp) {
+        const { vfs, browserSession } = getDesktopContext(desktopId);
+        const runtime = linuxAppManager.getRuntimeStatus();
+
+        if (runtime.guiReady) {
+          const existingBrowser = linuxDisplayBridge.findBrowserSession(desktopId, 'chrome');
+          if (existingBrowser) {
+            existingBrowser.openUrlInBrowser(rawUrl);
+            broadcastToDesktop(desktopId, {
+              type: 'external_browser_opened',
+              sessionId: existingBrowser.sessionId,
+              appId: existingBrowser.appId,
+              appName: existingBrowser.appName,
+              title: existingBrowser.title,
+              width: existingBrowser.width,
+              height: existingBrowser.height + 42,
+              isExisting: true,
+              url: rawUrl,
+            });
+            res.json({ ok: true, mode: 'existing-linux-browser', sessionId: existingBrowser.sessionId });
+            return;
+          }
+
+          const targetBrowser = [
+            linuxAppManager.getApp('chrome'),
+            linuxAppManager.getApp('brave'),
+            linuxAppManager.getApp('firefox'),
+          ].find((b) => b?.installed);
+
+          if (targetBrowser) {
+            const streamPrefs = vfs.getMeta().preferences.stream;
+            const sessionId = `app-${targetBrowser.id}-${Date.now()}-${Math.random()
+              .toString(36)
+              .slice(2, 6)}`;
+            const { session } = await linuxDisplayBridge.launchApp({
+              sessionId,
+              desktopId,
+              appId: targetBrowser.id,
+              appName: targetBrowser.name,
+              command: targetBrowser.command,
+              initialUrl: rawUrl,
+              needsNoSandbox: Boolean(targetBrowser.needsNoSandbox),
+              desktopDataRoot: vfs.getInstanceRoot(),
+              width: 1160,
+              height: 688,
+              viewportWidth: 1400,
+              viewportHeight: 820,
+              fps: streamPrefs?.x11Fps ?? config.linuxApps.fps,
+              quality: config.linuxApps.quality,
+              maxQuality: streamPrefs?.x11MaxQuality ?? 85,
+              motionQuality: streamPrefs?.x11MotionQuality ?? 58,
+              dynamicDrop: streamPrefs?.dynamicQualityDrop ?? true,
+              settleMs: streamPrefs?.settleDelayMs ?? 300,
+              enableAudio: (streamPrefs?.audioEnabled ?? config.linuxApps.audio) && runtime.hasAudio,
+            });
+            broadcastToDesktop(desktopId, {
+              type: 'external_browser_opened',
+              sessionId: session.sessionId,
+              appId: session.appId,
+              appName: session.appName,
+              title: session.title,
+              width: 1160,
+              height: 730,
+              isExisting: false,
+              url: rawUrl,
+            });
+            res.json({ ok: true, mode: 'launched-linux-browser', sessionId: session.sessionId });
+            return;
+          }
+        }
+
+        await browserSession.createTab(rawUrl);
+        broadcastToDesktop(desktopId, {
+          type: 'external_chromium_opened',
+          url: rawUrl,
+        });
+        res.json({ ok: true, mode: 'playwright-chromium' });
+        return;
+      }
+
+      // Non-HTTP custom OAuth/deep-link URI (e.g. antigravity://..., vscode://..., obsidian://..., discord://...)
+      const deliveredSession = linuxDisplayBridge.deliverCustomSchemeUri(desktopId, rawUrl);
+      if (deliveredSession) {
+        broadcastToDesktop(desktopId, {
+          type: 'focus_linux_session',
+          sessionId: deliveredSession.sessionId,
+          appId: deliveredSession.appId,
+        });
+        res.json({ ok: true, mode: 'custom-scheme-delivered', sessionId: deliveredSession.sessionId });
+        return;
+      }
+
+      res.json({ ok: false, reason: 'no_matching_session' });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // Protect all subsequent /api/* routes when auth is enabled
   app.use(authManager.requireAuth);
 
@@ -387,6 +532,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         appId,
         appName,
         command,
+        initialUrl: req.body?.initialUrl ? String(req.body.initialUrl) : undefined,
         needsNoSandbox: Boolean(req.body?.needsNoSandbox ?? found?.needsNoSandbox),
         desktopDataRoot: vfs.getInstanceRoot(),
         width: Number(req.body?.width) || 720,
@@ -978,6 +1124,14 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   // 1. Desktop Control + VFS + Fallback Playwright Chromium WS
   type TrackedSocket = WebSocket & { desktopId?: string };
 
+  broadcastToDesktop = (targetDesktopId: string, payload: Record<string, unknown>) => {
+    for (const client of desktopWss.clients as Set<TrackedSocket>) {
+      if ((client.desktopId || 'main') === targetDesktopId) {
+        sendJson(client, payload);
+      }
+    }
+  };
+
   desktopWss.on('connection', (ws: TrackedSocket, req) => {
     const reqUrl = new URL(req.url || '/ws', 'http://localhost');
     const desktopId = sanitizeDesktopId(reqUrl.searchParams.get('desktop') || 'main');
@@ -1094,7 +1248,27 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     } catch {
       // fallback to /Desktop
     }
-    const session = terminalManager.createSession(sessionId, desktopId, startDir, cols, rows);
+    const bridgeEndpoint = linuxDisplayBridge.getBridgeEndpoint();
+    const { binDir } = ensureDesktopUrlHandlerShims(
+      vfs.getInstanceRoot(),
+      desktopId,
+      bridgeEndpoint
+    );
+    const sysPath =
+      process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+    const session = terminalManager.createSession(sessionId, desktopId, startDir, cols, rows, {
+      PATH: `${binDir}:${sysPath}`,
+      BROWSER: path.join(binDir, 'tamga-open-url'),
+      TAMGA_DESKTOP_ID: desktopId,
+      TAMGA_SESSION_ID: sessionId,
+      TAMGA_APP_ID: 'terminal',
+      ...(bridgeEndpoint
+        ? {
+            TAMGA_BRIDGE_URL: bridgeEndpoint.url,
+            TAMGA_BRIDGE_TOKEN: bridgeEndpoint.token,
+          }
+        : {}),
+    });
 
     const listener = (ev: { type: 'output' | 'exit'; data?: string; code?: number }) => {
       sendJson(ws, ev);

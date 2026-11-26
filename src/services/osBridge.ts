@@ -95,6 +95,7 @@ export const appsApi = {
     appId?: string;
     command?: string;
     appName?: string;
+    initialUrl?: string;
     needsNoSandbox?: boolean;
     width?: number;
     height?: number;

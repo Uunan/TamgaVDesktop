@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { VFSNode } from '../../types/os';
-import { buildRawFileUrl } from '../../services/osBridge';
+import { buildAppIconUrl, buildRawFileUrl } from '../../services/osBridge';
 
 export function ChromiumLogoIcon({ size = 48 }: { size?: number }) {
   return (
@@ -35,32 +35,13 @@ export function ChromiumLogoIcon({ size = 48 }: { size?: number }) {
 
 export function GoogleChromeLogoIcon({ size = 48 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm">
-      <defs>
-        <linearGradient id="gc-red" x1="10" y1="6" x2="54" y2="24" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#EA4335" />
-          <stop offset="1" stopColor="#D93025" />
-        </linearGradient>
-        <linearGradient id="gc-yellow" x1="36" y1="22" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#FBBC04" />
-          <stop offset="1" stopColor="#F9AB00" />
-        </linearGradient>
-        <linearGradient id="gc-green" x1="6" y1="22" x2="34" y2="58" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#34A853" />
-          <stop offset="1" stopColor="#1E8E3E" />
-        </linearGradient>
-        <radialGradient id="gc-core" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(32 32) scale(12)">
-          <stop stopColor="#4285F4" />
-          <stop offset="1" stopColor="#1A73E8" />
-        </radialGradient>
-      </defs>
-      <circle cx="32" cy="32" r="28" fill="url(#gc-green)" />
-      <path d="M32 4C44.2 4 54.6 11.8 58.4 22.7H32C25.5 22.7 20 26.8 18 32.6L9.5 17.9C14.5 9.5 22.7 4 32 4Z" fill="url(#gc-red)" />
-      <path d="M58.4 22.7C59.4 25.6 60 28.7 60 32C60 47.5 47.5 60 32 60L29.5 59.8L41.8 38.5C43.2 36.6 44 34.4 44 32C44 27.6 41.6 23.8 38 21.8L58.4 22.7Z" fill="url(#gc-yellow)" />
-      <circle cx="32" cy="32" r="13.5" fill="#FFFFFF" />
-      <circle cx="32" cy="32" r="10.4" fill="url(#gc-core)" />
-      <circle cx="29" cy="29" r="2.8" fill="white" fillOpacity="0.4" />
-    </svg>
+    <img
+      src="/app-icons/chrome.svg"
+      alt="Google Chrome"
+      style={{ width: size, height: size }}
+      className="object-contain shrink-0 drop-shadow-sm select-none"
+      draggable={false}
+    />
   );
 }
 
@@ -532,36 +513,15 @@ export const FileIcon: React.FC<FileIconProps> = ({ node, size = 48 }) => {
   );
 };
 
-export const FirefoxLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => {
-  const uid = React.useId().replace(/:/g, '');
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-md">
-      <defs>
-        <linearGradient id={`${uid}-ff-bg`} x1="12" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#FF980E" />
-          <stop offset="48%" stopColor="#FF4F5E" />
-          <stop offset="100%" stopColor="#9059FF" />
-        </linearGradient>
-        <radialGradient id={`${uid}-ff-core`} cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#4F46E5" />
-          <stop offset="100%" stopColor="#1E1B4B" />
-        </radialGradient>
-      </defs>
-      <circle cx="32" cy="32" r="26" fill={`url(#${uid}-ff-bg)`} />
-      <circle cx="32" cy="33" r="14" fill={`url(#${uid}-ff-core)`} />
-      <path
-        d="M46 18C52 24 53 34 49 42C44 51 32 55 22 50C14 46 10 36 13 26C15 19 21 15 27 14C22 19 22 26 26 30C29 33 35 33 39 29C43 26 44 22 46 18Z"
-        fill="#FFE27A"
-        fillOpacity="0.28"
-      />
-      <path
-        d="M19 20C23 13 33 10 42 13C49 16 54 24 53 33C51 25 45 21 38 22C33 23 29 26 27 30C24 26 22 23 19 20Z"
-        fill="#FFB84D"
-        fillOpacity="0.85"
-      />
-    </svg>
-  );
-};
+export const FirefoxLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
+  <img
+    src="/app-icons/firefox.svg"
+    alt="Mozilla Firefox"
+    style={{ width: size, height: size }}
+    className="object-contain shrink-0 drop-shadow-sm select-none"
+    draggable={false}
+  />
+);
 
 export const TerminalAppIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
   <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-md">
@@ -593,43 +553,209 @@ export const SettingsAppIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
   </svg>
 );
 
-export const VSCodeLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => {
-  const uid = React.useId().replace(/:/g, '');
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm shrink-0">
-      <defs>
-        <linearGradient id={`${uid}-vsc-bg`} x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#29B6F6" />
-          <stop offset="100%" stopColor="#0065A9" />
-        </linearGradient>
-      </defs>
-      <rect x="6" y="6" width="52" height="52" rx="14" fill={`url(#${uid}-vsc-bg)`} />
-      <path
-        d="M44.5 16L25 34.5L17.2 28.4L14 30.2V33.8L21.5 39.2L14 44.6V48.2L17.2 50L25 43.9L44.5 48L50 45.2V18.8L44.5 16ZM44 24.4V39.6L32.8 32L44 24.4Z"
-        fill="#FFFFFF"
+export const VSCodeLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
+  <img
+    src="/app-icons/vscode.svg"
+    alt="Visual Studio Code"
+    style={{ width: size, height: size }}
+    className="object-contain shrink-0 drop-shadow-sm select-none"
+    draggable={false}
+  />
+);
+
+export const AntigravityLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => (
+  <img
+    src="/app-icons/antigravity.svg"
+    alt="Google Antigravity"
+    style={{ width: size, height: size }}
+    className="object-contain shrink-0 drop-shadow-sm select-none"
+    draggable={false}
+  />
+);
+
+const BUNDLED_APP_ICON_MAP: Record<string, string> = {
+  // Browsers
+  chrome: 'chrome',
+  'google-chrome': 'chrome',
+  'google-chrome-stable': 'chrome',
+  firefox: 'firefox',
+  'firefox-esr': 'firefox',
+  'org.mozilla.firefox': 'firefox',
+  brave: 'brave',
+  'brave-browser': 'brave',
+  'com.brave.browser': 'brave',
+
+  // AI & IDEs / Development
+  antigravity: 'antigravity',
+  'google-antigravity': 'antigravity',
+  vscode: 'vscode',
+  code: 'vscode',
+  'visual-studio-code': 'vscode',
+  'com.visualstudio.code': 'vscode',
+  vscodium: 'vscodium',
+  codium: 'vscodium',
+  'com.vscodium.codium': 'vscodium',
+  sublime: 'sublime',
+  'sublime-text': 'sublime',
+  sublime_text: 'sublime',
+  subl: 'sublime',
+  geany: 'geany',
+  filezilla: 'filezilla',
+  'org.filezilla-project.filezilla': 'filezilla',
+  sqlitebrowser: 'sqlitebrowser',
+  'org.sqlitebrowser.sqlitebrowser': 'sqlitebrowser',
+  meld: 'meld',
+  'org.gnome.meld': 'meld',
+
+  // Design & Media
+  gimp: 'gimp',
+  'gimp-2.10': 'gimp',
+  'gimp-3.0': 'gimp',
+  'org.gimp.gimp': 'gimp',
+  inkscape: 'inkscape',
+  'org.inkscape.inkscape': 'inkscape',
+  krita: 'krita',
+  'org.kde.krita': 'krita',
+  blender: 'blender',
+  'org.blender.blender': 'blender',
+  vlc: 'vlc',
+  'org.videolan.vlc': 'vlc',
+  'obs-studio': 'obs-studio',
+  obs: 'obs-studio',
+  'com.obsproject.studio': 'obs-studio',
+  audacity: 'audacity',
+  'org.audacityteam.audacity': 'audacity',
+  kdenlive: 'kdenlive',
+  'org.kde.kdenlive': 'kdenlive',
+  shotcut: 'shotcut',
+  'org.shotcut.shotcut': 'shotcut',
+  handbrake: 'handbrake',
+  ghb: 'handbrake',
+  'fr.handbrake.ghb': 'handbrake',
+  'hb-icon': 'handbrake',
+
+  // Office & Notes
+  libreoffice: 'libreoffice',
+  soffice: 'libreoffice',
+  'libreoffice-startcenter': 'libreoffice',
+  'libreoffice-writer': 'libreoffice',
+  'libreoffice-calc': 'libreoffice',
+  'libreoffice-impress': 'libreoffice',
+  'libreoffice-draw': 'libreoffice',
+  'libreoffice-math': 'libreoffice',
+  'libreoffice-base': 'libreoffice',
+  obsidian: 'obsidian',
+  'md.obsidian.obsidian': 'obsidian',
+  thunderbird: 'thunderbird',
+  'org.mozilla.thunderbird': 'thunderbird',
+  mousepad: 'mousepad',
+  'org.xfce.mousepad': 'mousepad',
+  gedit: 'mousepad',
+  'org.gnome.gedit': 'mousepad',
+  leafpad: 'mousepad',
+  xournalpp: 'xournalpp',
+  'com.github.xournalpp.xournalpp': 'xournalpp',
+
+  // Communication
+  discord: 'discord',
+  'com.discordapp.discord': 'discord',
+  telegram: 'telegram',
+  'telegram-desktop': 'telegram',
+  'org.telegram.desktop': 'telegram',
+
+  // System & Utilities
+  keepassxc: 'keepassxc',
+  'org.keepassxc.keepassxc': 'keepassxc',
+  transmission: 'transmission',
+  'transmission-gtk': 'transmission',
+  'com.transmissionbt.transmission': 'transmission',
+  remmina: 'remmina',
+  'org.remmina.remmina': 'remmina',
+  bleachbit: 'bleachbit',
+  'org.bleachbit.bleachbit': 'bleachbit',
+  flameshot: 'flameshot',
+  'org.flameshot.flameshot': 'flameshot',
+};
+
+export function resolveBundledAppIconUrl(rawKey?: string | null): string | null {
+  if (!rawKey) return null;
+  const trimmed = rawKey.trim().toLowerCase();
+  if (!trimmed) return null;
+  const base = trimmed
+    .replace(/^desktop-/, '')
+    .replace(/\.(svg|png|xpm|ico|desktop)$/i, '');
+  const canonical = BUNDLED_APP_ICON_MAP[base] || BUNDLED_APP_ICON_MAP[trimmed];
+  return canonical ? `/app-icons/${canonical}.svg` : null;
+}
+
+export interface OriginalAppIconProps {
+  appId?: string;
+  iconName?: string;
+  name?: string;
+  accent?: string;
+  size?: number;
+  className?: string;
+}
+
+export const OriginalAppIcon: React.FC<OriginalAppIconProps> = ({
+  appId,
+  iconName,
+  name,
+  accent,
+  size = 40,
+  className = '',
+}) => {
+  const [remoteFailed, setRemoteFailed] = useState(false);
+
+  const bundledUrl =
+    resolveBundledAppIconUrl(appId) ||
+    resolveBundledAppIconUrl(iconName) ||
+    resolveBundledAppIconUrl(name);
+
+  if (bundledUrl) {
+    return (
+      <img
+        src={bundledUrl}
+        alt={name || appId || ''}
+        style={{ width: size, height: size }}
+        className={`object-contain shrink-0 drop-shadow-sm select-none ${className}`}
+        draggable={false}
       />
-    </svg>
+    );
+  }
+
+  if (iconName && !remoteFailed) {
+    return (
+      <img
+        src={buildAppIconUrl(iconName)}
+        alt={name || iconName}
+        onError={() => setRemoteFailed(true)}
+        style={{ width: size, height: size }}
+        className={`object-contain shrink-0 drop-shadow-sm select-none ${className}`}
+        draggable={false}
+      />
+    );
+  }
+
+  const initial = (name || appId || 'U').trim().charAt(0).toUpperCase() || 'U';
+  const bg = accent || '#3b82f6';
+  const radius = Math.max(6, Math.round(size * 0.24));
+  const fontSize = Math.max(11, Math.round(size * 0.44));
+
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: radius,
+        background: `linear-gradient(135deg, ${bg} 0%, rgba(24,24,27,0.9) 140%)`,
+        fontSize,
+      }}
+      className={`shrink-0 flex items-center justify-center font-bold text-white shadow-sm select-none ${className}`}
+    >
+      {initial}
+    </div>
   );
 };
 
-export const AntigravityLogoIcon: React.FC<{ size?: number }> = ({ size = 48 }) => {
-  const uid = React.useId().replace(/:/g, '');
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className="drop-shadow-sm shrink-0">
-      <defs>
-        <linearGradient id={`${uid}-ag-bg`} x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#4F46E5" />
-          <stop offset="52%" stopColor="#6366F1" />
-          <stop offset="100%" stopColor="#06B6D4" />
-        </linearGradient>
-      </defs>
-      <rect x="6" y="6" width="52" height="52" rx="14" fill={`url(#${uid}-ag-bg)`} />
-      <path
-        d="M32 14L47 47H39.4L36.1 39.2H27.9L24.6 47H17L32 14ZM32 24.8L29.6 33.4H34.4L32 24.8Z"
-        fill="#FFFFFF"
-      />
-      <circle cx="46" cy="19" r="3.2" fill="#A5F3FC" />
-    </svg>
-  );
-};
 

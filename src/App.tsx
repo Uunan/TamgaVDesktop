@@ -547,6 +547,8 @@ export default function App() {
             id,
             kind: 'vscode',
             title: 'Visual Studio Code',
+            appId: 'vscode',
+            appIconName: 'vscode',
             folderPath: opts?.folderPath || '/Projects',
             vscodeUrl: opts?.url,
             x: Math.max(18, Math.round((vw - width) / 2) + offset),
@@ -570,6 +572,7 @@ export default function App() {
       command?: string;
       appName?: string;
       iconName?: string;
+      initialUrl?: string;
       needsNoSandbox?: boolean;
       forceNew?: boolean;
     }) => {
@@ -578,7 +581,8 @@ export default function App() {
       const vh = window.innerHeight - 76;
       const viewportWidth = Math.max(960, vw - 36);
       const viewportHeight = Math.max(600, vh - 32 - 42);
-      const isBrowserApp = params.appId === 'chrome' || params.appId === 'firefox';
+      const isBrowserApp =
+        params.appId === 'chrome' || params.appId === 'firefox' || params.appId === 'brave';
       const width = Math.min(isBrowserApp ? 1160 : 740, vw - 36);
       const height = Math.min(isBrowserApp ? 730 : 520, vh - 32);
 
@@ -591,7 +595,7 @@ export default function App() {
       const foundApp = linuxApps.find(
         (a) => a.id === params.appId || (params.command && a.command === params.command)
       );
-      const resolvedIconName = params.iconName || foundApp?.iconName;
+      const resolvedIconName = params.iconName || foundApp?.iconName || params.appId;
 
       try {
         const res = await appsApi.launch({
@@ -603,11 +607,14 @@ export default function App() {
         });
 
         // If backend opened an extra window inside an active profile session (e.g. Firefox),
-        // the existing main WebSocket receives `window_opened` and spawns the new WindowFrame.
-        const hasExistingSessionWindow = windowsRef.current.some(
+        // or opened an initialUrl tab inside an already-open browser session, focus existing window!
+        const existingWin = windowsRef.current.find(
           (w) => w.kind === 'linux-app' && w.appSessionId === res.sessionId
         );
-        if (res.openedAsExtraWindow && hasExistingSessionWindow) {
+        if (existingWin && (res.openedAsExtraWindow || params.initialUrl)) {
+          if (!res.openedAsExtraWindow) {
+            focusWindow(existingWin.id);
+          }
           return;
         }
 
@@ -624,7 +631,7 @@ export default function App() {
               appSessionId: res.sessionId,
               appViewId: 'main',
               appId: res.appId,
-              appIconName: resolvedIconName,
+              appIconName: resolvedIconName || res.appId,
               launching: true,
               x: Math.max(18, Math.round((vw - width) / 2) + offset - 16),
               y: Math.max(18, Math.round((vh - height) / 2) + offset - 16),
@@ -648,7 +655,7 @@ export default function App() {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast, openVSCodeWindow, linuxApps]
+    [pushToast, openVSCodeWindow, linuxApps, focusWindow]
   );
 
   const openPreviewWindow = useCallback((node: VFSNode) => {
@@ -738,7 +745,7 @@ export default function App() {
         return;
       }
 
-      if (!forceNew) {
+      if (!forceNew && !initialUrl) {
         const existingChrome = windowsRef.current.find(
           (w) => w.kind === 'linux-app' && w.appId === 'chrome'
         );
@@ -755,6 +762,7 @@ export default function App() {
           command: chromeApp.command || 'google-chrome-stable',
           appName: 'Google Chrome',
           iconName: chromeApp.iconName,
+          initialUrl,
           needsNoSandbox: true,
           forceNew,
         });
@@ -765,6 +773,7 @@ export default function App() {
           appId: 'chrome',
           command: 'google-chrome-stable',
           appName: 'Google Chrome',
+          initialUrl,
           needsNoSandbox: true,
           forceNew,
         });
@@ -895,6 +904,71 @@ export default function App() {
                 () => openFolderWindow('/Downloads')
               );
               break;
+            case 'external_browser_opened': {
+              const sId = String(msg.sessionId || '');
+              if (!sId) break;
+              const existing = windowsRef.current.find(
+                (w) => w.kind === 'linux-app' && w.appSessionId === sId
+              );
+              if (existing) {
+                focusWindow(existing.id);
+              } else {
+                const vw = window.innerWidth;
+                const vh = window.innerHeight - 76;
+                const width = Math.min(Number(msg.width) || 1160, vw - 36);
+                const height = Math.min(Number(msg.height) || 730, vh - 32);
+                const z = ++nextZRef.current;
+                const winId = `win-linux-${sId}-main`;
+                const appId = String(msg.appId || 'chrome');
+                const isExisting = Boolean(msg.isExisting);
+                setWindows((prev) => {
+                  if (prev.some((w) => w.appSessionId === sId)) return prev;
+                  return [
+                    ...prev,
+                    {
+                      id: winId,
+                      kind: 'linux-app',
+                      title: String(msg.title || msg.appName || 'Google Chrome'),
+                      appSessionId: sId,
+                      appViewId: 'main',
+                      appId,
+                      appIconName: appId,
+                      launching: !isExisting,
+                      x: Math.max(18, Math.round((vw - width) / 2)),
+                      y: Math.max(18, Math.round((vh - height) / 2)),
+                      width,
+                      height,
+                      minimized: false,
+                      maximized: false,
+                      zIndex: z,
+                    },
+                  ];
+                });
+                setFocusedWindowId(winId);
+                if (!isExisting) {
+                  setTimeout(() => {
+                    setWindows((prev) =>
+                      prev.map((w) => (w.id === winId && w.launching ? { ...w, launching: false } : w))
+                    );
+                  }, 15000);
+                }
+              }
+              break;
+            }
+            case 'external_chromium_opened':
+              openChromiumWindow();
+              break;
+            case 'focus_linux_session': {
+              const targetSessionId = String(msg.sessionId || '');
+              if (!targetSessionId) break;
+              const targetWin = windowsRef.current.find(
+                (w) => w.kind === 'linux-app' && w.appSessionId === targetSessionId
+              );
+              if (targetWin) {
+                focusWindow(targetWin.id);
+              }
+              break;
+            }
             case 'browser_error':
               pushToast('Tarayıcı', String(msg.message || ''), 'warning');
               break;
@@ -922,7 +996,7 @@ export default function App() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [desktopId, isAuthorized, pushToast, openFolderWindow]);
+  }, [desktopId, isAuthorized, pushToast, openFolderWindow, focusWindow, openChromiumWindow]);
 
   const handleSwitchDesktop = useCallback((nextId: string) => {
     setWindows([]);
