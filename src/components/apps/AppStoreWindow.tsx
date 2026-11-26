@@ -6,6 +6,7 @@ import {
   Loader2,
   Package,
   Play,
+  Plus,
   RefreshCw,
   Terminal,
 } from 'lucide-react';
@@ -17,7 +18,7 @@ interface AppStoreWindowProps {
   apps: LinuxAppInfo[];
   allowInstall: boolean;
   onRefreshApps: () => Promise<void>;
-  onLaunchApp: (app: LinuxAppInfo) => void;
+  onLaunchApp: (app: LinuxAppInfo, opts?: { forceNew?: boolean }) => void;
   onLaunchCustomCommand: (command: string, title?: string) => void;
   onOpenTerminal: () => void;
 }
@@ -147,15 +148,28 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
                       {app.description}
                     </div>
                   </div>
-                  <button
-                    onClick={() => onLaunchApp(app)}
-                    disabled={!runtime?.guiReady}
-                    data-testid={`launch-app-${app.id}`}
-                    className="px-3 py-1.5 rounded-xl bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] hover:opacity-90 disabled:opacity-40 text-xs font-semibold flex items-center gap-1 shrink-0 transition-opacity"
-                  >
-                    <Play className="w-3 h-3" />
-                    <span>Aç</span>
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {['firefox', 'vscode', 'chrome', 'mousepad', 'gimp', 'vlc'].includes(app.id) && (
+                      <button
+                        onClick={() => onLaunchApp(app, { forceNew: true })}
+                        disabled={!runtime?.guiReady}
+                        data-testid={`launch-new-window-${app.id}`}
+                        title={`${app.name} — Yeni Pencere Aç`}
+                        className="p-1.5 rounded-xl bg-[var(--os-surface-3)] hover:bg-[var(--os-surface-4)] disabled:opacity-40 text-[var(--os-text)] transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onLaunchApp(app)}
+                      disabled={!runtime?.guiReady}
+                      data-testid={`launch-app-${app.id}`}
+                      className="px-3 py-1.5 rounded-xl bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] hover:opacity-90 disabled:opacity-40 text-xs font-semibold flex items-center gap-1 transition-opacity"
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>Aç</span>
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

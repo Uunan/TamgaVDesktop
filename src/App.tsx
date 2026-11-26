@@ -85,6 +85,8 @@ export default function App() {
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
 
   const [windows, setWindows] = useState<OSWindow[]>([]);
+  const windowsRef = useRef(windows);
+  windowsRef.current = windows;
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
   const [externalDropTarget, setExternalDropTarget] = useState<string | null>(null);
   const nextZRef = useRef(20);
@@ -385,12 +387,68 @@ export default function App() {
     refreshApps();
   }, [refreshApps]);
 
+  const openVSCodeWindow = useCallback(
+    (opts?: {
+      folderPath?: string;
+      url?: string;
+      width?: number;
+      height?: number;
+      forceNew?: boolean;
+    }) => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight - 76;
+      const width = Math.min(opts?.width || 1160, vw - 36);
+      const height = Math.min(opts?.height || 720, vh - 32);
+      const z = ++nextZRef.current;
+
+      if (!opts?.forceNew && !opts?.url) {
+        const existing = windowsRef.current.find((w) => w.kind === 'vscode');
+        if (existing) {
+          setWindows((prev) =>
+            prev.map((w) => (w.id === existing.id ? { ...w, minimized: false, zIndex: z } : w))
+          );
+          setFocusedWindowId(existing.id);
+          return;
+        }
+      }
+
+      const id =
+        !opts?.forceNew && !opts?.url
+          ? 'win-vscode-main'
+          : `win-vscode-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+
+      setWindows((prev) => {
+        const offset = (prev.filter((w) => w.kind === 'vscode').length % 5) * 26;
+        return [
+          ...prev,
+          {
+            id,
+            kind: 'vscode',
+            title: 'Visual Studio Code',
+            folderPath: opts?.folderPath || '/Projects',
+            vscodeUrl: opts?.url,
+            x: Math.max(18, Math.round((vw - width) / 2) + offset),
+            y: Math.max(18, Math.round((vh - height) / 2) + offset),
+            width,
+            height,
+            minimized: false,
+            maximized: false,
+            zIndex: z,
+          },
+        ];
+      });
+      setFocusedWindowId(id);
+    },
+    []
+  );
+
   const launchLinuxApp = useCallback(
     async (params: {
       appId?: string;
       command?: string;
       appName?: string;
       needsNoSandbox?: boolean;
+      forceNew?: boolean;
     }) => {
       remoteAudio.ensureContext();
       const vw = window.innerWidth;
@@ -400,31 +458,7 @@ export default function App() {
 
       // Run Visual Studio Code in 100% Web-Native DOM mode (zero video lag, zero remote cursor!)
       if (params.appId === 'vscode' || params.command?.trim() === 'code') {
-        const z = ++nextZRef.current;
-        const id = 'win-vscode-main';
-        setWindows((prev) => {
-          const existing = prev.find((w) => w.id === id);
-          if (existing) {
-            return prev.map((w) => (w.id === id ? { ...w, minimized: false, zIndex: z } : w));
-          }
-          return [
-            ...prev,
-            {
-              id,
-              kind: 'vscode',
-              title: 'Visual Studio Code',
-              folderPath: '/Projects',
-              x: Math.max(18, Math.round((vw - width) / 2)),
-              y: Math.max(18, Math.round((vh - height) / 2)),
-              width,
-              height,
-              minimized: false,
-              maximized: false,
-              zIndex: z,
-            },
-          ];
-        });
-        setFocusedWindowId(id);
+        openVSCodeWindow({ folderPath: '/Projects', forceNew: params.forceNew });
         return;
       }
 
@@ -434,8 +468,18 @@ export default function App() {
           width,
           height: height - 42,
         });
+
+        // If backend opened an extra window inside an active profile session (e.g. Firefox),
+        // the existing main WebSocket receives `window_opened` and spawns the new WindowFrame.
+        const hasExistingSessionWindow = windowsRef.current.some(
+          (w) => w.kind === 'linux-app' && w.appSessionId === res.sessionId
+        );
+        if (res.openedAsExtraWindow && hasExistingSessionWindow) {
+          return;
+        }
+
         const z = ++nextZRef.current;
-        const id = `win-linux-${res.sessionId}`;
+        const id = `win-linux-${res.sessionId}-main`;
         setWindows((prev) => {
           const offset = (prev.length % 4) * 20;
           return [
@@ -445,6 +489,7 @@ export default function App() {
               kind: 'linux-app',
               title: res.title || res.appName,
               appSessionId: res.sessionId,
+              appViewId: 'main',
               appId: res.appId,
               x: Math.max(18, Math.round((vw - width) / 2) + offset - 16),
               y: Math.max(18, Math.round((vh - height) / 2) + offset - 16),
@@ -461,7 +506,7 @@ export default function App() {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast]
+    [pushToast, openVSCodeWindow]
   );
 
   const firefoxApp = useMemo(
@@ -1085,7 +1130,7 @@ export default function App() {
             onClose={(id) => {
               const target = windows.find((w) => w.id === id);
               if (target?.kind === 'linux-app' && target.appSessionId) {
-                appsApi.close(target.appSessionId).catch(() => {});
+                appsApi.close(target.appSessionId, target.appViewId || 'main').catch(() => {});
               }
               setWindows((prev) => prev.filter((w) => w.id !== id));
               if (focusedWindowId === id) setFocusedWindowId(null);
@@ -1103,8 +1148,8 @@ export default function App() {
             onUpdateBounds={(id, bounds) =>
               setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...bounds } : w)))
             }
-            minWidth={win.kind === 'properties' ? 340 : 480}
-            minHeight={win.kind === 'properties' ? 340 : 320}
+            minWidth={win.kind === 'properties' || win.kind === 'linux-app' ? 280 : 420}
+            minHeight={win.kind === 'properties' || win.kind === 'linux-app' ? 220 : 300}
             overlayTitlebar={win.kind === 'vscode'}
             headerContent={
               win.kind === 'browser' ? (
@@ -1138,17 +1183,63 @@ export default function App() {
               />
             )}
 
-            {win.kind === 'vscode' && <VSCodeWindow folderPath={win.folderPath} />}
+            {win.kind === 'vscode' && (
+              <VSCodeWindow
+                folderPath={win.folderPath}
+                directUrl={win.vscodeUrl}
+                theme={meta.preferences.theme || 'dark'}
+                onOpenNewWindow={(req) =>
+                  openVSCodeWindow({
+                    folderPath: req.folderPath || win.folderPath,
+                    url: req.url,
+                    width: req.width,
+                    height: req.height,
+                    forceNew: true,
+                  })
+                }
+              />
+            )}
 
             {win.kind === 'linux-app' && win.appSessionId && (
               <LinuxAppWindow
                 sessionId={win.appSessionId}
+                viewId={win.appViewId || 'main'}
                 appName={win.title}
                 onTitleChange={(nextTitle) =>
                   setWindows((prev) =>
                     prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
                   )
                 }
+                onWindowOpened={(extra) => {
+                  const vw = window.innerWidth;
+                  const vh = window.innerHeight - 76;
+                  const extraW = Math.max(280, Math.min(vw - 28, Math.round(extra.width || 900)));
+                  const extraH = Math.max(220, Math.min(vh - 20, Math.round((extra.height || 640) + 42)));
+                  const extraId = `win-linux-${win.appSessionId}-${extra.view}`;
+                  const z = ++nextZRef.current;
+                  setWindows((prev) => {
+                    if (prev.some((w) => w.id === extraId)) return prev;
+                    return [
+                      ...prev,
+                      {
+                        id: extraId,
+                        kind: 'linux-app',
+                        title: extra.title || win.title,
+                        appSessionId: win.appSessionId,
+                        appViewId: extra.view,
+                        appId: win.appId,
+                        x: Math.max(18, Math.min(vw - extraW - 18, win.x + 34)),
+                        y: Math.max(18, Math.min(vh - extraH - 12, win.y + 34)),
+                        width: extraW,
+                        height: extraH,
+                        minimized: false,
+                        maximized: false,
+                        zIndex: z,
+                      },
+                    ];
+                  });
+                  setFocusedWindowId(extraId);
+                }}
                 onAppExit={() => {
                   setWindows((prev) => prev.filter((w) => w.id !== win.id));
                 }}
@@ -1161,12 +1252,13 @@ export default function App() {
                 apps={linuxApps}
                 allowInstall={allowAppInstall}
                 onRefreshApps={refreshApps}
-                onLaunchApp={(app) =>
+                onLaunchApp={(app, opts) =>
                   launchLinuxApp({
                     appId: app.id,
                     command: app.command,
                     appName: app.name,
                     needsNoSandbox: app.needsNoSandbox,
+                    forceNew: opts?.forceNew,
                   })
                 }
                 onLaunchCustomCommand={(cmd) =>

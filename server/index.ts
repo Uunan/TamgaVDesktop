@@ -21,7 +21,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.1.3';
+export const TAMGA_VERSION = '1.1.4';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -322,7 +322,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         String(req.body?.sessionId || '') ||
         `app-${appId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-      const session = await linuxDisplayBridge.launchApp({
+      const { session, openedAsExtraWindow } = await linuxDisplayBridge.launchApp({
         sessionId,
         desktopId,
         appId,
@@ -344,6 +344,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         title: session.title,
         width: session.width,
         height: session.height,
+        openedAsExtraWindow,
       });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -352,7 +353,8 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
 
   app.post('/api/apps/close', (req, res) => {
     const sessionId = String(req.body?.sessionId || '');
-    if (sessionId) linuxDisplayBridge.closeSession(sessionId);
+    const viewId = req.body?.viewId ? String(req.body.viewId) : undefined;
+    if (sessionId) linuxDisplayBridge.closeSession(sessionId, viewId);
     res.json({ ok: true });
   });
 
@@ -390,10 +392,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       const { vfs } = getDesktopContext(desktopId);
       await vscodeManager.ensureStarted();
       const targetVPath = String(req.body?.folderPath || '/Projects');
+      const theme = req.body?.theme === 'light' ? 'light' : 'dark';
       const diskFolder = vfs.resolveDiskPath(targetVPath);
       fs.mkdirSync(diskFolder, { recursive: true });
       res.json({
-        url: `/vscode-web/?folder=${encodeURIComponent(diskFolder)}`,
+        url: `/vscode-web/?folder=${encodeURIComponent(diskFolder)}&tamgaTheme=${theme}`,
       });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -861,10 +864,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     });
   });
 
-  // 3. Real Native Linux GUI App Stream WS (Binary 0x01 Video + 0x02 Audio + JSON Input/Title/Cursor)
+  // 3. Real Native Linux GUI App Stream WS (Binary 0x01 Video + 0x02 Audio + JSON Input/Title/Cursor/Window)
   appWss.on('connection', (ws, req) => {
     const reqUrl = new URL(req.url || '/ws/app', 'http://localhost');
     const sessionId = reqUrl.searchParams.get('sessionId') || '';
+    const viewId = reqUrl.searchParams.get('view') || 'main';
     const session = linuxDisplayBridge.getSession(sessionId);
     if (!session) {
       sendJson(ws, { type: 'error', message: 'Uygulama oturumu bulunamadı.' });
@@ -872,7 +876,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       return;
     }
 
-    const unsub = session.subscribe({
+    const unsub = session.subscribeView(viewId, {
       onVideoFrame: (jpeg, done) => {
         const pkt = Buffer.allocUnsafe(1 + jpeg.length);
         pkt[0] = PACKET_VIDEO_JPEG;
@@ -892,9 +896,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       try {
         const msg = JSON.parse(raw.toString('utf-8'));
         if (msg.type === 'resize') {
-          session.resize(Number(msg.width), Number(msg.height));
+          session.resizeView(viewId, Number(msg.width), Number(msg.height));
+        } else if (msg.type === 'focus') {
+          session.focusView(viewId);
         } else {
-          session.sendInput(msg);
+          session.sendInput(msg, viewId);
         }
       } catch {}
     });

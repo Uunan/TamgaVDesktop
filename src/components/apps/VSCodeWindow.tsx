@@ -3,8 +3,18 @@ import { Loader2 } from 'lucide-react';
 import { appsApi } from '../../services/osBridge';
 import { useWindowFrameControls } from '../desktop/WindowFrame';
 
+export interface VSCodeNewWindowRequest {
+  url?: string;
+  folderPath?: string;
+  width?: number;
+  height?: number;
+}
+
 interface VSCodeWindowProps {
   folderPath?: string;
+  directUrl?: string;
+  theme?: 'dark' | 'light';
+  onOpenNewWindow?: (req: VSCodeNewWindowRequest) => void;
 }
 
 const INTERACTIVE_TITLEBAR_SELECTOR = [
@@ -25,19 +35,42 @@ const INTERACTIVE_TITLEBAR_SELECTOR = [
   '.monaco-action-bar',
 ].join(', ');
 
-export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
-  const [readyUrl, setReadyUrl] = useState<string | null>(null);
+function parseWindowFeatures(features?: string): { width?: number; height?: number } {
+  if (!features) return {};
+  const wMatch = features.match(/(?:^|,)\s*width\s*=\s*(\d+)/i);
+  const hMatch = features.match(/(?:^|,)\s*height\s*=\s*(\d+)/i);
+  return {
+    width: wMatch ? Number(wMatch[1]) : undefined,
+    height: hMatch ? Number(hMatch[1]) : undefined,
+  };
+}
+
+export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
+  folderPath,
+  directUrl,
+  theme = 'dark',
+  onOpenNewWindow,
+}) => {
+  const [readyUrl, setReadyUrl] = useState<string | null>(directUrl || null);
   const [statusMsg, setStatusMsg] = useState('VS Code hazırlanıyor...');
   const [error, setError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
   const frameControls = useWindowFrameControls();
   const controlsRef = useRef(frameControls);
   controlsRef.current = frameControls;
+  const openNewRef = useRef(onOpenNewWindow);
+  openNewRef.current = onOpenNewWindow;
+  const initialThemeRef = useRef(theme);
 
   useEffect(() => {
+    if (directUrl) {
+      setReadyUrl(directUrl);
+      return;
+    }
     let cancelled = false;
     appsApi
-      .startVSCodeWeb(folderPath)
+      .startVSCodeWeb(folderPath, initialThemeRef.current)
       .then((res) => {
         if (!cancelled) setReadyUrl(res.url);
       })
@@ -58,7 +91,7 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
       cancelled = true;
       clearInterval(poll);
     };
-  }, [folderPath]);
+  }, [folderPath, directUrl]);
 
   const attachIframeTitlebarIntegration = useCallback(() => {
     const iframe = iframeRef.current;
@@ -82,6 +115,9 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
           /* Reserve left slot inside VS Code's real custom titlebar for macOS traffic lights */
           .monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left {
             padding-left: 72px !important;
+          }
+          .monaco-workbench .part.titlebar > .titlebar-container {
+            cursor: default;
           }
         `;
         doc.head.appendChild(style);
@@ -108,8 +144,8 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
       if (ev.button !== 0) return;
       const target = ev.target as HTMLElement | null;
       if (!target) return;
-      const inTitlebar = target.closest('.part.titlebar');
-      if (!inTitlebar) return;
+      const inDragZone = target.closest('.part.titlebar, .part.banner');
+      if (!inDragZone) return;
       if (target.closest(INTERACTIVE_TITLEBAR_SELECTOR)) return;
 
       ev.preventDefault();
@@ -132,6 +168,38 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
       controlsRef.current?.toggleMaximize();
     };
 
+    // Route File -> New Window / Open in New Window inside TamgaVDesktop instead of browser tabs
+    const origOpen = childWin.open.bind(childWin);
+    childWin.open = ((url?: string | URL, target?: string, features?: string) => {
+      const urlStr = url ? String(url) : '';
+      const dims = parseWindowFeatures(features);
+      try {
+        const parsed = urlStr ? new URL(urlStr, window.location.href) : null;
+        if (
+          openNewRef.current &&
+          (!parsed ||
+            (parsed.origin === window.location.origin && parsed.pathname.startsWith('/vscode-web')))
+        ) {
+          openNewRef.current({
+            url: parsed ? `${parsed.pathname}${parsed.search}${parsed.hash}` : undefined,
+            width: dims.width,
+            height: dims.height,
+          });
+          return null;
+        }
+      } catch {}
+      return origOpen(url, target, features);
+    }) as typeof childWin.open;
+
+    // Allow VS Code scripts / commands to resize their own Tamga WindowFrame
+    childWin.resizeTo = (w: number, h: number) => {
+      if (w > 200 && h > 160) controlsRef.current?.resizeFrame(w, h);
+    };
+    childWin.resizeBy = (dw: number, dh: number) => {
+      const rect = iframe.getBoundingClientRect();
+      controlsRef.current?.resizeFrame(rect.width + dw, rect.height + dh);
+    };
+
     childWin.addEventListener('mousedown', onChildMouseDown, true);
     childWin.addEventListener('dblclick', onChildDblClick, true);
     childWin.addEventListener('resize', ensureStyleAndMetrics);
@@ -142,11 +210,10 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({ folderPath }) => {
         childWin?.removeEventListener('mousedown', onChildMouseDown, true);
         childWin?.removeEventListener('dblclick', onChildDblClick, true);
         childWin?.removeEventListener('resize', ensureStyleAndMetrics);
+        if (childWin) childWin.open = origOpen;
       } catch {}
     };
   }, []);
-
-  const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     return () => {

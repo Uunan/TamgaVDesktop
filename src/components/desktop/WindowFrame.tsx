@@ -13,6 +13,8 @@ export interface ExternalDragInit {
 interface WindowFrameControlContextValue {
   startExternalDrag: (init: ExternalDragInit) => void;
   toggleMaximize: () => void;
+  setMaximized: (maximized: boolean) => void;
+  resizeFrame: (contentWidth: number, contentHeight: number) => void;
   focusWindow: () => void;
   setTitlebarMetrics: (top: number, height: number) => void;
 }
@@ -394,14 +396,47 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
     );
   }, []);
 
+  const resizeFrame = useCallback(
+    (contentWidth: number, contentHeight: number) => {
+      const w = winRef.current;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight - BOTTOM_BAR_RESERVE;
+      const maxW = Math.max(minWidth, vw - EDGE_PAD * 2);
+      const maxH = Math.max(minHeight, vh - EDGE_PAD);
+      const chromeH = overlayTitlebar ? 0 : 42;
+      const targetW = Math.max(minWidth, Math.min(maxW, Math.round(contentWidth)));
+      const targetH = Math.max(minHeight, Math.min(maxH, Math.round(contentHeight + chromeH)));
+      const targetX = Math.max(EDGE_PAD, Math.min(vw - targetW - EDGE_PAD, w.x));
+      const targetY = Math.max(EDGE_PAD, Math.min(vh - targetH, w.y));
+      onUpdateBounds(w.id, {
+        maximized: false,
+        snap: null,
+        x: targetX,
+        y: targetY,
+        width: targetW,
+        height: targetH,
+      });
+    },
+    [minWidth, minHeight, overlayTitlebar, onUpdateBounds]
+  );
+
+  const setMaximized = useCallback(
+    (maximized: boolean) => {
+      onUpdateBounds(winRef.current.id, { maximized, snap: null });
+    },
+    [onUpdateBounds]
+  );
+
   const controlCtx = useMemo<WindowFrameControlContextValue>(
     () => ({
       startExternalDrag,
       toggleMaximize: () => onToggleMaximize(win.id),
+      setMaximized,
+      resizeFrame,
       focusWindow: () => onFocus(win.id),
       setTitlebarMetrics,
     }),
-    [startExternalDrag, onToggleMaximize, onFocus, setTitlebarMetrics, win.id]
+    [startExternalDrag, onToggleMaximize, setMaximized, resizeFrame, onFocus, setTitlebarMetrics, win.id]
   );
 
   if (win.minimized) return null;
@@ -481,7 +516,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         title="Kapat"
         data-testid={overlayTitlebar ? 'vscode-close-btn' : undefined}
         className={`${
-          compact ? 'w-3 h-3' : 'w-3.5 h-3.5'
+          compact ? 'w-3 h-3 ring-1 ring-black/15' : 'w-3.5 h-3.5'
         } rounded-full bg-[#ff5f57] flex items-center justify-center text-black/70 hover:brightness-110`}
       >
         <X className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 stroke-[2.8]" />
@@ -491,7 +526,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         title="Küçült"
         data-testid={overlayTitlebar ? 'vscode-minimize-btn' : undefined}
         className={`${
-          compact ? 'w-3 h-3' : 'w-3.5 h-3.5'
+          compact ? 'w-3 h-3 ring-1 ring-black/15' : 'w-3.5 h-3.5'
         } rounded-full bg-[#febc2e] flex items-center justify-center text-black/70 hover:brightness-110`}
       >
         <Minus className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 stroke-[2.8]" />
@@ -501,7 +536,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         title={win.maximized ? 'Önceki Boyut' : 'Büyüt'}
         data-testid={overlayTitlebar ? 'vscode-maximize-btn' : undefined}
         className={`${
-          compact ? 'w-3 h-3' : 'w-3.5 h-3.5'
+          compact ? 'w-3 h-3 ring-1 ring-black/15' : 'w-3.5 h-3.5'
         } rounded-full bg-[#28c840] flex items-center justify-center text-black/70 hover:brightness-110`}
       >
         <Maximize2 className="w-2 h-2 opacity-0 group-hover:opacity-100 stroke-[2.8]" />

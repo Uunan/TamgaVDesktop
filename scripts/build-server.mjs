@@ -38,6 +38,7 @@ fs.chmodSync(path.join(distDir, 'cli.js'), 0o755);
 // Copy zero-dependency Python helper scripts into dist/helpers
 for (const file of fs.readdirSync(helpersSrc)) {
   const src = path.join(helpersSrc, file);
+  if (!fs.statSync(src).isFile() || file.startsWith('.')) continue;
   const dst = path.join(helpersOut, file);
   fs.copyFileSync(src, dst);
   fs.chmodSync(dst, 0o755);

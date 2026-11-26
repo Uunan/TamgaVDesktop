@@ -1,19 +1,31 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { remoteAudio } from '../../services/audioPlayer';
+import { useWindowFrameControls } from '../desktop/WindowFrame';
+
+export interface ExtraLinuxWindowEvent {
+  view: string;
+  title: string;
+  width: number;
+  height: number;
+}
 
 interface LinuxAppWindowProps {
   sessionId: string;
+  viewId?: string;
   appName: string;
   onTitleChange?: (title: string) => void;
   onAppExit?: () => void;
+  onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
 }
 
 export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   sessionId,
+  viewId = 'main',
   appName,
   onTitleChange,
   onAppExit,
+  onWindowOpened,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -23,6 +35,16 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   const lastMoveTsRef = useRef(0);
   const touchStateRef = useRef<{ lastY: number; moved: boolean } | null>(null);
   const dimsRef = useRef({ width: 1100, height: 680 });
+
+  const frameControls = useWindowFrameControls();
+  const controlsRef = useRef(frameControls);
+  controlsRef.current = frameControls;
+  const onTitleRef = useRef(onTitleChange);
+  onTitleRef.current = onTitleChange;
+  const onExitRef = useRef(onAppExit);
+  onExitRef.current = onAppExit;
+  const onWindowOpenedRef = useRef(onWindowOpened);
+  onWindowOpenedRef.current = onWindowOpened;
 
   const [hasFrame, setHasFrame] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -39,7 +61,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     let closed = false;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(
-      `${proto}//${window.location.host}/ws/app?sessionId=${encodeURIComponent(sessionId)}`
+      `${proto}//${window.location.host}/ws/app?sessionId=${encodeURIComponent(sessionId)}&view=${encodeURIComponent(viewId)}`
     );
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
@@ -99,11 +121,25 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       try {
         const msg = JSON.parse(String(ev.data));
         if (msg.type === 'title' && typeof msg.title === 'string') {
-          onTitleChange?.(msg.title);
+          onTitleRef.current?.(msg.title);
         } else if (msg.type === 'cursor' && typeof msg.cursor === 'string') {
           setCursorStyle(msg.cursor);
+        } else if (msg.type === 'view_geometry' && msg.width && msg.height) {
+          const nw = Math.round(Number(msg.width));
+          const nh = Math.round(Number(msg.height));
+          dimsRef.current = { width: nw, height: nh };
+          controlsRef.current?.resizeFrame(nw, nh);
+        } else if (msg.type === 'view_maximize') {
+          controlsRef.current?.setMaximized(true);
+        } else if (msg.type === 'window_opened' && typeof msg.view === 'string') {
+          onWindowOpenedRef.current?.({
+            view: msg.view,
+            title: String(msg.title || appName),
+            width: Number(msg.width) || 900,
+            height: Number(msg.height) || 640,
+          });
         } else if (msg.type === 'app_exit') {
-          onAppExit?.();
+          onExitRef.current?.();
         } else if (msg.type === 'error' && msg.message) {
           setErrorMsg(String(msg.message));
         } else if (msg.type === 'clipboard' && typeof msg.text === 'string') {
@@ -117,7 +153,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, viewId]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -139,7 +175,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [sessionId]);
+  }, [sessionId, viewId]);
 
   const toCoords = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -159,6 +195,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     <div
       ref={containerRef}
       data-testid="linux-app-window"
+      data-app-session={sessionId}
+      data-app-view={viewId}
       className="relative w-full h-full overflow-hidden bg-[var(--os-bg)] select-none"
     >
       <canvas
@@ -168,6 +206,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         onPointerDown={(e) => {
           remoteAudio.ensureContext();
           canvasRef.current?.focus();
+          sendInput({ type: 'focus' });
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch') {
             touchStateRef.current = { lastY: e.clientY, moved: false };
@@ -211,7 +250,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           sendInput({ type: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
         }}
         onKeyDown={async (e) => {
-          // Intercept host Ctrl+V / Cmd+V to sync clipboard straight into X11 before pasting
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
             e.preventDefault();
             try {

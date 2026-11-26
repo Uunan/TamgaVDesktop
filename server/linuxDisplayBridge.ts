@@ -25,6 +25,35 @@ export interface LinuxAppSubscriber {
   onEvent: (event: { type: string; [key: string]: unknown }) => void;
 }
 
+interface ViewStream {
+  viewId: string;
+  title: string;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  lastFrame: Buffer | null;
+  streamerProc: ChildProcess | null;
+  streamerMode: 'xdamage' | 'ffmpeg';
+  resizeTimer: ReturnType<typeof setTimeout> | null;
+  subscribers: Set<LinuxAppSubscriber>;
+}
+
+const SLOT_W = 1920;
+const SLOT_H = 1080;
+const SLOT_COLS = 2;
+
+const PROFILE_LOCKED_APPS = new Set([
+  'firefox',
+  'firefox-esr',
+  'chrome',
+  'google-chrome',
+  'google-chrome-stable',
+  'chromium',
+  'chromium-browser',
+  'antigravity',
+]);
+
 function findFreeDisplay(inUse: Set<number>): number {
   for (let d = 100; d < 250; d++) {
     if (inUse.has(d)) continue;
@@ -36,14 +65,13 @@ function findFreeDisplay(inUse: Set<number>): number {
 }
 
 function hasTurboJpegAndXDamage(): boolean {
-  const candidates = [
+  const tjCandidates = [
     '/lib/x86_64-linux-gnu/libturbojpeg.so.0',
     '/usr/lib/x86_64-linux-gnu/libturbojpeg.so.0',
     '/lib/aarch64-linux-gnu/libturbojpeg.so.0',
     '/usr/lib/aarch64-linux-gnu/libturbojpeg.so.0',
     '/usr/lib/libturbojpeg.so.0',
   ];
-  const hasTj = candidates.some((p) => fs.existsSync(p));
   const dmgCandidates = [
     '/lib/x86_64-linux-gnu/libXdamage.so.1',
     '/usr/lib/x86_64-linux-gnu/libXdamage.so.1',
@@ -51,8 +79,7 @@ function hasTurboJpegAndXDamage(): boolean {
     '/usr/lib/aarch64-linux-gnu/libXdamage.so.1',
     '/usr/lib/libXdamage.so.1',
   ];
-  const hasDmg = dmgCandidates.some((p) => fs.existsSync(p));
-  return hasTj && hasDmg;
+  return tjCandidates.some((p) => fs.existsSync(p)) && dmgCandidates.some((p) => fs.existsSync(p));
 }
 
 function buildOpenboxRcXml(): string {
@@ -60,9 +87,10 @@ function buildOpenboxRcXml(): string {
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <resistance><strength>0</strength><screen_edge_strength>0</screen_edge_strength></resistance>
   <focus><focusNew>yes</focusNew><followMouse>no</followMouse></focus>
-  <placement><policy>Smart</policy><center>yes</center></placement>
+  <placement><policy>Smart</policy><center>no</center></placement>
   <theme><name>Clearlooks</name><titleLayout>NLIMC</titleLayout><keepBorder>no</keepBorder></theme>
   <desktops><number>1</number></desktops>
+  <margins><top>0</top><bottom>0</bottom><left>0</left><right>0</right></margins>
   <applications>
     <application class="*">
       <decor>no</decor>
@@ -71,6 +99,15 @@ function buildOpenboxRcXml(): string {
   </applications>
 </openbox_config>
 `;
+}
+
+function clampDim(w: number, h: number): { width: number; height: number } {
+  const cw = Math.max(240, Math.min(SLOT_W, Math.round(w || 1100)));
+  const ch = Math.max(180, Math.min(SLOT_H, Math.round(h || 680)));
+  return {
+    width: cw - (cw % 2),
+    height: ch - (ch % 2),
+  };
 }
 
 export class LinuxAppSession {
@@ -93,19 +130,16 @@ export class LinuxAppSession {
   private command: string;
   private needsNoSandbox: boolean;
   private tempDir: string;
+  private baseEnv: NodeJS.ProcessEnv = {};
 
   private xvfbProc: ChildProcess | null = null;
   private openboxProc: ChildProcess | null = null;
   private appProc: ChildProcess | null = null;
   private x11BridgeProc: ChildProcess | null = null;
-  private streamerProc: ChildProcess | null = null;
-  private streamerMode: 'xdamage' | 'ffmpeg' = 'xdamage';
   private parecProc: ChildProcess | null = null;
   private pulseSinkName = '';
 
-  private subscribers = new Set<LinuxAppSubscriber>();
-  private lastFrame: Buffer | null = null;
-  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private views = new Map<string, ViewStream>();
   private hadWindow = false;
   private closed = false;
   private onCloseCb: () => void;
@@ -121,10 +155,10 @@ export class LinuxAppSession {
     this.desktopDataRoot = opts.desktopDataRoot;
     this.displayNum = displayNum;
     this.displayStr = `:${displayNum}`;
-    this.width = Math.max(420, Math.min(1920, Math.round(opts.width || 1100)));
-    this.height = Math.max(300, Math.min(1080, Math.round(opts.height || 680)));
-    this.width = this.width - (this.width % 2);
-    this.height = this.height - (this.height % 2);
+
+    const dims = clampDim(opts.width || 1100, opts.height || 680);
+    this.width = dims.width;
+    this.height = dims.height;
     this.fps = Math.max(10, Math.min(30, opts.fps || 24));
     this.quality = Math.max(2, Math.min(10, opts.quality || 4));
     this.enableAudio = opts.enableAudio ?? true;
@@ -133,6 +167,21 @@ export class LinuxAppSession {
       `tamga-gui-${this.sessionId.replace(/[^a-z0-9_-]/gi, '')}`
     );
     this.onCloseCb = onCloseCb;
+
+    // Seed primary view 'main' in slot 0
+    this.views.set('main', {
+      viewId: 'main',
+      title: this.appName,
+      width: this.width,
+      height: this.height,
+      offsetX: 0,
+      offsetY: 0,
+      lastFrame: null,
+      streamerProc: null,
+      streamerMode: 'xdamage',
+      resizeTimer: null,
+      subscribers: new Set(),
+    });
   }
 
   public async start(): Promise<void> {
@@ -140,14 +189,14 @@ export class LinuxAppSession {
     const obRcPath = path.join(this.tempDir, 'rc.xml');
     fs.writeFileSync(obRcPath, buildOpenboxRcXml(), 'utf-8');
 
-    // 1. Start lightweight Xvfb display with DAMAGE + XFIXES + RANDR
+    // 1. Start lightweight Xvfb 2x2 slot virtual display (4 x 1920x1080 windows max)
     this.xvfbProc = spawn(
       'Xvfb',
       [
         this.displayStr,
         '-screen',
         '0',
-        '1920x1080x24',
+        '3840x2160x24',
         '-ac',
         '+extension',
         'RANDR',
@@ -178,6 +227,8 @@ export class LinuxAppSession {
       NO_AT_BRIDGE: '1',
       XCURSOR_THEME: 'DMZ-White',
     };
+    delete baseEnv.DBUS_SESSION_BUS_ADDRESS;
+    this.baseEnv = baseEnv;
 
     // 2. Start borderless Openbox window manager (~4MB RAM)
     this.openboxProc = spawn('openbox', ['--config-file', obRcPath], {
@@ -190,18 +241,15 @@ export class LinuxAppSession {
       this.setupPulseAudio(baseEnv);
     }
 
-    // 4. Event-driven X11/XTest + XFixes cursor bridge
+    // 4. Event-driven multi-slot X11/XTest + XFixes cursor bridge
     this.startX11Bridge(baseEnv);
 
     // 5. Launch real Linux GUI app
     this.launchTargetApp(baseEnv);
 
-    // 6. Start zero-idle XDamage+TurboJPEG capture (or low-delay cursorless ffmpeg fallback)
-    if (hasTurboJpegAndXDamage()) {
-      this.startXDamageStreamer(baseEnv);
-    } else {
-      this.startFfmpegFallbackCapture();
-    }
+    // 6. Start zero-idle XDamage+TurboJPEG capture for 'main' view
+    const mainView = this.views.get('main')!;
+    this.startViewStreamer(mainView);
   }
 
   private setupPulseAudio(baseEnv: NodeJS.ProcessEnv): void {
@@ -241,7 +289,10 @@ export class LinuxAppSession {
       let pcmBuf = Buffer.alloc(0);
 
       parec.stdout?.on('data', (chunk: Buffer) => {
-        if (this.closed || this.subscribers.size === 0) return;
+        if (this.closed) return;
+        const audioView = this.views.get('main') || this.views.values().next().value;
+        if (!audioView || audioView.subscribers.size === 0) return;
+
         pcmBuf = Buffer.concat([pcmBuf, chunk]);
         while (pcmBuf.length >= CHUNK_BYTES) {
           const slice = pcmBuf.subarray(0, CHUNK_BYTES);
@@ -254,13 +305,22 @@ export class LinuxAppSession {
             if (peak > 45) break;
           }
           if (peak > 45) {
-            for (const sub of this.subscribers) {
+            for (const sub of audioView.subscribers) {
               sub.onAudioChunk(slice);
             }
           }
         }
       });
     } catch {}
+  }
+
+  private getEventHostView(): ViewStream | undefined {
+    const main = this.views.get('main');
+    if (main && main.subscribers.size > 0) return main;
+    for (const v of this.views.values()) {
+      if (v.subscribers.size > 0) return v;
+    }
+    return main;
   }
 
   private startX11Bridge(baseEnv: NodeJS.ProcessEnv): void {
@@ -285,21 +345,7 @@ export class LinuxAppSession {
         if (line) {
           try {
             const msg = JSON.parse(line);
-            if (msg.type === 'title' && typeof msg.title === 'string') {
-              this.hadWindow = true;
-              this.title = msg.title;
-            } else if (msg.type === 'cursor' && typeof msg.cursor === 'string') {
-              this.cursor = msg.cursor;
-            } else if (msg.type === 'all_windows_closed' && !this.closed) {
-              for (const sub of this.subscribers) {
-                sub.onEvent({ type: 'app_exit', code: 0 });
-              }
-              this.close();
-              return;
-            }
-            for (const sub of this.subscribers) {
-              sub.onEvent(msg);
-            }
+            this.handleBridgeEvent(msg);
           } catch {}
         }
         idx = lineBuf.indexOf('\n');
@@ -307,13 +353,141 @@ export class LinuxAppSession {
     });
   }
 
-  private launchTargetApp(baseEnv: NodeJS.ProcessEnv): void {
+  private handleBridgeEvent(msg: { type: string; [key: string]: unknown }): void {
+    if (this.closed) return;
+
+    if (msg.type === 'title' && typeof msg.title === 'string') {
+      this.hadWindow = true;
+      const vid = typeof msg.view === 'string' ? msg.view : 'main';
+      const v = this.views.get(vid);
+      if (v) {
+        v.title = msg.title;
+        for (const sub of v.subscribers) {
+          sub.onEvent({ type: 'title', title: msg.title });
+        }
+      }
+      if (vid === 'main') this.title = msg.title;
+      return;
+    }
+
+    if (msg.type === 'cursor' && typeof msg.cursor === 'string') {
+      this.cursor = msg.cursor;
+      for (const v of this.views.values()) {
+        for (const sub of v.subscribers) {
+          sub.onEvent(msg);
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'window_opened' && typeof msg.view === 'string') {
+      this.hadWindow = true;
+      const slot = Math.max(0, Math.min(3, Number(msg.slot) || 1));
+      const dims = clampDim(Number(msg.width) || 900, Number(msg.height) || 640);
+      const offsetX = (slot % SLOT_COLS) * SLOT_W;
+      const offsetY = Math.floor(slot / SLOT_COLS) * SLOT_H;
+      const title = typeof msg.title === 'string' && msg.title ? msg.title : this.appName;
+
+      if (!this.views.has(msg.view)) {
+        const view: ViewStream = {
+          viewId: msg.view,
+          title,
+          width: dims.width,
+          height: dims.height,
+          offsetX,
+          offsetY,
+          lastFrame: null,
+          streamerProc: null,
+          streamerMode: 'xdamage',
+          resizeTimer: null,
+          subscribers: new Set(),
+        };
+        this.views.set(msg.view, view);
+        this.startViewStreamer(view);
+      }
+
+      const hostView = this.getEventHostView();
+      if (hostView) {
+        for (const sub of hostView.subscribers) {
+          sub.onEvent({
+            type: 'window_opened',
+            view: msg.view,
+            title,
+            width: dims.width,
+            height: dims.height,
+          });
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'view_geometry' && typeof msg.view === 'string') {
+      const v = this.views.get(msg.view);
+      if (!v) return;
+      const dims = clampDim(Number(msg.width) || v.width, Number(msg.height) || v.height);
+      v.width = dims.width;
+      v.height = dims.height;
+      if (v.viewId === 'main') {
+        this.width = dims.width;
+        this.height = dims.height;
+      }
+      this.resizeViewCapture(v, dims.width, dims.height);
+      for (const sub of v.subscribers) {
+        sub.onEvent({ type: 'view_geometry', width: dims.width, height: dims.height });
+      }
+      return;
+    }
+
+    if (msg.type === 'view_maximize' && typeof msg.view === 'string') {
+      const v = this.views.get(msg.view);
+      if (!v) return;
+      for (const sub of v.subscribers) {
+        sub.onEvent({ type: 'view_maximize' });
+      }
+      return;
+    }
+
+    if (msg.type === 'view_closed' && typeof msg.view === 'string') {
+      const v = this.views.get(msg.view);
+      if (!v) return;
+      for (const sub of v.subscribers) {
+        sub.onEvent({ type: 'app_exit', code: 0 });
+      }
+      this.destroyView(v);
+      return;
+    }
+
+    if (msg.type === 'all_windows_closed') {
+      for (const v of this.views.values()) {
+        for (const sub of v.subscribers) {
+          sub.onEvent({ type: 'app_exit', code: 0 });
+        }
+      }
+      this.close();
+      return;
+    }
+
+    // Clipboard / ready / error -> forward to active host view
+    const hostView = this.getEventHostView();
+    if (hostView) {
+      for (const sub of hostView.subscribers) {
+        sub.onEvent(msg);
+      }
+    }
+  }
+
+  private getProfileDir(): string {
     const profileDir = path.join(
       this.desktopDataRoot,
       'app-profiles',
       this.appId.replace(/[^a-z0-9_-]/gi, '_')
     );
     fs.mkdirSync(profileDir, { recursive: true });
+    return profileDir;
+  }
+
+  private buildLaunchCommand(extraNewWindow = false): { cmd: string; cwd: string } {
+    const profileDir = this.getProfileDir();
     const desktopFilesDir = path.join(this.desktopDataRoot, 'vfs', 'Desktop');
     fs.mkdirSync(desktopFilesDir, { recursive: true });
 
@@ -322,7 +496,6 @@ export class LinuxAppSession {
     const baseBin = path.basename(finalCmd.split(/\s+/)[0] || '');
 
     if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
-      // Optimized Firefox profile for low-CPU VDS: instant scroll, no heavy animations, 2 content processes, zero welcome dim
       const userJsPath = path.join(profileDir, 'user.js');
       fs.writeFileSync(
         userJsPath,
@@ -340,6 +513,8 @@ export class LinuxAppSession {
           'user_pref("toolkit.cosmeticAnimations.enabled", false);',
           'user_pref("ui.prefersReducedMotion", 1);',
           'user_pref("dom.ipc.processCount", 2);',
+          'user_pref("dom.disable_window_move_resize", false);',
+          'user_pref("browser.link.open_newwindow.restriction", 0);',
           'user_pref("browser.sessionstore.interval", 60000);',
           'user_pref("browser.newtabpage.activity-stream.feeds.topsites", false);',
           'user_pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);',
@@ -352,7 +527,10 @@ export class LinuxAppSession {
         ].join('\n') + '\n',
         'utf-8'
       );
-      finalCmd = `${finalCmd} --no-remote -profile "${profileDir}" --width=${this.width} --height=${this.height}`;
+      // Omit --no-remote so Firefox supports opening extra windows cleanly inside its isolated DISPLAY
+      finalCmd = extraNewWindow
+        ? `${finalCmd} -profile "${profileDir}" --new-window about:home`
+        : `${finalCmd} -profile "${profileDir}" --width=${this.width} --height=${this.height}`;
     } else if (
       this.needsNoSandbox ||
       ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'].includes(baseBin)
@@ -367,15 +545,25 @@ export class LinuxAppSession {
       if (!finalCmd.includes('--disable-gpu')) {
         extraFlags.push('--disable-gpu', '--disable-dev-shm-usage');
       }
-      // Prevent Electron CLI wrappers (/usr/bin/code, /usr/bin/antigravity) from detaching and exiting immediately
       if ((baseBin === 'code' || baseBin === 'antigravity') && !finalCmd.includes('--verbose')) {
         extraFlags.push('--verbose');
       }
+      if (extraNewWindow && !finalCmd.includes('--new-window')) {
+        extraFlags.push('--new-window');
+      }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
+    } else if (extraNewWindow && baseBin === 'gimp') {
+      finalCmd = `${finalCmd} -n`;
     }
 
-    this.appProc = spawn('/bin/bash', ['-c', `exec ${finalCmd}`], {
-      cwd: desktopFilesDir,
+    return { cmd: finalCmd, cwd: desktopFilesDir };
+  }
+
+  private launchTargetApp(baseEnv: NodeJS.ProcessEnv): void {
+    const { cmd, cwd } = this.buildLaunchCommand(false);
+
+    this.appProc = spawn('/bin/bash', ['-c', `exec ${cmd}`], {
+      cwd,
       env: {
         ...baseEnv,
         HOME: baseEnv.HOME || os.homedir(),
@@ -385,13 +573,12 @@ export class LinuxAppSession {
       stdio: 'ignore',
     });
 
-    // Do NOT immediately kill session if a wrapper script forks into background; verify if X11 windows exist!
     this.appProc.on('exit', (code) => {
       if (this.closed) return;
       setTimeout(() => {
         if (this.closed) return;
         try {
-          const out = execSync(`wmctrl -l`, {
+          const out = execSync('wmctrl -l', {
             env: { ...process.env, DISPLAY: this.displayStr },
             stdio: ['ignore', 'pipe', 'ignore'],
             timeout: 1200,
@@ -399,16 +586,16 @@ export class LinuxAppSession {
             .toString('utf-8')
             .trim();
           if (out.length > 0) {
-            // Detached child GUI window is still alive! Let x11_bridge monitor all_windows_closed.
             this.hadWindow = true;
             return;
           }
         } catch {}
 
-        // If no window appeared and process exited, close session cleanly
         if (!this.hadWindow || code !== 0) {
-          for (const sub of this.subscribers) {
-            sub.onEvent({ type: 'app_exit', code: code ?? 0 });
+          for (const v of this.views.values()) {
+            for (const sub of v.subscribers) {
+              sub.onEvent({ type: 'app_exit', code: code ?? 0 });
+            }
           }
           this.close();
         }
@@ -416,10 +603,36 @@ export class LinuxAppSession {
     });
   }
 
-  private startXDamageStreamer(baseEnv: NodeJS.ProcessEnv): void {
-    this.streamerMode = 'xdamage';
+  public spawnExtraWindow(customCommand?: string): void {
+    if (this.closed) return;
+    const { cmd, cwd } = customCommand
+      ? { cmd: customCommand, cwd: path.join(this.desktopDataRoot, 'vfs', 'Desktop') }
+      : this.buildLaunchCommand(true);
+
+    const child = spawn('/bin/bash', ['-c', cmd], {
+      cwd,
+      detached: true,
+      env: {
+        ...this.baseEnv,
+        HOME: this.baseEnv.HOME || os.homedir(),
+        DONT_PROMPT_WSL_INSTALL: '1',
+      },
+      stdio: 'ignore',
+    });
+    child.unref();
+  }
+
+  private startViewStreamer(view: ViewStream): void {
+    if (hasTurboJpegAndXDamage()) {
+      this.startViewXDamageStreamer(view);
+    } else {
+      this.startViewFfmpegCapture(view);
+    }
+  }
+
+  private startViewXDamageStreamer(view: ViewStream): void {
+    view.streamerMode = 'xdamage';
     const scriptPath = resolveHelperPath('x11_streamer.py');
-    // Map ffmpeg q:v (2..10) -> JPEG quality (86..62)
     const jpegQual = Math.max(60, Math.min(88, 92 - this.quality * 4));
     const proc = spawn(
       'python3',
@@ -427,22 +640,24 @@ export class LinuxAppSession {
         '-u',
         scriptPath,
         this.displayStr,
-        String(this.width),
-        String(this.height),
+        String(view.width),
+        String(view.height),
         String(this.fps),
         String(jpegQual),
+        String(view.offsetX),
+        String(view.offsetY),
       ],
       {
-        env: baseEnv,
+        env: this.baseEnv,
         stdio: ['pipe', 'pipe', 'ignore'],
       }
     );
-    this.streamerProc = proc;
+    view.streamerProc = proc;
 
     let acc = Buffer.alloc(0);
 
     proc.stdout?.on('data', (chunk: Buffer) => {
-      if (this.closed) return;
+      if (this.closed || !this.views.has(view.viewId)) return;
       acc = Buffer.concat([acc, chunk]);
 
       while (acc.length >= 4) {
@@ -456,10 +671,9 @@ export class LinuxAppSession {
         }
         const frame = Buffer.from(acc.subarray(4, 4 + frameLen));
         acc = acc.subarray(4 + frameLen);
-        this.lastFrame = frame;
+        view.lastFrame = frame;
 
-        if (this.subscribers.size === 0) {
-          // Immediately ACK when no clients connected so streamer doesn't stall
+        if (view.subscribers.size === 0) {
           if (proc.stdin?.writable) proc.stdin.write('a\n');
           continue;
         }
@@ -474,30 +688,28 @@ export class LinuxAppSession {
           }
         };
 
-        for (const sub of this.subscribers) {
+        for (const sub of view.subscribers) {
           sub.onVideoFrame(frame, sendAckOnce);
         }
-        // Safety fallback ACK after 180ms in case socket closed mid-send
         setTimeout(sendAckOnce, 180).unref();
       }
     });
 
     proc.on('exit', (code) => {
-      if (!this.closed && code !== 0) {
-        // Fallback to cursorless low-delay ffmpeg if XDamage streamer failed
-        this.startFfmpegFallbackCapture();
+      if (!this.closed && this.views.has(view.viewId) && code !== 0 && view.streamerProc === proc) {
+        this.startViewFfmpegCapture(view);
       }
     });
   }
 
-  private startFfmpegFallbackCapture(): void {
-    if (this.closed) return;
-    this.streamerMode = 'ffmpeg';
-    if (this.streamerProc) {
+  private startViewFfmpegCapture(view: ViewStream): void {
+    if (this.closed || !this.views.has(view.viewId)) return;
+    view.streamerMode = 'ffmpeg';
+    if (view.streamerProc) {
       try {
-        this.streamerProc.kill('SIGTERM');
+        view.streamerProc.kill('SIGTERM');
       } catch {}
-      this.streamerProc = null;
+      view.streamerProc = null;
     }
 
     const args = [
@@ -506,9 +718,9 @@ export class LinuxAppSession {
       '-flags', 'low_delay',
       '-f', 'x11grab',
       '-draw_mouse', '0',
-      '-video_size', `${this.width}x${this.height}`,
+      '-video_size', `${view.width}x${view.height}`,
       '-framerate', String(Math.min(15, this.fps)),
-      '-i', `${this.displayStr}.0+0,0`,
+      '-i', `${this.displayStr}.0+${view.offsetX},${view.offsetY}`,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
       '-pix_fmt', 'yuvj420p',
@@ -517,14 +729,14 @@ export class LinuxAppSession {
     ];
 
     const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
-    this.streamerProc = ff;
+    view.streamerProc = ff;
 
     let acc = Buffer.alloc(0);
     const SOI = Buffer.from([0xff, 0xd8]);
     const EOI = Buffer.from([0xff, 0xd9]);
 
     ff.stdout?.on('data', (chunk: Buffer) => {
-      if (this.closed) return;
+      if (this.closed || !this.views.has(view.viewId)) return;
       acc = Buffer.concat([acc, chunk]);
       if (acc.length > 4 * 1024 * 1024) {
         acc = acc.subarray(acc.length - 512 * 1024);
@@ -542,71 +754,109 @@ export class LinuxAppSession {
         }
         const frame = Buffer.from(acc.subarray(start, end + 2));
         acc = acc.subarray(end + 2);
-        if (this.lastFrame && this.lastFrame.length === frame.length && this.lastFrame.equals(frame)) {
+        if (view.lastFrame && view.lastFrame.length === frame.length && view.lastFrame.equals(frame)) {
           continue;
         }
-        this.lastFrame = frame;
-        for (const sub of this.subscribers) {
+        view.lastFrame = frame;
+        for (const sub of view.subscribers) {
           sub.onVideoFrame(frame);
         }
       }
     });
   }
 
-  public subscribe(sub: LinuxAppSubscriber): () => void {
-    this.subscribers.add(sub);
-    sub.onEvent({ type: 'title', title: this.title });
-    sub.onEvent({ type: 'cursor', cursor: this.cursor });
-    if (this.lastFrame) {
-      sub.onVideoFrame(this.lastFrame);
-    } else if (this.streamerMode === 'xdamage' && this.streamerProc?.stdin?.writable) {
-      this.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
-    }
-    return () => {
-      this.subscribers.delete(sub);
-    };
-  }
-
-  public sendInput(msg: Record<string, unknown>): void {
-    if (this.closed || !this.x11BridgeProc?.stdin?.writable) return;
-    this.x11BridgeProc.stdin.write(JSON.stringify(msg) + '\n');
-  }
-
-  public resize(width: number, height: number): void {
-    if (this.closed) return;
-    const w = Math.max(420, Math.min(1920, Math.round(width)));
-    const h = Math.max(300, Math.min(1080, Math.round(height)));
-    const evenW = w - (w % 2);
-    const evenH = h - (h % 2);
-    if (Math.abs(evenW - this.width) < 4 && Math.abs(evenH - this.height) < 4) return;
-
-    this.width = evenW;
-    this.height = evenH;
-    this.sendInput({ type: 'resize', width: evenW, height: evenH });
-
-    if (this.streamerMode === 'xdamage' && this.streamerProc?.stdin?.writable) {
-      this.streamerProc.stdin.write(
+  private resizeViewCapture(view: ViewStream, evenW: number, evenH: number): void {
+    if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
+      view.streamerProc.stdin.write(
         JSON.stringify({ type: 'resize', width: evenW, height: evenH }) + '\n'
       );
       return;
     }
 
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
-      if (!this.closed && this.streamerMode === 'ffmpeg') {
-        this.lastFrame = null;
-        this.startFfmpegFallbackCapture();
+    if (view.resizeTimer) clearTimeout(view.resizeTimer);
+    view.resizeTimer = setTimeout(() => {
+      if (!this.closed && this.views.has(view.viewId) && view.streamerMode === 'ffmpeg') {
+        view.lastFrame = null;
+        this.startViewFfmpegCapture(view);
       }
     }, 160);
+  }
+
+  private destroyView(view: ViewStream): void {
+    this.views.delete(view.viewId);
+    if (view.resizeTimer) clearTimeout(view.resizeTimer);
+    if (view.streamerProc) {
+      try {
+        view.streamerProc.kill('SIGTERM');
+      } catch {}
+      view.streamerProc = null;
+    }
+    view.subscribers.clear();
+  }
+
+  public subscribeView(viewId: string, sub: LinuxAppSubscriber): () => void {
+    const view = this.views.get(viewId || 'main') || this.views.get('main');
+    if (!view) {
+      sub.onEvent({ type: 'app_exit', code: 0 });
+      return () => {};
+    }
+    view.subscribers.add(sub);
+    sub.onEvent({ type: 'title', title: view.title });
+    sub.onEvent({ type: 'cursor', cursor: this.cursor });
+    if (view.lastFrame) {
+      sub.onVideoFrame(view.lastFrame);
+    } else if (view.streamerMode === 'xdamage' && view.streamerProc?.stdin?.writable) {
+      view.streamerProc.stdin.write(JSON.stringify({ type: 'refresh' }) + '\n');
+    }
+    return () => {
+      view.subscribers.delete(sub);
+    };
+  }
+
+  public sendInput(msg: Record<string, unknown>, viewId = 'main'): void {
+    if (this.closed || !this.x11BridgeProc?.stdin?.writable) return;
+    this.x11BridgeProc.stdin.write(JSON.stringify({ ...msg, view: msg.view || viewId }) + '\n');
+  }
+
+  public resizeView(viewId: string, width: number, height: number): void {
+    if (this.closed) return;
+    const view = this.views.get(viewId || 'main');
+    if (!view) return;
+    const dims = clampDim(width, height);
+    if (Math.abs(dims.width - view.width) < 4 && Math.abs(dims.height - view.height) < 4) return;
+
+    view.width = dims.width;
+    view.height = dims.height;
+    if (view.viewId === 'main') {
+      this.width = dims.width;
+      this.height = dims.height;
+    }
+    this.sendInput({ type: 'resize', width: dims.width, height: dims.height }, view.viewId);
+    this.resizeViewCapture(view, dims.width, dims.height);
+  }
+
+  public focusView(viewId: string): void {
+    this.sendInput({ type: 'focus_view' }, viewId || 'main');
+  }
+
+  public closeView(viewId: string): void {
+    if (this.closed) return;
+    if (!viewId || this.views.size <= 1) {
+      this.close();
+      return;
+    }
+    this.sendInput({ type: 'close_view' }, viewId);
   }
 
   public close(): void {
     if (this.closed) return;
     this.closed = true;
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+
+    for (const v of Array.from(this.views.values())) {
+      this.destroyView(v);
+    }
 
     const procs = [
-      this.streamerProc,
       this.parecProc,
       this.x11BridgeProc,
       this.appProc,
@@ -642,7 +892,6 @@ export class LinuxAppSession {
       } catch {}
     }
 
-    this.subscribers.clear();
     this.onCloseCb();
   }
 }
@@ -651,9 +900,35 @@ export class LinuxDisplayBridge {
   private sessions = new Map<string, LinuxAppSession>();
   private usedDisplays = new Set<number>();
 
-  public async launchApp(opts: LinuxAppSessionOptions): Promise<LinuxAppSession> {
-    const existing = this.sessions.get(opts.sessionId);
-    if (existing) return existing;
+  public findActiveProfileSession(desktopId: string, appId: string, command: string): LinuxAppSession | undefined {
+    const baseBin = path.basename(command.split(/\s+/)[0] || '');
+    const isLocked = PROFILE_LOCKED_APPS.has(appId) || PROFILE_LOCKED_APPS.has(baseBin);
+    if (!isLocked) return undefined;
+
+    for (const s of this.sessions.values()) {
+      if (s.desktopId === desktopId && (s.appId === appId || path.basename(s.appId) === baseBin)) {
+        return s;
+      }
+    }
+    return undefined;
+  }
+
+  public async launchApp(
+    opts: LinuxAppSessionOptions
+  ): Promise<{ session: LinuxAppSession; openedAsExtraWindow: boolean }> {
+    const existingById = this.sessions.get(opts.sessionId);
+    if (existingById) return { session: existingById, openedAsExtraWindow: false };
+
+    // Avoid profile-lock crash (Firefox/Chrome): spawn extra window inside the existing X11 session!
+    const existingProfileSession = this.findActiveProfileSession(
+      opts.desktopId,
+      opts.appId,
+      opts.command
+    );
+    if (existingProfileSession) {
+      existingProfileSession.spawnExtraWindow();
+      return { session: existingProfileSession, openedAsExtraWindow: true };
+    }
 
     const displayNum = findFreeDisplay(this.usedDisplays);
     this.usedDisplays.add(displayNum);
@@ -664,7 +939,7 @@ export class LinuxDisplayBridge {
     });
     this.sessions.set(opts.sessionId, session);
     await session.start();
-    return session;
+    return { session, openedAsExtraWindow: false };
   }
 
   public getSession(sessionId: string): LinuxAppSession | undefined {
@@ -693,9 +968,14 @@ export class LinuxDisplayBridge {
       }));
   }
 
-  public closeSession(sessionId: string): void {
+  public closeSession(sessionId: string, viewId?: string): void {
     const s = this.sessions.get(sessionId);
-    if (s) s.close();
+    if (!s) return;
+    if (viewId) {
+      s.closeView(viewId);
+    } else {
+      s.close();
+    }
   }
 
   public destroyDesktopSessions(desktopId: string): void {

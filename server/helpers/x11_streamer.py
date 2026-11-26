@@ -43,6 +43,28 @@ class XEvent(ctypes.Union):
     _fields_ = [("type", ctypes.c_int), ("pad", ctypes.c_long * 24)]
 
 
+class XDamageNotifyEvent(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("drawable", ctypes.c_ulong),
+        ("damage", ctypes.c_ulong),
+        ("level", ctypes.c_int),
+        ("more", ctypes.c_int),
+        ("timestamp", ctypes.c_ulong),
+        ("area_x", ctypes.c_short),
+        ("area_y", ctypes.c_short),
+        ("area_w", ctypes.c_ushort),
+        ("area_h", ctypes.c_ushort),
+        ("geo_x", ctypes.c_short),
+        ("geo_y", ctypes.c_short),
+        ("geo_w", ctypes.c_ushort),
+        ("geo_h", ctypes.c_ushort),
+    ]
+
+
 # X11 signatures
 libX11.XOpenDisplay.argtypes = [ctypes.c_char_p]
 libX11.XOpenDisplay.restype = ctypes.c_void_p
@@ -105,6 +127,7 @@ libtj.tjDestroy.argtypes = [ctypes.c_void_p]
 ZPIXMAP = 2
 ALL_PLANES = 0xFFFFFFFFFFFFFFFF
 XDAMAGE_REPORT_NON_EMPTY = 1
+XDAMAGE_REPORT_BOUNDING_BOX = 2
 TJPF_BGRX = 3
 TJSAMP_422 = 1
 TJFLAG_FASTDCT = 2048
@@ -122,6 +145,8 @@ def main() -> None:
     height = max(240, min(1080, int(sys.argv[3]) if len(sys.argv) > 3 else 680))
     max_fps = max(8, min(35, int(sys.argv[4]) if len(sys.argv) > 4 else 24))
     quality = max(45, min(92, int(sys.argv[5]) if len(sys.argv) > 5 else 78))
+    off_x = max(0, int(sys.argv[6]) if len(sys.argv) > 6 else 0)
+    off_y = max(0, int(sys.argv[7]) if len(sys.argv) > 7 else 0)
 
     dpy = None
     for _ in range(30):
@@ -138,7 +163,8 @@ def main() -> None:
     if not libXdamage.XDamageQueryExtension(dpy, ctypes.byref(dmg_ev_base), ctypes.byref(dmg_err_base)):
         sys.exit(2)
 
-    damage = libXdamage.XDamageCreate(dpy, root, XDAMAGE_REPORT_NON_EMPTY)
+    # Bounding-box reports carry the damaged area, so each view only re-encodes when ITS slot changed
+    damage = libXdamage.XDamageCreate(dpy, root, XDAMAGE_REPORT_BOUNDING_BOX)
     libX11.XFlush(dpy)
 
     tj = libtj.tjInitCompress()
@@ -157,7 +183,7 @@ def main() -> None:
     ev = XEvent()
 
     def grab_and_send(qual: int) -> bool:
-        img_ptr = libX11.XGetImage(dpy, root, 0, 0, width, height, ALL_PLANES, ZPIXMAP)
+        img_ptr = libX11.XGetImage(dpy, root, off_x, off_y, width, height, ALL_PLANES, ZPIXMAP)
         if not img_ptr:
             return False
         try:
@@ -245,8 +271,15 @@ def main() -> None:
         while libX11.XPending(dpy) > 0:
             libX11.XNextEvent(dpy, ctypes.byref(ev))
             if ev.type == dmg_ev_base.value:
+                dn = ctypes.cast(ctypes.byref(ev), ctypes.POINTER(XDamageNotifyEvent)).contents
+                # Always reset the accumulated box so later damage keeps generating events
                 libXdamage.XDamageSubtract(dpy, damage, 0, 0)
-                dirty = True
+                ax, ay, aw, ah = dn.area_x, dn.area_y, dn.area_w, dn.area_h
+                if (
+                    aw == 0 or ah == 0
+                    or (ax < off_x + width and ax + aw > off_x and ay < off_y + height and ay + ah > off_y)
+                ):
+                    dirty = True
 
         now = time.monotonic()
         if now < startup_until and (now - last_sent) > 0.35:

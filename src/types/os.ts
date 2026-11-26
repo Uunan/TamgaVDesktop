@@ -70,6 +70,7 @@ export interface RunningLinuxSession {
   title: string;
   width: number;
   height: number;
+  openedAsExtraWindow?: boolean;
 }
 
 export interface TelemetryData {
@@ -121,8 +122,10 @@ export interface OSWindow {
   kind: WindowKind;
   title: string;
   folderPath?: string;
+  vscodeUrl?: string;
   targetNodePath?: string;
   appSessionId?: string;
+  appViewId?: string;
   appId?: string;
   terminalSessionId?: string;
   x: number;

@@ -94,10 +94,10 @@ export const appsApi = {
       body: JSON.stringify(params),
     }),
 
-  close: (sessionId: string) =>
+  close: (sessionId: string, viewId?: string) =>
     jsonReq<{ ok: boolean }>('/api/apps/close', {
       method: 'POST',
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify({ sessionId, viewId }),
     }),
 
   install: (params: { appId?: string; aptPackage?: string }) =>
@@ -111,10 +111,10 @@ export const appsApi = {
       `/api/apps/install/${encodeURIComponent(jobId)}`
     ),
 
-  startVSCodeWeb: (folderPath?: string) =>
+  startVSCodeWeb: (folderPath?: string, theme?: 'dark' | 'light') =>
     jsonReq<{ url: string }>('/api/apps/vscode-start', {
       method: 'POST',
-      body: JSON.stringify({ folderPath }),
+      body: JSON.stringify({ folderPath, theme }),
     }),
 
   vscodeStatus: () =>

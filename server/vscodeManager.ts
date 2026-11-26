@@ -174,12 +174,51 @@ export class VSCodeServerManager {
     });
   }
 
+  private patchWorkbenchHtml(html: string, tamgaTheme: string): string {
+    return html.replace(
+      /(<meta\s+id=["']vscode-workbench-web-configuration["']\s+data-settings=["'])([^"']+)(["'])/i,
+      (full, prefix: string, encoded: string, suffix: string) => {
+        try {
+          const decoded = encoded
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>');
+          const cfg = JSON.parse(decoded) as Record<string, unknown>;
+          cfg.enableWorkspaceTrust = false;
+          const prevDefaults =
+            typeof cfg.configurationDefaults === 'object' && cfg.configurationDefaults
+              ? (cfg.configurationDefaults as Record<string, unknown>)
+              : {};
+          cfg.configurationDefaults = {
+            ...prevDefaults,
+            'security.workspace.trust.enabled': false,
+            'workbench.startupEditor': 'none',
+            'window.confirmBeforeClose': 'never',
+            'window.autoDetectColorScheme': false,
+            'workbench.colorTheme':
+              tamgaTheme === 'light' ? 'Default Light Modern' : 'Default Dark Modern',
+          };
+          const reEncoded = JSON.stringify(cfg)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+          return `${prefix}${reEncoded}${suffix}`;
+        } catch {
+          return full;
+        }
+      }
+    );
+  }
+
   public proxyHttp = (req: Request, res: Response): void => {
     if (!this.ready) {
       res.status(503).send('VS Code hazırlanıyor...');
       return;
     }
     const acceptGzip = String(req.headers['accept-encoding'] || '').includes('gzip');
+    const tamgaTheme = String(req.query?.tamgaTheme || 'dark');
     // Preserve client Host header so code serve-web sets remoteAuthority to the external host:port
     const headers = { ...req.headers };
     const upstream = http.request(
@@ -206,6 +245,34 @@ export class VSCodeServerManager {
         }
 
         const ctype = String(outHeaders['content-type'] || '').toLowerCase();
+
+        // Patch VS Code Web bootstrap HTML so workspace trust banner never shifts titlebar downward
+        if (req.method !== 'HEAD' && ctype.includes('text/html') && !outHeaders['content-encoding']) {
+          const chunks: Buffer[] = [];
+          upRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+          upRes.on('end', () => {
+            const rawHtml = Buffer.concat(chunks).toString('utf-8');
+            const patched = Buffer.from(this.patchWorkbenchHtml(rawHtml, tamgaTheme), 'utf-8');
+            if (acceptGzip) {
+              delete outHeaders['content-length'];
+              outHeaders['content-encoding'] = 'gzip';
+              res.writeHead(upRes.statusCode || 200, outHeaders);
+              zlib.gzip(patched, { level: 1 }, (err, gzBuf) => {
+                if (err) res.end(patched);
+                else res.end(gzBuf);
+              });
+            } else {
+              outHeaders['content-length'] = String(patched.length);
+              res.writeHead(upRes.statusCode || 200, outHeaders);
+              res.end(patched);
+            }
+          });
+          upRes.on('error', () => {
+            if (!res.headersSent) res.status(502).end('VS Code yanıt hatası');
+          });
+          return;
+        }
+
         const shouldGzip =
           acceptGzip &&
           req.method !== 'HEAD' &&

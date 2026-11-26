@@ -9,3 +9,6 @@ tamga.config.json
 *.pem
 .DS_Store
 *.log
+__pycache__/
+*.pyc
+
