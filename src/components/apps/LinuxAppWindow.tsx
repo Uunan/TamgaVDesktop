@@ -1,7 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { remoteAudio } from '../../services/audioPlayer';
 import { appsApi, vfsApi } from '../../services/osBridge';
+import {
+  copyTextToHostClipboard,
+  getCachedClipboardText,
+  readHostClipboardSilently,
+  setCachedClipboardText,
+} from '../../utils/clipboardBridge';
 import { useWindowFrameControls } from '../desktop/WindowFrame';
 
 export interface ExtraLinuxWindowEvent {
@@ -22,8 +28,12 @@ interface LinuxAppWindowProps {
   onAppExit?: () => void;
   onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
   onVfsChanged?: () => void;
+  onClipboardSync?: (text: string) => void;
   onNotify?: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
+
+const IS_MAC_HOST =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
 
 export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   sessionId,
@@ -36,10 +46,14 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   onAppExit,
   onWindowOpened,
   onVfsChanged,
+  onClipboardSync,
   onNotify,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const inputSinkRef = useRef<HTMLTextAreaElement>(null);
+  const isComposingRef = useRef(false);
+  const lastPasteShiftRef = useRef(false);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const lastMoveTsRef = useRef(0);
@@ -60,23 +74,55 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   onExitRef.current = onAppExit;
   const onWindowOpenedRef = useRef(onWindowOpened);
   onWindowOpenedRef.current = onWindowOpened;
+  const onClipSyncRef = useRef(onClipboardSync);
+  onClipSyncRef.current = onClipboardSync;
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
   const [nativeDragOver, setNativeDragOver] = useState(false);
 
-  const sendInput = (payload: Record<string, unknown>) => {
+  const sendInput = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
-  };
+  }, []);
+
+  const focusInputSink = useCallback(() => {
+    const sink = inputSinkRef.current;
+    if (sink && document.activeElement !== sink) {
+      try {
+        sink.focus({ preventScroll: true });
+      } catch {}
+    }
+  }, []);
+
+  const syncHostClipboardToRemote = useCallback(() => {
+    readHostClipboardSilently().then((txt) => {
+      if (txt) {
+        sendInput({ type: 'clipboard_set', text: txt });
+      }
+    });
+  }, [sendInput]);
 
   useEffect(() => {
     if (isFocused) {
       sendInput({ type: 'focus' });
+      focusInputSink();
+      syncHostClipboardToRemote();
     }
-  }, [isFocused]);
+  }, [isFocused, sendInput, focusInputSink, syncHostClipboardToRemote]);
+
+  useEffect(() => {
+    const onWinFocus = () => {
+      if (isFocused) {
+        focusInputSink();
+        syncHostClipboardToRemote();
+      }
+    };
+    window.addEventListener('focus', onWinFocus);
+    return () => window.removeEventListener('focus', onWinFocus);
+  }, [isFocused, focusInputSink, syncHostClipboardToRemote]);
 
   useEffect(() => {
     let closed = false;
@@ -195,6 +241,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     ws.onopen = () => {
       if (isFocused) {
         sendInput({ type: 'focus' });
+        focusInputSink();
+        syncHostClipboardToRemote();
       }
     };
 
@@ -243,8 +291,9 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             readyFiredRef.current = true;
             onReadyRef.current?.();
           }
-        } else if (msg.type === 'clipboard' && typeof msg.text === 'string') {
-          navigator.clipboard?.writeText(msg.text).catch(() => {});
+        } else if (msg.type === 'clipboard' && typeof msg.text === 'string' && msg.text) {
+          copyTextToHostClipboard(msg.text);
+          onClipSyncRef.current?.(msg.text);
         }
       } catch {}
     };
@@ -446,13 +495,170 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       onDrop={handleNativeDrop}
       className="relative w-full h-full overflow-hidden bg-[var(--os-bg)] select-none"
     >
+      {/* Hidden host keyboard & clipboard input sink: captures exact host layout characters (Turkish i/ı/İ/ş/ğ/ü/ö/ç/@, IME, dead keys) and native HTTP/HTTPS paste events */}
+      <textarea
+        ref={inputSinkRef}
+        data-testid="linux-app-input-sink"
+        aria-label={`${appName} klavye girişi`}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        tabIndex={0}
+        onCompositionStart={() => {
+          isComposingRef.current = true;
+        }}
+        onCompositionEnd={(e) => {
+          isComposingRef.current = false;
+          const composed = e.data || inputSinkRef.current?.value || '';
+          if (inputSinkRef.current) inputSinkRef.current.value = '';
+          if (composed) {
+            sendInput({ type: 'text', text: composed });
+          }
+        }}
+        onInput={(e) => {
+          if (isComposingRef.current) return;
+          const el = e.currentTarget;
+          const val = el.value;
+          if (val) {
+            el.value = '';
+            sendInput({ type: 'text', text: val });
+          }
+        }}
+        onPaste={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (inputSinkRef.current) inputSinkRef.current.value = '';
+          const pasted = e.clipboardData?.getData('text/plain') ?? '';
+          if (pasted) {
+            setCachedClipboardText(pasted);
+            onClipSyncRef.current?.(pasted);
+            sendInput({ type: 'paste_text', text: pasted, shiftKey: lastPasteShiftRef.current });
+          } else {
+            sendInput({ type: 'shortcut', key: 'v', ctrlKey: true, shiftKey: lastPasteShiftRef.current });
+          }
+        }}
+        onCopy={(e) => {
+          const cached = getCachedClipboardText();
+          if (cached && e.clipboardData) {
+            e.preventDefault();
+            e.clipboardData.setData('text/plain', cached);
+          }
+        }}
+        onCut={(e) => {
+          const cached = getCachedClipboardText();
+          if (cached && e.clipboardData) {
+            e.preventDefault();
+            e.clipboardData.setData('text/plain', cached);
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.key === 'Process') return;
+          const isAltGraph = Boolean(e.getModifierState?.('AltGraph')) || (e.ctrlKey && e.altKey);
+          const hasCmdOrCtrl = (e.ctrlKey || e.metaKey) && !isAltGraph;
+
+          // Let Cmd+V / Ctrl+V trigger the browser's native `onPaste` event on this textarea (works on both HTTP and HTTPS!)
+          if (hasCmdOrCtrl && e.key.toLowerCase() === 'v') {
+            lastPasteShiftRef.current = e.shiftKey;
+            return;
+          }
+
+          // Translate macOS Cmd+<key> & Windows/Linux Ctrl+<key> shortcuts cleanly into X11 shortcuts
+          if (
+            hasCmdOrCtrl &&
+            e.key !== 'Control' &&
+            e.key !== 'Meta' &&
+            e.key !== 'Shift' &&
+            e.key !== 'Alt'
+          ) {
+            e.preventDefault();
+            e.stopPropagation();
+            sendInput({
+              type: 'shortcut',
+              key: e.key,
+              ctrlKey: true,
+              shiftKey: e.shiftKey,
+              altKey: !isAltGraph && e.altKey,
+            });
+            return;
+          }
+
+          // Linux Alt+<mnemonic> on non-Mac hosts (while keeping Mac Option+Q=@ and Windows AltGr+Q=@ intact!)
+          if (
+            e.altKey &&
+            !isAltGraph &&
+            !IS_MAC_HOST &&
+            e.key.length === 1 &&
+            /^[a-z0-9]$/i.test(e.key)
+          ) {
+            e.preventDefault();
+            e.stopPropagation();
+            sendInput({
+              type: 'shortcut',
+              key: e.key,
+              ctrlKey: false,
+              shiftKey: e.shiftKey,
+              altKey: true,
+            });
+            return;
+          }
+
+          // Let all printable host characters (including Turkish i, ı, İ, I, ğ, ü, ş, ö, ç, @, {, }, dead keys) flow through `onInput`
+          if (e.key === 'Dead' || (e.key.length === 1 && !hasCmdOrCtrl)) {
+            return;
+          }
+
+          if (e.key === 'Meta') {
+            e.preventDefault();
+            return;
+          }
+
+          e.preventDefault();
+          e.stopPropagation();
+          sendInput({
+            type: 'keydown',
+            key: e.key,
+            code: e.code,
+            ctrlKey: e.ctrlKey && !isAltGraph,
+            altKey: e.altKey && !isAltGraph,
+            shiftKey: e.shiftKey,
+            metaKey: false,
+          });
+        }}
+        onKeyUp={(e) => {
+          if (e.nativeEvent.isComposing || e.key === 'Process') return;
+          if (e.key === 'Dead' || e.key === 'Meta' || e.key.length === 1) {
+            return;
+          }
+          const isAltGraph = Boolean(e.getModifierState?.('AltGraph')) || (e.ctrlKey && e.altKey);
+          e.preventDefault();
+          e.stopPropagation();
+          sendInput({
+            type: 'keyup',
+            key: e.key,
+            code: e.code,
+            ctrlKey: e.ctrlKey && !isAltGraph,
+            altKey: e.altKey && !isAltGraph,
+            shiftKey: e.shiftKey,
+            metaKey: false,
+          });
+        }}
+        className="fixed -left-[9999px] top-0 w-px h-px opacity-0 pointer-events-none"
+      />
+
       <canvas
         ref={canvasRef}
-        tabIndex={0}
         onContextMenu={(e) => e.preventDefault()}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          focusInputSink();
+        }}
+        onPointerEnter={() => {
+          if (isFocused) syncHostClipboardToRemote();
+        }}
         onPointerDown={(e) => {
           remoteAudio.ensureContext();
-          canvasRef.current?.focus();
+          focusInputSink();
           sendInput({ type: 'focus' });
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch') {
@@ -479,6 +685,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           sendInput({ type: 'mousemove', x, y });
         }}
         onPointerUp={(e) => {
+          focusInputSink();
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch' && touchStateRef.current) {
             const wasMoved = touchStateRef.current.moved;
@@ -490,49 +697,6 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             return;
           }
           sendInput({ type: 'mouseup', x, y, button: mapButton(e.button) });
-        }}
-        onKeyDown={async (e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-            e.preventDefault();
-            try {
-              const clip = await navigator.clipboard.readText();
-              if (clip) {
-                sendInput({ type: 'clipboard_set', text: clip });
-              }
-            } catch {}
-            setTimeout(() => {
-              sendInput({ type: 'keydown', key: 'Control', ctrlKey: true });
-              sendInput({ type: 'keydown', key: 'v', ctrlKey: true });
-              sendInput({ type: 'keyup', key: 'v', ctrlKey: true });
-              sendInput({ type: 'keyup', key: 'Control', ctrlKey: false });
-            }, 35);
-            return;
-          }
-          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-            setTimeout(() => sendInput({ type: 'clipboard_get' }), 90);
-          }
-          e.preventDefault();
-          sendInput({
-            type: 'keydown',
-            key: e.key,
-            code: e.code,
-            ctrlKey: e.ctrlKey,
-            altKey: e.altKey,
-            shiftKey: e.shiftKey,
-            metaKey: e.metaKey,
-          });
-        }}
-        onKeyUp={(e) => {
-          e.preventDefault();
-          sendInput({
-            type: 'keyup',
-            key: e.key,
-            code: e.code,
-            ctrlKey: e.ctrlKey,
-            altKey: e.altKey,
-            shiftKey: e.shiftKey,
-            metaKey: e.metaKey,
-          });
         }}
         style={{ cursor: cursorStyle }}
         className="w-full h-full block object-contain outline-none touch-none"

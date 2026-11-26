@@ -78,6 +78,24 @@ libX11.XStringToKeysym.argtypes = [ctypes.c_char_p]
 libX11.XStringToKeysym.restype = ctypes.c_ulong
 libX11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 libX11.XKeysymToKeycode.restype = ctypes.c_ubyte
+libX11.XkbKeycodeToKeysym.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int]
+libX11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
+libX11.XDisplayKeycodes.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(ctypes.c_int),
+]
+libX11.XDisplayKeycodes.restype = ctypes.c_int
+libX11.XChangeKeyboardMapping.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_ulong),
+    ctypes.c_int,
+]
+libX11.XChangeKeyboardMapping.restype = ctypes.c_int
+libX11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+libX11.XInternAtom.restype = ctypes.c_ulong
 libX11.XSetErrorHandler.argtypes = [
     ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 ]
@@ -94,6 +112,13 @@ libXfixes.XFixesQueryExtension.argtypes = [
 ]
 libXfixes.XFixesQueryExtension.restype = ctypes.c_int
 libXfixes.XFixesSelectCursorInput.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
+libXfixes.XFixesSelectSelectionInput.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.c_ulong,
+    ctypes.c_ulong,
+]
+libXfixes.XFixesSelectSelectionInput.restype = None
 libXfixes.XFixesGetCursorImage.argtypes = [ctypes.c_void_p]
 libXfixes.XFixesGetCursorImage.restype = ctypes.POINTER(XFixesCursorImage)
 
@@ -662,10 +687,86 @@ def main() -> None:
     shift_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Shift_L"))
     ctrl_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Control_L"))
     alt_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"Alt_L"))
+    v_kc = libX11.XKeysymToKeycode(dpy, libX11.XStringToKeysym(b"v"))
+
+    # Discover 8 genuinely unused evdev XKB keycodes for race-free Unicode character injection
+    min_kc_c = ctypes.c_int(8)
+    max_kc_c = ctypes.c_int(255)
+    libX11.XDisplayKeycodes(dpy, ctypes.byref(min_kc_c), ctypes.byref(max_kc_c))
+    scratch_kcs = []
+    for cand_kc in range(max(90, min_kc_c.value), min(246, max_kc_c.value + 1)):
+        if cand_kc in (shift_kc, ctrl_kc, alt_kc, v_kc):
+            continue
+        ks0 = libX11.XkbKeycodeToKeysym(dpy, cand_kc, 0, 0)
+        ks1 = libX11.XkbKeycodeToKeysym(dpy, cand_kc, 0, 1)
+        if ks0 == 0 and ks1 == 0:
+            scratch_kcs.append(cand_kc)
+            if len(scratch_kcs) >= 8:
+                break
+    if not scratch_kcs:
+        scratch_kcs = [200, 201, 202, 203]
+    scratch_idx = [0]
+
     x11_lock = threading.Lock()
     wm = WindowManager(display_str, screen_w, screen_h)
+    wm.env["LANG"] = "C.UTF-8"
+    wm.env["LC_ALL"] = "C.UTF-8"
     env = wm.env
-    state = {"last_cursor": "default"}
+    state = {
+        "last_cursor": "default",
+        "last_clip": "",
+        "suppress_clip_until": 0.0,
+        "held_shift": False,
+        "held_ctrl": False,
+        "held_alt": False,
+    }
+
+    def set_x11_clipboard(txt: str) -> None:
+        state["last_clip"] = txt
+        state["suppress_clip_until"] = time.monotonic() + 0.35
+        data = txt.encode("utf-8")
+        for sel in ("clipboard", "primary"):
+            try:
+                p = subprocess.Popen(
+                    ["xclip", "-selection", sel, "-i"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                    close_fds=True,
+                )
+                if p.stdin:
+                    p.stdin.write(data)
+                    p.stdin.close()
+                p.wait(timeout=0.8)
+            except Exception:
+                pass
+
+    def read_x11_clipboard(force_emit: bool = False) -> None:
+        if not force_emit and time.monotonic() < state["suppress_clip_until"]:
+            return
+        out = ""
+        for cmd in (
+            ["xclip", "-o", "-selection", "clipboard", "-t", "UTF8_STRING"],
+            ["xclip", "-o", "-selection", "clipboard"],
+        ):
+            try:
+                out = subprocess.check_output(
+                    cmd, env=env, stderr=subprocess.DEVNULL, timeout=0.9
+                ).decode("utf-8", errors="ignore")
+                if out:
+                    break
+            except Exception:
+                continue
+        if out and (force_emit or out != state["last_clip"]):
+            state["last_clip"] = out
+            emit({"type": "clipboard", "text": out})
+
+    def schedule_clipboard_read(delay_sec: float = 0.05, force_emit: bool = False) -> None:
+        def _worker():
+            time.sleep(delay_sec)
+            read_x11_clipboard(force_emit=force_emit)
+        threading.Thread(target=_worker, daemon=True).start()
 
     def reconcile_loop():
         rec_dpy = libX11.XOpenDisplay(display_str.encode("utf-8"))
@@ -695,29 +796,139 @@ def main() -> None:
         )
         if has_xfixes:
             libXfixes.XFixesSelectCursorInput(mon_dpy, root, 1)
+            clip_atom = libX11.XInternAtom(mon_dpy, b"CLIPBOARD", 0)
+            if clip_atom:
+                # XFixesSetSelectionOwnerNotifyMask = 1
+                libXfixes.XFixesSelectSelectionInput(mon_dpy, root, clip_atom, 1)
         libX11.XFlush(mon_dpy)
 
         ev = XEvent()
         while True:
             libX11.XNextEvent(mon_dpy, ctypes.byref(ev))
-            if has_xfixes and ev.type == xfixes_ev_base.value:
-                cimg_ptr = libXfixes.XFixesGetCursorImage(mon_dpy)
-                if cimg_ptr:
-                    try:
-                        cname = cimg_ptr.contents.name.decode("utf-8", errors="ignore") if cimg_ptr.contents.name else ""
-                        css_cur = map_xcursor_to_css(cname)
-                        if css_cur != state["last_cursor"]:
-                            state["last_cursor"] = css_cur
-                            emit({"type": "cursor", "cursor": css_cur})
-                    finally:
-                        libX11.XFree(cimg_ptr)
-                continue
+            if has_xfixes:
+                # XFixesSelectionNotify == ev_base + 0
+                if ev.type == xfixes_ev_base.value:
+                    schedule_clipboard_read(0.04, force_emit=False)
+                    continue
+                # XFixesCursorNotify == ev_base + 1
+                if ev.type == xfixes_ev_base.value + 1:
+                    cimg_ptr = libXfixes.XFixesGetCursorImage(mon_dpy)
+                    if cimg_ptr:
+                        try:
+                            cname = cimg_ptr.contents.name.decode("utf-8", errors="ignore") if cimg_ptr.contents.name else ""
+                            css_cur = map_xcursor_to_css(cname)
+                            if css_cur != state["last_cursor"]:
+                                state["last_cursor"] = css_cur
+                                emit({"type": "cursor", "cursor": css_cur})
+                        finally:
+                            libX11.XFree(cimg_ptr)
+                    continue
             wm.dirty.set()
 
     threading.Thread(target=reconcile_loop, daemon=True).start()
     threading.Thread(target=event_monitor_loop, daemon=True).start()
     wm.dirty.set()
     emit({"type": "ready"})
+
+    def char_to_keysym(ch: str) -> int:
+        if ch in ("\n", "\r"):
+            return libX11.XStringToKeysym(b"Return")
+        if ch == "\t":
+            return libX11.XStringToKeysym(b"Tab")
+        if ch == " ":
+            return libX11.XStringToKeysym(b"space")
+        mapped = KEY_MAP.get(ch)
+        if mapped:
+            return libX11.XStringToKeysym(mapped.encode("utf-8"))
+        cp = ord(ch)
+        if 0x21 <= cp <= 0x7E:
+            return libX11.XStringToKeysym(ch.encode("ascii"))
+        if 0x00A0 <= cp <= 0x00FF:
+            return cp
+        return 0x01000000 | cp
+
+    def type_unicode_text(txt: str) -> None:
+        if not txt:
+            return
+        with x11_lock:
+            # Temporarily clear any held modifiers so host Option/AltGr/Shift never corrupt the character
+            if state["held_ctrl"] and ctrl_kc:
+                libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 0, 0)
+            if state["held_alt"] and alt_kc:
+                libXtst.XTestFakeKeyEvent(dpy, alt_kc, 0, 0)
+            if state["held_shift"] and shift_kc:
+                libXtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
+
+            for ch in txt:
+                ks = char_to_keysym(ch)
+                if not ks:
+                    continue
+                kc = libX11.XKeysymToKeycode(dpy, ks)
+                ks0 = libX11.XkbKeycodeToKeysym(dpy, kc, 0, 0) if kc else 0
+                ks1 = libX11.XkbKeycodeToKeysym(dpy, kc, 0, 1) if kc else 0
+
+                if kc and ks0 == ks:
+                    libXtst.XTestFakeKeyEvent(dpy, kc, 1, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, kc, 0, 0)
+                elif kc and ks1 == ks and shift_kc:
+                    libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, kc, 1, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, kc, 0, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
+                else:
+                    skc = scratch_kcs[scratch_idx[0] % len(scratch_kcs)]
+                    scratch_idx[0] += 1
+                    syms = (ctypes.c_ulong * 2)(ks, ks)
+                    libX11.XChangeKeyboardMapping(dpy, skc, 2, syms, 1)
+                    libX11.XSync(dpy, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, skc, 1, 0)
+                    libXtst.XTestFakeKeyEvent(dpy, skc, 0, 0)
+                    libX11.XSync(dpy, 0)
+
+            if state["held_shift"] and shift_kc:
+                libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
+            if state["held_alt"] and alt_kc:
+                libXtst.XTestFakeKeyEvent(dpy, alt_kc, 1, 0)
+            if state["held_ctrl"] and ctrl_kc:
+                libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 1, 0)
+            libX11.XFlush(dpy)
+
+    def tap_shortcut(key_name: str, want_ctrl: bool, want_shift: bool, want_alt: bool) -> None:
+        xname = KEY_MAP.get(key_name)
+        if not xname and len(key_name) == 1:
+            # Map letter shortcuts case-insensitively to US base keysym so Ctrl+C / Ctrl+V / Ctrl+Z always hit exact X11 keycodes
+            lower = key_name.lower()
+            if "a" <= lower <= "z" or "0" <= lower <= "9":
+                xname = lower
+            else:
+                xname = KEY_MAP.get(lower, lower)
+        if not xname:
+            return
+        ks = libX11.XStringToKeysym(xname.encode("utf-8", errors="ignore"))
+        if not ks:
+            return
+        kc = libX11.XKeysymToKeycode(dpy, ks)
+        if not kc:
+            return
+        with x11_lock:
+            if want_ctrl and ctrl_kc:
+                libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 1, 0)
+            if want_shift and shift_kc:
+                libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
+            if want_alt and alt_kc:
+                libXtst.XTestFakeKeyEvent(dpy, alt_kc, 1, 0)
+            libXtst.XTestFakeKeyEvent(dpy, kc, 1, 0)
+            libXtst.XTestFakeKeyEvent(dpy, kc, 0, 0)
+            if want_alt and alt_kc:
+                libXtst.XTestFakeKeyEvent(dpy, alt_kc, 0, 0)
+            if want_shift and shift_kc:
+                libXtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
+            if want_ctrl and ctrl_kc:
+                libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 0, 0)
+            state["held_ctrl"] = False
+            state["held_shift"] = False
+            state["held_alt"] = False
+            libX11.XFlush(dpy)
 
     def press_keysym(ks: int, down: bool):
         kc = libX11.XKeysymToKeycode(dpy, ks)
@@ -816,38 +1027,65 @@ def main() -> None:
                             libXtst.XTestFakeKeyEvent(dpy, ctrl_kc, 0, 0)
                         libX11.XFlush(dpy)
 
+            elif mtype == "text":
+                txt = str(msg.get("text", ""))
+                if txt:
+                    # Use fast clipboard paste for large multi-char blocks (>32 chars); direct XKB keystrokes for typing
+                    if len(txt) > 32:
+                        set_x11_clipboard(txt)
+                        tap_shortcut("v", True, False, False)
+                    else:
+                        type_unicode_text(txt)
+
+            elif mtype == "shortcut":
+                k = str(msg.get("key", ""))
+                want_ctrl = bool(msg.get("ctrlKey"))
+                want_shift = bool(msg.get("shiftKey"))
+                want_alt = bool(msg.get("altKey"))
+                tap_shortcut(k, want_ctrl, want_shift, want_alt)
+                if want_ctrl and k.lower() in ("c", "x"):
+                    schedule_clipboard_read(0.07, force_emit=True)
+
+            elif mtype == "paste_text":
+                txt = str(msg.get("text", ""))
+                want_shift = bool(msg.get("shiftKey"))
+                if txt and txt != state["last_clip"]:
+                    set_x11_clipboard(txt)
+                tap_shortcut("v", True, want_shift, False)
+
             elif mtype in ("keydown", "keyup"):
                 key = str(msg.get("key", ""))
                 is_down = mtype == "keydown"
                 ctrl = bool(msg.get("ctrlKey"))
                 alt = bool(msg.get("altKey"))
                 meta = bool(msg.get("metaKey"))
+                shift = bool(msg.get("shiftKey"))
 
-                if is_down and len(key) == 1 and ord(key) > 127 and not ctrl and not alt and not meta:
-                    spawn_reaped(["xdotool", "type", "--delay", "0", "--clearmodifiers", key], env)
-                    continue
-                if not is_down and len(key) == 1 and ord(key) > 127:
+                if key == "Shift":
+                    state["held_shift"] = is_down
+                elif key == "Control":
+                    state["held_ctrl"] = is_down
+                elif key == "Alt":
+                    state["held_alt"] = is_down
+
+                if len(key) == 1 and not ctrl and not alt and not meta:
+                    if is_down:
+                        type_unicode_text(key)
                     continue
 
                 xname = KEY_MAP.get(key)
                 if not xname and len(key) == 1 and 32 <= ord(key) <= 126:
-                    xname = key
+                    xname = key.lower() if (ctrl or alt or meta) else key
                 if xname:
                     ks = libX11.XStringToKeysym(xname.encode("utf-8"))
                     if ks:
                         with x11_lock:
-                            need_shift = len(key) == 1 and key in SHIFT_REQUIRED_ASCII and not msg.get("shiftKey")
-                            if is_down and need_shift and shift_kc:
+                            if is_down and shift and key not in ("Shift",) and not state["held_shift"] and shift_kc:
                                 libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
                             press_keysym(ks, is_down)
-                            if is_down and need_shift and shift_kc:
+                            if is_down and shift and key not in ("Shift",) and not state["held_shift"] and shift_kc:
                                 libXtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
                             libX11.XFlush(dpy)
-
-            elif mtype == "text":
-                txt = str(msg.get("text", ""))
-                if txt:
-                    spawn_reaped(["xdotool", "type", "--delay", "0", "--clearmodifiers", txt], env)
 
             elif mtype == "resize":
                 wm.resize_view(view, int(msg.get("width", 0) or 0), int(msg.get("height", 0) or 0))
@@ -860,18 +1098,11 @@ def main() -> None:
 
             elif mtype == "clipboard_set":
                 txt = str(msg.get("text", ""))
-                p = subprocess.Popen(
-                    ["xclip", "-selection", "clipboard"],
-                    stdin=subprocess.PIPE, env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
-                )
-                p.communicate(txt.encode("utf-8"), timeout=1.5)
+                if txt:
+                    set_x11_clipboard(txt)
 
             elif mtype == "clipboard_get":
-                out = subprocess.check_output(
-                    ["xclip", "-o", "-selection", "clipboard"],
-                    env=env, stderr=subprocess.DEVNULL, timeout=1.5
-                ).decode("utf-8", errors="ignore")
-                emit({"type": "clipboard", "text": out})
+                read_x11_clipboard(force_emit=True)
 
         except Exception:
             pass

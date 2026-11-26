@@ -169,6 +169,7 @@ export interface LinuxAppInfo {
   packageName?: string;
   desktopFile?: string;
   needsNoSandbox?: boolean;
+  launchMode?: 'gui' | 'terminal';
 }
 
 export interface AptSearchResult {
@@ -251,6 +252,7 @@ export interface OSWindow {
   launching?: boolean;
   terminalSessionId?: string;
   terminalCwd?: string;
+  terminalInitialCommand?: string;
   settingsTab?: SettingsTabId;
   x: number;
   y: number;

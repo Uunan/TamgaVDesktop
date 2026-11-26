@@ -369,8 +369,14 @@ export class LinuxAppSession {
   private hadWindow = false;
   private closed = false;
   private onCloseCb: () => void;
+  private onClipboardCb?: (text: string) => void;
 
-  constructor(opts: LinuxAppSessionOptions, displayNum: number, onCloseCb: () => void) {
+  constructor(
+    opts: LinuxAppSessionOptions,
+    displayNum: number,
+    onCloseCb: () => void,
+    onClipboardCb?: (text: string) => void
+  ) {
     this.sessionId = opts.sessionId;
     this.desktopId = opts.desktopId;
     this.appId = opts.appId;
@@ -404,6 +410,7 @@ export class LinuxAppSession {
       `tamga-gui-${this.sessionId.replace(/[^a-z0-9_-]/gi, '')}`
     );
     this.onCloseCb = onCloseCb;
+    this.onClipboardCb = onClipboardCb;
 
     // Seed primary view 'main' (initial native dimensions are populated when app maps)
     this.views.set('main', {
@@ -517,6 +524,8 @@ export class LinuxAppSession {
           }
         : {}),
       DISPLAY: this.displayStr,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
       XDG_RUNTIME_DIR: this.tempDir,
       GDK_SCALE: '1',
       QT_AUTO_SCREEN_SCALE_FACTOR: '0',
@@ -813,6 +822,10 @@ export class LinuxAppSession {
       }
       this.close();
       return;
+    }
+
+    if (msg.type === 'clipboard' && typeof msg.text === 'string' && msg.text) {
+      this.onClipboardCb?.(msg.text);
     }
 
     // Clipboard / ready / error -> forward to active host view
@@ -1529,6 +1542,11 @@ export class LinuxAppSession {
     this.sendInput({ type: 'focus_view' }, viewId || 'main');
   }
 
+  public setClipboardText(text: string): void {
+    if (this.closed || !text) return;
+    this.sendInput({ type: 'clipboard_set', text }, 'main');
+  }
+
   public closeView(viewId: string): void {
     if (this.closed) return;
     if (!viewId || this.views.size <= 1) {
@@ -1590,6 +1608,8 @@ export class LinuxDisplayBridge {
   private sessions = new Map<string, LinuxAppSession>();
   private usedDisplays = new Set<number>();
   private bridgeInfo?: BridgeEndpointInfo;
+  private desktopClipboards = new Map<string, string>();
+  private onClipboardBroadcast?: (desktopId: string, text: string, sourceSessionId?: string) => void;
 
   public setBridgeEndpoint(url: string, token: string): void {
     this.bridgeInfo = { url, token };
@@ -1597,6 +1617,26 @@ export class LinuxDisplayBridge {
 
   public getBridgeEndpoint(): BridgeEndpointInfo | undefined {
     return this.bridgeInfo;
+  }
+
+  public setClipboardBroadcastCallback(
+    cb: (desktopId: string, text: string, sourceSessionId?: string) => void
+  ): void {
+    this.onClipboardBroadcast = cb;
+  }
+
+  public syncDesktopClipboard(desktopId: string, text: string, excludeSessionId?: string): void {
+    if (!text) return;
+    this.desktopClipboards.set(desktopId, text);
+    for (const s of this.sessions.values()) {
+      if (s.desktopId === desktopId && s.sessionId !== excludeSessionId) {
+        s.setClipboardText(text);
+      }
+    }
+  }
+
+  public getDesktopClipboard(desktopId: string): string {
+    return this.desktopClipboards.get(desktopId) || '';
   }
 
   public findActiveProfileSession(desktopId: string, appId: string, command: string): LinuxAppSession | undefined {
@@ -1689,10 +1729,18 @@ export class LinuxDisplayBridge {
       () => {
         this.sessions.delete(opts.sessionId);
         this.usedDisplays.delete(displayNum);
+      },
+      (clipText: string) => {
+        this.syncDesktopClipboard(opts.desktopId, clipText, opts.sessionId);
+        this.onClipboardBroadcast?.(opts.desktopId, clipText, opts.sessionId);
       }
     );
     this.sessions.set(opts.sessionId, session);
     await session.start();
+    const initialClip = this.desktopClipboards.get(opts.desktopId);
+    if (initialClip) {
+      setTimeout(() => session.setClipboardText(initialClip), 450).unref();
+    }
     return { session, openedAsExtraWindow: false };
   }
 

@@ -41,6 +41,7 @@ import { VSCodeWindow } from './components/apps/VSCodeWindow';
 import { SettingsWindow } from './components/apps/SettingsWindow';
 import { PreviewWindow } from './components/apps/PreviewWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
+import { copyTextToHostClipboard } from './utils/clipboardBridge';
 import { translateFolderDisplayName } from './utils/format';
 
 const DEFAULT_META: DesktopMeta = {
@@ -566,6 +567,15 @@ export default function App() {
     []
   );
 
+  const syncClipboardAcrossDesktop = useCallback(
+    (text: string) => {
+      if (text) {
+        sendWs({ type: 'clipboard_sync', text });
+      }
+    },
+    [sendWs]
+  );
+
   const launchLinuxApp = useCallback(
     async (params: {
       appId?: string;
@@ -574,6 +584,7 @@ export default function App() {
       iconName?: string;
       initialUrl?: string;
       needsNoSandbox?: boolean;
+      launchMode?: 'gui' | 'terminal';
       forceNew?: boolean;
     }) => {
       remoteAudio.ensureContext();
@@ -596,6 +607,56 @@ export default function App() {
         (a) => a.id === params.appId || (params.command && a.command === params.command)
       );
       const resolvedIconName = params.iconName || foundApp?.iconName || params.appId;
+      const effectiveMode =
+        params.launchMode ||
+        foundApp?.launchMode ||
+        (['codex', 'claude-code', 'gemini-cli'].includes(params.appId || '') ? 'terminal' : 'gui');
+
+      // Run TUI AI Agents (OpenAI Codex, Claude Code, Gemini CLI) in crisp 60fps TrueColor PTY window
+      if (effectiveMode === 'terminal') {
+        if (!params.forceNew && params.appId) {
+          const existingTui = windowsRef.current.find(
+            (w) => w.kind === 'terminal' && w.appId === params.appId
+          );
+          if (existingTui) {
+            focusWindow(existingTui.id);
+            return;
+          }
+        }
+        const z = ++nextZRef.current;
+        const termSid = `tui-${params.appId || 'app'}-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 6)}`;
+        const winId = `win-${termSid}`;
+        const tuiW = Math.min(940, vw - 36);
+        const tuiH = Math.min(620, vh - 36);
+        const cmdToRun = (params.command || foundApp?.command || 'codex').trim();
+        setWindows((prev) => {
+          const offset = (prev.length % 4) * 22;
+          return [
+            ...prev,
+            {
+              id: winId,
+              kind: 'terminal',
+              title: params.appName || foundApp?.name || cmdToRun,
+              appId: params.appId || foundApp?.id || 'codex',
+              appIconName: resolvedIconName || params.appId || 'codex',
+              terminalSessionId: termSid,
+              terminalCwd: '/Projects',
+              terminalInitialCommand: `clear && ${cmdToRun}`,
+              x: Math.max(18, Math.round((vw - tuiW) / 2) + offset - 16),
+              y: Math.max(18, Math.round((vh - tuiH) / 2) + offset - 16),
+              width: tuiW,
+              height: tuiH,
+              minimized: false,
+              maximized: false,
+              zIndex: z,
+            },
+          ];
+        });
+        setFocusedWindowId(winId);
+        return;
+      }
 
       try {
         const res = await appsApi.launch({
@@ -969,6 +1030,11 @@ export default function App() {
               }
               break;
             }
+            case 'desktop_clipboard':
+              if (typeof msg.text === 'string' && msg.text) {
+                copyTextToHostClipboard(msg.text);
+              }
+              break;
             case 'browser_error':
               pushToast('Tarayıcı', String(msg.message || ''), 'warning');
               break;
@@ -1585,9 +1651,11 @@ export default function App() {
               <TerminalWindow
                 sessionId={win.terminalSessionId}
                 cwdPath={win.terminalCwd}
+                initialCommand={win.terminalInitialCommand}
                 fontSize={meta.preferences.terminal?.fontSize ?? 13}
                 cursorBlink={meta.preferences.terminal?.cursorBlink ?? true}
                 theme={meta.preferences.theme || 'dark'}
+                onClipboardSync={syncClipboardAcrossDesktop}
                 onExit={() => {
                   setWindows((prev) => prev.filter((w) => w.id !== win.id));
                 }}
@@ -1599,6 +1667,7 @@ export default function App() {
                 folderPath={win.folderPath}
                 directUrl={win.vscodeUrl}
                 theme={meta.preferences.theme || 'dark'}
+                onClipboardSync={syncClipboardAcrossDesktop}
                 onOpenNewWindow={(req) =>
                   openVSCodeWindow({
                     folderPath: req.folderPath || win.folderPath,
@@ -1619,6 +1688,7 @@ export default function App() {
                 isFocused={focusedWindowId === win.id}
                 externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
                 onVfsChanged={refreshVfs}
+                onClipboardSync={syncClipboardAcrossDesktop}
                 onNotify={pushToast}
                 onReady={() => {
                   setWindows((prev) =>
@@ -1682,6 +1752,7 @@ export default function App() {
                     appName: app.name,
                     iconName: app.iconName,
                     needsNoSandbox: app.needsNoSandbox,
+                    launchMode: app.launchMode,
                     forceNew: opts?.forceNew,
                   })
                 }
@@ -1924,6 +1995,7 @@ export default function App() {
             appName: app.name,
             iconName: app.iconName,
             needsNoSandbox: app.needsNoSandbox,
+            launchMode: app.launchMode,
             forceNew: opts?.forceNew,
           })
         }

@@ -3,13 +3,16 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { getBridgeDesktopId } from '../../services/osBridge';
+import { copyTextToHostClipboard, setCachedClipboardText } from '../../utils/clipboardBridge';
 
 interface TerminalWindowProps {
   sessionId: string;
   cwdPath?: string;
+  initialCommand?: string;
   fontSize?: number;
   cursorBlink?: boolean;
   theme: 'dark' | 'light';
+  onClipboardSync?: (text: string) => void;
   onExit?: () => void;
 }
 
@@ -62,15 +65,21 @@ const LIGHT_THEME = {
 export const TerminalWindow: React.FC<TerminalWindowProps> = ({
   sessionId,
   cwdPath,
+  initialCommand,
   fontSize = 13,
   cursorBlink = true,
   theme,
+  onClipboardSync,
   onExit,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const clipSyncRef = useRef(onClipboardSync);
+  clipSyncRef.current = onClipboardSync;
+  const initialCmdRef = useRef(initialCommand);
+  initialCmdRef.current = initialCommand;
 
   useEffect(() => {
     const container = hostRef.current;
@@ -92,6 +101,51 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
     termRef.current = term;
     fitRef.current = fitAddon;
 
+    // Intercept Cmd+C / Ctrl+Shift+C / Ctrl+C (when text is selected) to copy to host clipboard,
+    // and let Cmd+V / Ctrl+V / Ctrl+Shift+V trigger native browser paste so HTTP & HTTPS both work!
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true;
+      const isAltGraph = Boolean(ev.getModifierState?.('AltGraph')) || (ev.ctrlKey && ev.altKey);
+      if (isAltGraph) return true;
+
+      const keyLower = ev.key.toLowerCase();
+      const hasSel = term.hasSelection();
+
+      if (
+        (ev.metaKey && keyLower === 'c') ||
+        (ev.ctrlKey && ev.shiftKey && keyLower === 'c') ||
+        (ev.ctrlKey && !ev.shiftKey && keyLower === 'c' && hasSel)
+      ) {
+        const sel = term.getSelection();
+        if (sel) {
+          ev.preventDefault();
+          copyTextToHostClipboard(sel);
+          clipSyncRef.current?.(sel);
+          term.clearSelection();
+          return false;
+        }
+      }
+
+      // Allow browser's native paste event to fire for Ctrl+V / Ctrl+Shift+V / Cmd+V (don't let xterm swallow Ctrl+V as ^V)
+      if ((ev.ctrlKey || ev.metaKey) && keyLower === 'v') {
+        return false;
+      }
+
+      return true;
+    });
+
+    const handleDomPaste = (ev: ClipboardEvent) => {
+      const txt = ev.clipboardData?.getData('text/plain');
+      if (txt) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setCachedClipboardText(txt);
+        clipSyncRef.current?.(txt);
+        term.paste(txt);
+      }
+    };
+    container.addEventListener('paste', handleDomPaste, true);
+
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const desktopId = getBridgeDesktopId();
     const cwdQuery = cwdPath ? `&cwd=${encodeURIComponent(cwdPath)}` : '';
@@ -101,6 +155,12 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
       )}&sessionId=${encodeURIComponent(sessionId)}&cols=${term.cols}&rows=${term.rows}${cwdQuery}`
     );
     wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (initialCmdRef.current) {
+        ws.send(JSON.stringify({ type: 'input', data: `${initialCmdRef.current}\r` }));
+      }
+    };
 
     ws.onmessage = (ev) => {
       try {
@@ -137,6 +197,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
     ro.observe(container);
 
     return () => {
+      container.removeEventListener('paste', handleDomPaste, true);
       ro.disconnect();
       dataSub.dispose();
       ws.close();

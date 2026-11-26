@@ -25,7 +25,7 @@ import { LinuxAppManager } from './linuxAppManager';
 import { LinuxDisplayBridge, ensureDesktopUrlHandlerShims } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '1.8.0';
+export const TAMGA_VERSION = '1.9.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -128,6 +128,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   const internalBridgeUrl = `http://${bridgeHost}:${config.port}/api/internal/open-url`;
   linuxDisplayBridge.setBridgeEndpoint(internalBridgeUrl, internalBridgeToken);
   let broadcastToDesktop: (desktopId: string, payload: Record<string, unknown>) => void = () => {};
+  linuxDisplayBridge.setClipboardBroadcastCallback((dId, text, sourceSessionId) => {
+    broadcastToDesktop(dId, { type: 'desktop_clipboard', text, sourceSessionId });
+  });
   const bootStartedAt = Date.now();
 
   const vfsWatchers = new Map<string, fs.FSWatcher[]>();
@@ -1216,6 +1219,11 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
               });
             }
             break;
+          case 'clipboard_sync':
+            if (typeof msg.text === 'string' && msg.text) {
+              linuxDisplayBridge.syncDesktopClipboard(desktopId, msg.text);
+            }
+            break;
         }
       } catch {
         // ignore malformed message
@@ -1258,6 +1266,8 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
     const session = terminalManager.createSession(sessionId, desktopId, startDir, cols, rows, {
       PATH: `${binDir}:${sysPath}`,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
       BROWSER: path.join(binDir, 'tamga-open-url'),
       TAMGA_DESKTOP_ID: desktopId,
       TAMGA_SESSION_ID: sessionId,

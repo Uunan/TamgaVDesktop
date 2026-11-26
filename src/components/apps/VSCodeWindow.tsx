@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { appsApi } from '../../services/osBridge';
+import {
+  copyTextToHostClipboard,
+  getCachedClipboardText,
+  setCachedClipboardText,
+} from '../../utils/clipboardBridge';
 import { useWindowFrameControls } from '../desktop/WindowFrame';
 
 export interface VSCodeNewWindowRequest {
@@ -14,6 +19,7 @@ interface VSCodeWindowProps {
   folderPath?: string;
   directUrl?: string;
   theme?: 'dark' | 'light';
+  onClipboardSync?: (text: string) => void;
   onOpenNewWindow?: (req: VSCodeNewWindowRequest) => void;
 }
 
@@ -49,6 +55,7 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
   folderPath,
   directUrl,
   theme = 'dark',
+  onClipboardSync,
   onOpenNewWindow,
 }) => {
   const [readyUrl, setReadyUrl] = useState<string | null>(directUrl || null);
@@ -61,6 +68,8 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
   controlsRef.current = frameControls;
   const openNewRef = useRef(onOpenNewWindow);
   openNewRef.current = onOpenNewWindow;
+  const clipSyncRef = useRef(onClipboardSync);
+  clipSyncRef.current = onClipboardSync;
   const initialThemeRef = useRef(theme);
 
   useEffect(() => {
@@ -105,6 +114,38 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
       return;
     }
     if (!doc || !childWin) return;
+
+    // Polyfill navigator.clipboard inside VS Code Web iframe on plain HTTP deployments
+    try {
+      if (!childWin.navigator.clipboard || typeof childWin.navigator.clipboard.writeText !== 'function') {
+        Object.defineProperty(childWin.navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async (text: string) => {
+              copyTextToHostClipboard(text);
+              clipSyncRef.current?.(text);
+            },
+            readText: async () => getCachedClipboardText(),
+          },
+        });
+      }
+    } catch {}
+
+    const onChildCopyOrCut = (ev: ClipboardEvent) => {
+      const sel = ev.clipboardData?.getData('text/plain') || childWin?.getSelection()?.toString() || '';
+      if (sel) {
+        setCachedClipboardText(sel);
+        clipSyncRef.current?.(sel);
+      }
+    };
+
+    const onChildPaste = (ev: ClipboardEvent) => {
+      const txt = ev.clipboardData?.getData('text/plain') || '';
+      if (txt) {
+        setCachedClipboardText(txt);
+        clipSyncRef.current?.(txt);
+      }
+    };
 
     const ensureStyleAndMetrics = () => {
       if (!doc) return;
@@ -203,6 +244,9 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
     childWin.addEventListener('mousedown', onChildMouseDown, true);
     childWin.addEventListener('dblclick', onChildDblClick, true);
     childWin.addEventListener('resize', ensureStyleAndMetrics);
+    doc.addEventListener('copy', onChildCopyOrCut);
+    doc.addEventListener('cut', onChildCopyOrCut);
+    doc.addEventListener('paste', onChildPaste, true);
 
     return () => {
       mutObs.disconnect();
@@ -210,6 +254,9 @@ export const VSCodeWindow: React.FC<VSCodeWindowProps> = ({
         childWin?.removeEventListener('mousedown', onChildMouseDown, true);
         childWin?.removeEventListener('dblclick', onChildDblClick, true);
         childWin?.removeEventListener('resize', ensureStyleAndMetrics);
+        doc?.removeEventListener('copy', onChildCopyOrCut);
+        doc?.removeEventListener('cut', onChildCopyOrCut);
+        doc?.removeEventListener('paste', onChildPaste, true);
         if (childWin) childWin.open = origOpen;
       } catch {}
     };

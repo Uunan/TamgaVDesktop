@@ -287,7 +287,19 @@ const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) =
   if (win.kind === 'browser' || (win.kind === 'linux-app' && win.appId === 'chrome')) {
     return <GoogleChromeLogoIcon size={size} />;
   }
-  if (win.kind === 'terminal') return <TerminalAppIcon size={size} />;
+  if (win.kind === 'terminal') {
+    if (win.appId) {
+      return (
+        <OriginalAppIcon
+          appId={win.appId}
+          iconName={win.appIconName || win.appId}
+          name={win.title}
+          size={size}
+        />
+      );
+    }
+    return <TerminalAppIcon size={size} />;
+  }
   if (win.kind === 'app-store') return <AppStoreIcon size={size} />;
   if (win.kind === 'settings') return <SettingsAppIcon size={size} />;
   if (win.kind === 'preview') {
@@ -462,7 +474,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   const browserWin = windows.find(
     (w) => (w.kind === 'linux-app' && w.appId === 'chrome') || w.kind === 'browser'
   );
-  const terminalWin = windows.find((w) => w.kind === 'terminal');
+  const terminalWin = windows.find((w) => w.kind === 'terminal' && !w.appId);
   const appStoreWin = windows.find((w) => w.kind === 'app-store');
   const otherWindows = windows.filter(
     (w) =>

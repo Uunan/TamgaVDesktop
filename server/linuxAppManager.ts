@@ -19,6 +19,7 @@ export interface LinuxAppInfo {
   packageName?: string;
   desktopFile?: string;
   needsNoSandbox?: boolean;
+  launchMode?: 'gui' | 'terminal';
 }
 
 export interface AptSearchResult {
@@ -48,6 +49,7 @@ interface CatalogAppDef {
   accent: string;
   featured?: boolean;
   needsNoSandbox?: boolean;
+  launchMode?: 'gui' | 'terminal';
   packageName?: string;
   installScript: string;
   uninstallScript?: string;
@@ -58,6 +60,14 @@ const APT_HELPER = (pkg: string) =>
 
 const APT_REMOVE = (pkg: string) =>
   `set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get remove -y ${pkg} && apt-get autoremove -y`;
+
+const ENSURE_NODE_NPM = [
+  'if ! command -v npm >/dev/null 2>&1; then',
+  '  apt-get update -y && apt-get install -y curl ca-certificates gnupg',
+  '  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -',
+  '  apt-get install -y nodejs',
+  'fi',
+].join('\n');
 
 const CURATED_CATALOG: CatalogAppDef[] = [
   /* ─── FEATURED & DEVELOPMENT ─── */
@@ -173,6 +183,107 @@ const CURATED_CATALOG: CatalogAppDef[] = [
     uninstallScript: `set -e
 rm -rf /opt/antigravity /usr/local/bin/antigravity /usr/share/applications/antigravity.desktop /usr/share/pixmaps/antigravity.png
 apt-get remove -y antigravity 2>/dev/null || true`,
+  },
+  {
+    id: 'codex',
+    name: 'OpenAI Codex',
+    publisher: 'OpenAI',
+    description: 'Resmi OpenAI Codex otonom yazılım geliştirme ajanı (@openai/codex)',
+    binaryNames: ['codex', '/usr/local/bin/codex', '/usr/bin/codex'],
+    defaultCommand: 'codex',
+    category: 'development',
+    accent: '#10b981',
+    featured: true,
+    launchMode: 'terminal',
+    installScript: [
+      'set -e',
+      ENSURE_NODE_NPM,
+      'npm install -g @openai/codex',
+      'BIN_P=$(command -v codex || npm prefix -g | awk \'{print $1"/bin/codex"}\')',
+      'if [ -x "$BIN_P" ] && [ ! -e /usr/local/bin/codex ]; then ln -sf "$BIN_P" /usr/local/bin/codex; fi',
+    ].join('\n'),
+    uninstallScript: 'set -e\nnpm uninstall -g @openai/codex || true\nrm -f /usr/local/bin/codex',
+  },
+  {
+    id: 'claude-code',
+    name: 'Claude Code',
+    publisher: 'Anthropic',
+    description: 'Resmi Anthropic Claude otonom kodlama ve mühendislik ajanı (@anthropic-ai/claude-code)',
+    binaryNames: ['claude', '/usr/local/bin/claude', '/usr/bin/claude'],
+    defaultCommand: 'claude',
+    category: 'development',
+    accent: '#d97757',
+    featured: true,
+    launchMode: 'terminal',
+    installScript: [
+      'set -e',
+      ENSURE_NODE_NPM,
+      'npm install -g @anthropic-ai/claude-code',
+      'BIN_P=$(command -v claude || npm prefix -g | awk \'{print $1"/bin/claude"}\')',
+      'if [ -x "$BIN_P" ] && [ ! -e /usr/local/bin/claude ]; then ln -sf "$BIN_P" /usr/local/bin/claude; fi',
+    ].join('\n'),
+    uninstallScript: 'set -e\nnpm uninstall -g @anthropic-ai/claude-code || true\nrm -f /usr/local/bin/claude',
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor',
+    publisher: 'Anysphere',
+    description: 'Yapay zeka destekli yeni nesil kod editörü (Linux x64/ARM64)',
+    binaryNames: ['cursor', '/usr/local/bin/cursor', '/opt/Cursor/AppRun'],
+    defaultCommand: '/usr/local/bin/cursor',
+    category: 'development',
+    accent: '#27272a',
+    featured: true,
+    needsNoSandbox: true,
+    installScript: [
+      'set -e',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'apt-get update -y && apt-get install -y curl python3 ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1',
+      'ARCH=$(dpkg --print-architecture)',
+      'if [ "$ARCH" = "arm64" ]; then PLAT="linux-arm64"; else PLAT="linux-x64"; fi',
+      'cat <<\'PYEOF\' > /tmp/cursor_resolve.py',
+      'import json, os, urllib.request',
+      'plat = os.environ.get("PLAT", "linux-x64")',
+      'req = urllib.request.Request("https://www.cursor.com/api/download?platform=" + plat + "&releaseTrack=latest", headers={"User-Agent": "Mozilla/5.0"})',
+      'with urllib.request.urlopen(req, timeout=20) as r:',
+      '    data = json.loads(r.read().decode("utf-8"))',
+      'print(data.get("downloadUrl", ""))',
+      'PYEOF',
+      'URL=$(PLAT="$PLAT" python3 /tmp/cursor_resolve.py || true)',
+      'rm -f /tmp/cursor_resolve.py',
+      'if [ -z "$URL" ]; then URL="https://downloader.cursor.sh/linux/appImage/x64"; fi',
+      'rm -rf /tmp/cursor-dl /opt/Cursor',
+      'mkdir -p /tmp/cursor-dl',
+      'curl -fL --progress-bar "$URL" -o /tmp/cursor-dl/cursor.AppImage',
+      'chmod +x /tmp/cursor-dl/cursor.AppImage',
+      'cd /tmp/cursor-dl && ./cursor.AppImage --appimage-extract >/dev/null',
+      'mv /tmp/cursor-dl/squashfs-root /opt/Cursor',
+      'rm -rf /tmp/cursor-dl',
+      'BIN_C=$(find /opt/Cursor -maxdepth 3 -type f -perm /111 -name "cursor" ! -path "*/resources/*" | head -n 1)',
+      'if [ -z "$BIN_C" ]; then BIN_C="/opt/Cursor/AppRun"; fi',
+      'printf "#!/bin/sh\\nexec \\"%s\\" \\"\\$@\\"\\n" "$BIN_C" > /usr/local/bin/cursor',
+      'chmod +x /usr/local/bin/cursor',
+    ].join('\n'),
+    uninstallScript: 'set -e\nrm -rf /opt/Cursor /usr/local/bin/cursor /usr/share/applications/cursor.desktop',
+  },
+  {
+    id: 'gemini-cli',
+    name: 'Gemini CLI',
+    publisher: 'Google',
+    description: 'Resmi Google Gemini terminal yapay zeka geliştirme ajanı (@google/gemini-cli)',
+    binaryNames: ['gemini', '/usr/local/bin/gemini', '/usr/bin/gemini'],
+    defaultCommand: 'gemini',
+    category: 'development',
+    accent: '#4285f4',
+    launchMode: 'terminal',
+    installScript: [
+      'set -e',
+      ENSURE_NODE_NPM,
+      'npm install -g @google/gemini-cli',
+      'BIN_P=$(command -v gemini || npm prefix -g | awk \'{print $1"/bin/gemini"}\')',
+      'if [ -x "$BIN_P" ] && [ ! -e /usr/local/bin/gemini ]; then ln -sf "$BIN_P" /usr/local/bin/gemini; fi',
+    ].join('\n'),
+    uninstallScript: 'set -e\nnpm uninstall -g @google/gemini-cli || true\nrm -f /usr/local/bin/gemini',
   },
   {
     id: 'vscode',
@@ -748,6 +859,7 @@ export class LinuxAppManager {
         uninstallable: process.platform === 'linux' && Boolean(def.uninstallScript || def.packageName),
         packageName: def.packageName,
         needsNoSandbox: def.needsNoSandbox,
+        launchMode: def.launchMode,
       });
     }
 
