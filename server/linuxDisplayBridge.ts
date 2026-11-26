@@ -663,8 +663,32 @@ export class LinuxAppSession {
         : `${finalCmd} -profile "${profileDir}"`;
     } else if (
       this.needsNoSandbox ||
-      ['code', 'antigravity', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'].includes(baseBin)
+      [
+        'code',
+        'antigravity',
+        'chromium',
+        'chromium-browser',
+        'google-chrome',
+        'google-chrome-stable',
+        'brave-browser',
+        'microsoft-edge',
+        'microsoft-edge-stable',
+        'opera',
+        'vivaldi',
+      ].includes(baseBin)
     ) {
+      const isChromiumBrowser = [
+        'chromium',
+        'chromium-browser',
+        'google-chrome',
+        'google-chrome-stable',
+        'brave-browser',
+        'microsoft-edge',
+        'microsoft-edge-stable',
+        'opera',
+        'vivaldi',
+      ].includes(baseBin);
+
       if (!extraNewWindow) {
         for (const stale of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
           try {
@@ -675,6 +699,17 @@ export class LinuxAppSession {
       const extraFlags: string[] = [];
       if (isRoot && !finalCmd.includes('--no-sandbox')) {
         extraFlags.push('--no-sandbox');
+      }
+      if (isChromiumBrowser) {
+        if (!finalCmd.includes('--test-type')) {
+          extraFlags.push('--test-type');
+        }
+        if (!finalCmd.includes('--no-first-run')) {
+          extraFlags.push('--no-first-run');
+        }
+        if (!finalCmd.includes('--no-default-browser-check')) {
+          extraFlags.push('--no-default-browser-check');
+        }
       }
       if (!finalCmd.includes('--user-data-dir')) {
         extraFlags.push(`--user-data-dir="${profileDir}"`);
