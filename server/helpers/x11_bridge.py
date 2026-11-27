@@ -1024,6 +1024,8 @@ def main() -> None:
                 else:
                     dy = float(msg.get("deltaY", 0))
                     dx = float(msg.get("deltaX", 0))
+                    raw_ticks_y = msg.get("ticksY")
+                    raw_ticks_x = msg.get("ticksX")
                     want_ctrl = bool(msg.get("ctrlKey") or msg.get("metaKey"))
                     want_shift = bool(msg.get("shiftKey"))
                     want_alt = bool(msg.get("altKey"))
@@ -1035,16 +1037,28 @@ def main() -> None:
                             libXtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
                         if want_alt and alt_kc:
                             libXtst.XTestFakeKeyEvent(dpy, alt_kc, 1, 0)
-                        if abs(dy) > 0:
+                        if raw_ticks_y is not None:
+                            ticks_y = max(0, min(6, abs(int(raw_ticks_y))))
+                        elif abs(dy) > 0:
+                            ticks_y = 1 if want_ctrl else max(0, min(6, int(round(abs(dy) / 100))))
+                        else:
+                            ticks_y = 0
+                        if ticks_y > 0 and abs(dy) > 0:
                             btn = 5 if dy > 0 else 4
-                            ticks = 1 if want_ctrl else max(1, min(6, int(round(abs(dy) / 68)) or 1))
-                            for _ in range(ticks):
+                            for _ in range(ticks_y):
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
-                        if abs(dx) > 0:
+                        if raw_ticks_x is not None:
+                            ticks_x = max(0, min(4, abs(int(raw_ticks_x))))
+                        elif abs(dx) >= 48:
+                            ticks_x = max(0, min(4, int(round(abs(dx) / 105))))
+                        else:
+                            ticks_x = 0
+                        if ticks_x > 0 and abs(dx) > 0:
                             btn = 7 if dx > 0 else 6
-                            libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
-                            libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+                            for _ in range(ticks_x):
+                                libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
+                                libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
                         if want_alt and alt_kc:
                             libXtst.XTestFakeKeyEvent(dpy, alt_kc, 0, 0)
                         if want_shift and shift_kc:

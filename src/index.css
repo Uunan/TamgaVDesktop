@@ -224,3 +224,47 @@ html.theme-transitioning * {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--os-border-strong);
 }
+
+@keyframes wp-sway {
+  0%, 100% { transform: rotate(-2.4deg) skewX(-1deg); }
+  50% { transform: rotate(2.8deg) skewX(1.5deg); }
+}
+@keyframes wp-wave {
+  0%, 100% { transform: translate3d(-14px, 0, 0); }
+  50% { transform: translate3d(14px, -5px, 0); }
+}
+@keyframes wp-float {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(10px, -16px, 0) scale(1.03); }
+}
+@keyframes wp-fall {
+  0% { transform: translate3d(0, -40px, 0) rotate(0deg); opacity: 0; }
+  12% { opacity: 0.85; }
+  85% { opacity: 0.8; }
+  100% { transform: translate3d(42px, 1120px, 0) rotate(120deg); opacity: 0; }
+}
+@keyframes wp-rain {
+  0% { transform: translate3d(0, -120px, 0); opacity: 0; }
+  20% { opacity: 0.55; }
+  85% { opacity: 0.5; }
+  100% { transform: translate3d(-65px, 1150px, 0); opacity: 0; }
+}
+@keyframes wp-twinkle {
+  0%, 100% { opacity: 0.28; }
+  50% { opacity: 0.95; }
+}
+@keyframes wp-kenburns {
+  0%, 100% { transform: scale(1) translate3d(0, 0, 0); }
+  50% { transform: scale(1.035) translate3d(-0.6%, -0.5%, 0); }
+}
+
+.wp-anim .wp-sway { transform-box: fill-box; transform-origin: bottom center; animation: wp-sway 4.4s ease-in-out infinite; }
+.wp-anim .wp-sway-b { transform-box: fill-box; transform-origin: bottom center; animation: wp-sway 5.6s ease-in-out -1.7s infinite; }
+.wp-anim .wp-wave { animation: wp-wave 7.5s ease-in-out infinite; }
+.wp-anim .wp-wave-b { animation: wp-wave 9.5s ease-in-out -3.2s infinite; }
+.wp-anim .wp-float { transform-box: fill-box; transform-origin: center; animation: wp-float 10s ease-in-out infinite; }
+.wp-anim .wp-float-b { transform-box: fill-box; transform-origin: center; animation: wp-float 13s ease-in-out -4s infinite; }
+.wp-anim .wp-fall { animation: wp-fall 11s linear infinite; }
+.wp-anim .wp-rain { animation: wp-rain 1.7s linear infinite; }
+.wp-anim .wp-twinkle { animation: wp-twinkle 3.8s ease-in-out infinite; }
+.wp-anim .wp-kenburns { animation: wp-kenburns 24s ease-in-out infinite; }

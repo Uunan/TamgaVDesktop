@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { resolveHelperPath } from './terminalManager';
+import { mediaBridge } from './mediaBridge';
 
 let ipv6ProbePromise: Promise<boolean> | null = null;
 let googleIpv6Blocked = false;
@@ -834,24 +835,27 @@ export class LinuxAppSession {
 
   private setupPulseAudio(baseEnv: NodeJS.ProcessEnv): void {
     try {
-      try {
-        execSync('pactl info', { stdio: 'ignore', timeout: 1200 });
-      } catch {
-        spawn(
-          'pulseaudio',
-          ['--daemonize=yes', '--exit-idle-time=-1', '--disallow-module-loading=0', '--no-cpu-limit'],
-          { stdio: 'ignore' }
-        );
-      }
+      if (!mediaBridge.ensurePulseRunning()) return;
+      const paEnv = mediaBridge.getPulseEnv();
+      if (paEnv.PULSE_SERVER) baseEnv.PULSE_SERVER = paEnv.PULSE_SERVER;
+      if (paEnv.PULSE_RUNTIME_PATH) baseEnv.PULSE_RUNTIME_PATH = paEnv.PULSE_RUNTIME_PATH;
+      if (paEnv.PULSE_STATE_PATH) baseEnv.PULSE_STATE_PATH = paEnv.PULSE_STATE_PATH;
+
       const sinkName = `tamga_${this.sessionId.replace(/[^a-z0-9]/gi, '').slice(-10)}`;
       try {
         execSync(
           `pactl load-module module-null-sink sink_name=${sinkName} sink_properties=device.description=${sinkName}`,
-          { stdio: 'ignore', timeout: 1500 }
+          { env: paEnv, stdio: 'ignore', timeout: 1500 }
         );
         this.pulseSinkName = sinkName;
         baseEnv.PULSE_SINK = sinkName;
         this.startAudioCapture(sinkName);
+      } catch {}
+      try {
+        const mic = mediaBridge.ensureVirtualMic(this.desktopId);
+        if (mic.ready) {
+          baseEnv.PULSE_SOURCE = mic.sourceName;
+        }
       } catch {}
     } catch {}
   }
@@ -861,7 +865,7 @@ export class LinuxAppSession {
       const parec = spawn(
         'parec',
         ['-d', `${sinkName}.monitor`, '--rate=24000', '--channels=1', '--format=s16le', '--latency-msec=45'],
-        { stdio: ['ignore', 'pipe', 'ignore'] }
+        { env: mediaBridge.getPulseEnv(), stdio: ['ignore', 'pipe', 'ignore'] }
       );
       this.parecProc = parec;
 
@@ -1898,7 +1902,7 @@ export class LinuxAppSession {
       try {
         execSync(
           `pactl list short modules | grep "${this.pulseSinkName}" | awk '{print $1}' | xargs -r -n1 pactl unload-module`,
-          { stdio: 'ignore', timeout: 1500 }
+          { env: mediaBridge.getPulseEnv(), stdio: 'ignore', timeout: 1500 }
         );
       } catch {}
     }

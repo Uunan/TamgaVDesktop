@@ -29,8 +29,10 @@ import {
   ensureGoogleApiIpv4Preference,
 } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
+import { WebAppProxyManager } from './webAppProxy';
+import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.2.0';
+export const TAMGA_VERSION = '2.3.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -100,6 +102,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
 
   const authManager = new AuthManager(config);
   const vscodeManager = new VSCodeServerManager(config.dataDir);
+  const webAppProxy = new WebAppProxyManager();
 
   const app = express();
   app.set('trust proxy', config.trustProxy);
@@ -112,6 +115,54 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       return;
     }
     vscodeManager.proxyHttp(req, res);
+  });
+
+  function resolveWebProxyDesktop(req: express.Request): string {
+    if (req.query?.desktop) return sanitizeDesktopId(String(req.query.desktop));
+    if (req.headers['x-desktop-id']) return sanitizeDesktopId(String(req.headers['x-desktop-id']));
+    const cookieHdr = String(req.headers.cookie || '');
+    const m = cookieHdr.match(/(?:^|;\s*)tamga_web_desktop=([^;]+)/);
+    if (m) return sanitizeDesktopId(decodeURIComponent(m[1]));
+    return 'main';
+  }
+
+  app.get('/web-app-proxy/open', (req, res) => {
+    if (!authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
+      res.status(401).send('Oturum açmanız gerekiyor.');
+      return;
+    }
+    const desktopId = resolveWebProxyDesktop(req);
+    const { vfs } = getDesktopContext(desktopId);
+    res.cookie('tamga_web_desktop', desktopId, {
+      path: '/web-app-proxy',
+      sameSite: 'lax',
+      httpOnly: true,
+    });
+    webAppProxy.handleOpen(req, res, desktopId, vfs.getInstanceRoot());
+  });
+
+  app.post('/web-app-proxy/sync-chrome-cookies', (req, res) => {
+    if (!authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
+      res.status(401).json({ error: 'Yetkisiz.' });
+      return;
+    }
+    const desktopId = resolveWebProxyDesktop(req);
+    const { vfs } = getDesktopContext(desktopId);
+    webAppProxy.registerDesktopRoot(desktopId, vfs.getInstanceRoot());
+    const importedCount = webAppProxy.syncFromChromeProfile(desktopId);
+    res.json({ importedCount });
+  });
+
+  app.use('/web-app-proxy/p', (req, res) => {
+    if (!authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
+      res.status(401).send('Oturum açmanız gerekiyor.');
+      return;
+    }
+    const desktopId = resolveWebProxyDesktop(req);
+    const { vfs } = getDesktopContext(desktopId);
+    webAppProxy.handleProxyRequest(req, res, desktopId, vfs.getInstanceRoot()).catch(() => {
+      if (!res.headersSent) res.status(502).end('Proxy hatası.');
+    });
   });
 
   app.use(express.json({ limit: '25mb' }));
@@ -685,6 +736,23 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   });
 
+  // --- Audio Output / Virtual Mic / Camera Hardware Endpoints ---
+
+  app.get('/api/media/status', (req, res) => {
+    const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
+    res.json(mediaBridge.getStatus(desktopId));
+  });
+
+  app.post('/api/media/setup-mic', (req, res) => {
+    const desktopId = sanitizeDesktopId(extractReqDesktopId(req));
+    res.json(mediaBridge.ensureVirtualMic(desktopId));
+  });
+
+  app.post('/api/media/setup-camera', (req, res) => {
+    const installDriver = Boolean(req.body?.installDriver);
+    res.json(mediaBridge.setupVirtualCamera(installDriver));
+  });
+
   // --- Multi-Desktop Management Endpoints ---
 
   app.get('/api/desktops', (_req, res) => {
@@ -1065,8 +1133,36 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     });
 
     app.use(express.static(clientDist, { maxAge: '1h', index: false }));
+    app.use((req, res, next) => {
+      if (
+        req.path.startsWith('/api/') ||
+        req.path.startsWith('/ws') ||
+        req.path.startsWith('/web-app-proxy') ||
+        req.path.startsWith('/vscode-web')
+      ) {
+        next();
+        return;
+      }
+      const ref = String(req.headers.referer || '');
+      const refMatch = ref.match(/\/web-app-proxy\/p\/([^/?#]+)/);
+      if (refMatch && authManager.isRequestAuthorized(req.headers.cookie, req.headers.authorization)) {
+        const desktopId = resolveWebProxyDesktop(req);
+        const { vfs } = getDesktopContext(desktopId);
+        webAppProxy
+          .handleProxyRequest(req, res, desktopId, vfs.getInstanceRoot(), refMatch[1])
+          .catch(() => {
+            if (!res.headersSent) res.status(502).end('Proxy hatası.');
+          });
+        return;
+      }
+      next();
+    });
     app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+      if (
+        req.path.startsWith('/api/') ||
+        req.path.startsWith('/ws') ||
+        req.path.startsWith('/web-app-proxy')
+      ) {
         next();
         return;
       }
@@ -1113,6 +1209,8 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     const reqUrl = new URL(req.url || '/ws', 'http://localhost');
     if (reqUrl.pathname.startsWith('/vscode-web')) {
       vscodeManager.proxyUpgrade(req, socket, head);
+    } else if (reqUrl.pathname.startsWith('/web-app-proxy/ws/')) {
+      webAppProxy.proxyUpgrade(req, socket, head);
     } else if (reqUrl.pathname === '/ws') {
       desktopWss.handleUpgrade(req, socket, head, (ws) => {
         desktopWss.emit('connection', ws, req);
@@ -1131,7 +1229,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   });
 
   // 1. Desktop Control + VFS + Fallback Playwright Chromium WS
-  type TrackedSocket = WebSocket & { desktopId?: string };
+  type TrackedSocket = WebSocket & { desktopId?: string; micStreaming?: boolean };
 
   broadcastToDesktop = (targetDesktopId: string, payload: Record<string, unknown>) => {
     for (const client of desktopWss.clients as Set<TrackedSocket>) {
@@ -1145,6 +1243,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     const reqUrl = new URL(req.url || '/ws', 'http://localhost');
     const desktopId = sanitizeDesktopId(reqUrl.searchParams.get('desktop') || 'main');
     ws.desktopId = desktopId;
+    ws.micStreaming = false;
 
     const { vfs, browserSession } = getDesktopContext(desktopId);
 
@@ -1230,6 +1329,35 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
               linuxDisplayBridge.syncDesktopClipboard(desktopId, msg.text);
             }
             break;
+          case 'mic_state': {
+            const next = Boolean(msg.active);
+            if (next !== ws.micStreaming) {
+              ws.micStreaming = next;
+              mediaBridge.setMicClientActive(desktopId, next);
+            }
+            break;
+          }
+          case 'mic_audio':
+            if (typeof msg.data === 'string' && msg.data) {
+              mediaBridge.pushMicPcm16(
+                desktopId,
+                Buffer.from(msg.data, 'base64'),
+                Number(msg.gain ?? 100)
+              );
+            }
+            break;
+          case 'camera_frame':
+            if (typeof msg.data === 'string' && msg.data) {
+              mediaBridge.pushCameraFrame(
+                Buffer.from(msg.data, 'base64'),
+                Number(msg.width || 1280),
+                Number(msg.height || 720)
+              );
+            }
+            break;
+          case 'camera_stop':
+            mediaBridge.stopCameraFeed();
+            break;
         }
       } catch {
         // ignore malformed message
@@ -1237,6 +1365,10 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     });
 
     ws.on('close', () => {
+      if (ws.micStreaming) {
+        mediaBridge.setMicClientActive(desktopId, false);
+        ws.micStreaming = false;
+      }
       unsubBrowser();
       unsubVfs();
     });

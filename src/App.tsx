@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { CheckCircle2, Info, Lock, TriangleAlert, X } from 'lucide-react';
+import { CheckCircle2, Info, TriangleAlert, X } from 'lucide-react';
 import {
   DEFAULT_BROWSER_PREFERENCES,
   DEFAULT_DOCK_PREFERENCES,
+  DEFAULT_LOCK_SCREEN_PREFERENCES,
+  DEFAULT_MEDIA_PREFERENCES,
+  DEFAULT_SCREENSAVER_PREFERENCES,
   DEFAULT_STREAM_PREFERENCES,
   DEFAULT_TERMINAL_PREFERENCES,
   DEFAULT_UI_PREFERENCES,
@@ -14,7 +17,10 @@ import {
   type DockPreferences,
   type LinuxAppInfo,
   type LinuxRuntimeStatus,
+  type LockScreenPreferences,
+  type MediaPreferences,
   type OSWindow,
+  type ScreensaverPreferences,
   type SettingsTabId,
   type StreamPreferences,
   type TabSummary,
@@ -33,11 +39,17 @@ import { ChromiumTabStrip, ChromiumWindowBody } from './components/browser/Chrom
 import { ContextMenu, type ContextMenuItemTarget } from './components/desktop/ContextMenu';
 import { NewCustomFileModal, PropertiesPane } from './components/desktop/FileDialogs';
 import { FullscreenNotice } from './components/desktop/FullscreenNotice';
+import {
+  LockScreenOverlay,
+  OfflineBannerOverlay,
+  ScreensaverOverlay,
+} from './components/desktop/DesktopOverlays';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { TerminalWindow } from './components/apps/TerminalWindow';
 import { LinuxAppWindow } from './components/apps/LinuxAppWindow';
 import { AppStoreWindow } from './components/apps/AppStoreWindow';
 import { VSCodeWindow } from './components/apps/VSCodeWindow';
+import { WebAppWindow } from './components/apps/WebAppWindow';
 import { SettingsWindow } from './components/apps/SettingsWindow';
 import { PreviewWindow } from './components/apps/PreviewWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
@@ -58,6 +70,9 @@ const DEFAULT_META: DesktopMeta = {
     terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     ui: { ...DEFAULT_UI_PREFERENCES },
     dock: { ...DEFAULT_DOCK_PREFERENCES },
+    media: { ...DEFAULT_MEDIA_PREFERENCES },
+    screensaver: { ...DEFAULT_SCREENSAVER_PREFERENCES },
+    lockScreen: { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
   },
 };
 
@@ -91,6 +106,9 @@ function loadCachedMeta(desktopId: string): { meta: DesktopMeta; fromCache: bool
           terminal: { ...DEFAULT_TERMINAL_PREFERENCES, ...(p.terminal || {}) },
           ui: { ...DEFAULT_UI_PREFERENCES, ...(p.ui || {}) },
           dock: { ...DEFAULT_DOCK_PREFERENCES, ...(p.dock || {}) },
+          media: { ...DEFAULT_MEDIA_PREFERENCES, ...(p.media || {}) },
+          screensaver: { ...DEFAULT_SCREENSAVER_PREFERENCES, ...(p.screensaver || {}) },
+          lockScreen: { ...DEFAULT_LOCK_SCREEN_PREFERENCES, ...(p.lockScreen || {}) },
         },
       },
     };
@@ -129,8 +147,43 @@ export default function App() {
   const [linuxApps, setLinuxApps] = useState<LinuxAppInfo[]>([]);
   const [allowAppInstall, setAllowAppInstall] = useState(true);
 
-  const [locked, setLocked] = useState(false);
+  const [locked, setLocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(`tamga_locked_${desktopId}`) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [lockClock, setLockClock] = useState(() => new Date());
+  const [screensaverActive, setScreensaverActive] = useState(false);
+  const [screensaverIsPreview, setScreensaverIsPreview] = useState(false);
+  const lastActivityRef = useRef<number>(Date.now());
+  const screensaverStartedAtRef = useRef<number>(0);
+
+  const [isBrowserOnline, setIsBrowserOnline] = useState<boolean>(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  );
+  const [wsDisconnected, setWsDisconnected] = useState(false);
+  const [wsReconnectNonce, setWsReconnectNonce] = useState(0);
+  const wsEverConnectedRef = useRef(false);
+  const wsOfflineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const activateLockScreen = useCallback(() => {
+    try {
+      sessionStorage.setItem(`tamga_locked_${desktopId}`, '1');
+    } catch {}
+    setScreensaverActive(false);
+    setScreensaverIsPreview(false);
+    setLocked(true);
+  }, [desktopId]);
+
+  const unlockDesktop = useCallback(() => {
+    try {
+      sessionStorage.removeItem(`tamga_locked_${desktopId}`);
+    } catch {}
+    lastActivityRef.current = Date.now();
+    setLocked(false);
+  }, [desktopId]);
 
   const [allNodes, setAllNodes] = useState<VFSNode[]>([]);
   const initialHydration = useMemo(() => loadCachedMeta(desktopId), []);
@@ -144,6 +197,8 @@ export default function App() {
   const windowsRef = useRef(windows);
   windowsRef.current = windows;
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
+  const focusedWindowIdRef = useRef<string | null>(null);
+  focusedWindowIdRef.current = focusedWindowId;
   const [externalDropTarget, setExternalDropTarget] = useState<string | null>(null);
   const nextZRef = useRef(20);
 
@@ -173,6 +228,9 @@ export default function App() {
     terminal?: Partial<DesktopMeta['preferences']['terminal']>;
     ui?: Partial<DesktopMeta['preferences']['ui']>;
     dock?: Partial<DockPreferences>;
+    media?: Partial<MediaPreferences>;
+    screensaver?: Partial<ScreensaverPreferences>;
+    lockScreen?: Partial<LockScreenPreferences>;
   } | null>(null);
   const prefFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [uploadTargetDir, setUploadTargetDir] = useState('/Desktop');
@@ -187,6 +245,8 @@ export default function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
+  activeTabIdRef.current = activeTabId;
   const [browserCursor, setBrowserCursor] = useState<string>('default');
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [pingMs, setPingMs] = useState<number>(2);
@@ -203,6 +263,27 @@ export default function App() {
   useEffect(() => {
     remoteAudio.setVolume(volume, muted);
   }, [volume, muted]);
+
+  useEffect(() => {
+    const devId = meta.preferences.media?.speakerDeviceId || 'default';
+    remoteAudio.setOutputDevice(devId).catch(() => {});
+  }, [meta.preferences.media?.speakerDeviceId]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      setIsBrowserOnline(true);
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        setWsReconnectNonce((n) => n + 1);
+      }
+    };
+    const onOffline = () => setIsBrowserOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
 
   const subscribeVideoFrame = useCallback((cb: (jpegBytes: Uint8Array) => void) => {
     videoListenersRef.current.add(cb);
@@ -311,12 +392,16 @@ export default function App() {
 
   const handleLogout = useCallback(async () => {
     try {
+      sessionStorage.removeItem(`tamga_locked_${desktopId}`);
+    } catch {}
+    setLocked(false);
+    try {
       await authApi.logout();
     } catch {}
     setWindows([]);
     setFocusedWindowId(null);
     setAuthStatus((prev) => ({ ...prev, authenticated: false }));
-  }, []);
+  }, [desktopId]);
 
   useEffect(() => {
     if (!locked) return;
@@ -598,6 +683,66 @@ export default function App() {
     [sendWs]
   );
 
+  const openWebAppWindow = useCallback(
+    (opts: {
+      appId?: string;
+      url: string;
+      title: string;
+      iconName?: string;
+      forceNew?: boolean;
+    }) => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight - 76;
+      const width = Math.min(1160, vw - 36);
+      const height = Math.min(735, vh - 32);
+      const z = ++nextZRef.current;
+
+      if (!opts.forceNew) {
+        const existing = windowsRef.current.find(
+          (w) =>
+            w.kind === 'web-app' &&
+            ((opts.appId && w.appId === opts.appId) || w.webAppUrl === opts.url)
+        );
+        if (existing) {
+          setWindows((prev) =>
+            prev.map((w) =>
+              w.id === existing.id ? { ...w, minimized: false, zIndex: z } : w
+            )
+          );
+          setFocusedWindowId(existing.id);
+          return;
+        }
+      }
+
+      const id = `win-webapp-${opts.appId || 'custom'}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 5)}`;
+      setWindows((prev) => {
+        const offset = (prev.filter((w) => w.kind === 'web-app').length % 5) * 24;
+        return [
+          ...prev,
+          {
+            id,
+            kind: 'web-app',
+            title: opts.title,
+            appId: opts.appId || 'web-app',
+            appIconName: opts.iconName || opts.appId || 'chrome',
+            webAppUrl: opts.url,
+            x: Math.max(18, Math.round((vw - width) / 2) + offset),
+            y: Math.max(18, Math.round((vh - height) / 2) + offset),
+            width,
+            height,
+            minimized: false,
+            maximized: false,
+            zIndex: z,
+          },
+        ];
+      });
+      setFocusedWindowId(id);
+    },
+    []
+  );
+
   const launchLinuxApp = useCallback(
     async (params: {
       appId?: string;
@@ -637,35 +782,27 @@ export default function App() {
         foundApp?.launchMode ||
         (['codex', 'claude-code', 'gemini-cli', 'antigravity-cli'].includes(params.appId || '')
           ? 'terminal'
+          : /^https?:\/\//i.test(params.command || '')
+          ? 'web'
           : 'gui');
 
-      // Launch official Antigravity WEB via Google Chrome session (keeps Google sign-in + IPv4 relay)
-      // or built-in Chromium fallback if Linux GUI browsers aren't available.
+      // Run web apps (Antigravity WEB & HTTP/HTTPS web apps) inside native embedded WebAppWindow (just like VS Code Web) without opening X11 Chrome
       if (params.appId === 'antigravity-web' || effectiveMode === 'web') {
         const targetUrl =
           params.initialUrl ||
           (foundApp?.command && /^https?:\/\//i.test(foundApp.command)
             ? foundApp.command
+            : /^https?:\/\//i.test(params.command || '')
+            ? String(params.command)
             : 'https://antigravity.google.com');
-        const preferredBrowser =
-          ['chrome', 'brave', 'firefox']
-            .map((bid) => linuxApps.find((a) => a.id === bid && a.installed))
-            .find(Boolean) || null;
-        if (linuxRuntime?.guiReady && preferredBrowser) {
-          params = {
-            ...params,
-            appId: preferredBrowser.id,
-            command: preferredBrowser.command,
-            appName: preferredBrowser.name,
-            iconName: preferredBrowser.id,
-            needsNoSandbox: preferredBrowser.needsNoSandbox,
-            launchMode: 'gui',
-            initialUrl: targetUrl,
-          };
-        } else {
-          openChromiumWindow(targetUrl);
-          return;
-        }
+        openWebAppWindow({
+          appId: params.appId || foundApp?.id || 'web-app',
+          url: targetUrl,
+          title: params.appName || foundApp?.name || 'Web Uygulaması',
+          iconName: resolvedIconName,
+          forceNew: params.forceNew,
+        });
+        return;
       }
 
       // Run TUI AI Agents (OpenAI Codex CLI, Claude Code CLI, Gemini CLI, Antigravity CLI) in crisp 60fps TrueColor PTY window
@@ -772,7 +909,7 @@ export default function App() {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast, openVSCodeWindow, linuxApps, focusWindow, linuxRuntime?.guiReady, openChromiumWindow]
+    [pushToast, openVSCodeWindow, openWebAppWindow, linuxApps, focusWindow]
   );
 
   const openPreviewWindow = useCallback((node: VFSNode) => {
@@ -958,6 +1095,12 @@ export default function App() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        wsEverConnectedRef.current = true;
+        if (wsOfflineTimerRef.current) {
+          clearTimeout(wsOfflineTimerRef.current);
+          wsOfflineTimerRef.current = null;
+        }
+        setWsDisconnected(false);
         while (wsQueueRef.current.length > 0) {
           const item = wsQueueRef.current.shift();
           if (item) ws.send(item);
@@ -1111,18 +1254,32 @@ export default function App() {
 
       ws.onclose = () => {
         if (pingInterval) clearInterval(pingInterval);
-        if (!closed) reconnectTimer = setTimeout(connect, 1200);
+        if (!closed) {
+          if (wsEverConnectedRef.current && !wsOfflineTimerRef.current) {
+            wsOfflineTimerRef.current = setTimeout(() => {
+              wsOfflineTimerRef.current = null;
+              setWsDisconnected(true);
+            }, 2500);
+          }
+          reconnectTimer = setTimeout(connect, 1200);
+        }
       };
     };
 
+    wsEverConnectedRef.current = false;
+    setWsDisconnected(false);
     connect();
     return () => {
       closed = true;
       if (pingInterval) clearInterval(pingInterval);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsOfflineTimerRef.current) {
+        clearTimeout(wsOfflineTimerRef.current);
+        wsOfflineTimerRef.current = null;
+      }
       wsRef.current?.close();
     };
-  }, [desktopId, isAuthorized, pushToast, openFolderWindow, focusWindow, openChromiumWindow]);
+  }, [desktopId, isAuthorized, wsReconnectNonce, pushToast, openFolderWindow, focusWindow, openChromiumWindow]);
 
   const handleSwitchDesktop = useCallback((nextId: string) => {
     setWindows([]);
@@ -1130,6 +1287,11 @@ export default function App() {
     setSelectedDesktopPaths([]);
     setRenamingPath(null);
     setCtxMenu(null);
+    try {
+      setLocked(sessionStorage.getItem(`tamga_locked_${nextId}`) === '1');
+    } catch {
+      setLocked(false);
+    }
     setBridgeDesktopId(nextId);
     setDesktopId(nextId);
   }, []);
@@ -1375,10 +1537,13 @@ export default function App() {
     terminal?: Partial<DesktopMeta['preferences']['terminal']>;
     ui?: Partial<DesktopMeta['preferences']['ui']>;
     dock?: Partial<DockPreferences>;
+    media?: Partial<MediaPreferences>;
+    screensaver?: Partial<ScreensaverPreferences>;
+    lockScreen?: Partial<LockScreenPreferences>;
   }) => {
     prefUpdateSeqRef.current += 1;
     setMeta((prev) => {
-      const { stream, browser, terminal, ui, dock, ...rest } = partial;
+      const { stream, browser, terminal, ui, dock, media, screensaver, lockScreen, ...rest } = partial;
       return {
         ...prev,
         preferences: {
@@ -1399,6 +1564,15 @@ export default function App() {
           dock: dock
             ? { ...DEFAULT_DOCK_PREFERENCES, ...(prev.preferences.dock || {}), ...dock }
             : prev.preferences.dock || { ...DEFAULT_DOCK_PREFERENCES },
+          media: media
+            ? { ...DEFAULT_MEDIA_PREFERENCES, ...(prev.preferences.media || {}), ...media }
+            : prev.preferences.media || { ...DEFAULT_MEDIA_PREFERENCES },
+          screensaver: screensaver
+            ? { ...DEFAULT_SCREENSAVER_PREFERENCES, ...(prev.preferences.screensaver || {}), ...screensaver }
+            : prev.preferences.screensaver || { ...DEFAULT_SCREENSAVER_PREFERENCES },
+          lockScreen: lockScreen
+            ? { ...DEFAULT_LOCK_SCREEN_PREFERENCES, ...(prev.preferences.lockScreen || {}), ...lockScreen }
+            : prev.preferences.lockScreen || { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
         },
       };
     });
@@ -1412,6 +1586,15 @@ export default function App() {
       terminal: partial.terminal || prevQ.terminal ? { ...(prevQ.terminal || {}), ...(partial.terminal || {}) } : undefined,
       ui: partial.ui || prevQ.ui ? { ...(prevQ.ui || {}), ...(partial.ui || {}) } : undefined,
       dock: partial.dock || prevQ.dock ? { ...(prevQ.dock || {}), ...(partial.dock || {}) } : undefined,
+      media: partial.media || prevQ.media ? { ...(prevQ.media || {}), ...(partial.media || {}) } : undefined,
+      screensaver:
+        partial.screensaver || prevQ.screensaver
+          ? { ...(prevQ.screensaver || {}), ...(partial.screensaver || {}) }
+          : undefined,
+      lockScreen:
+        partial.lockScreen || prevQ.lockScreen
+          ? { ...(prevQ.lockScreen || {}), ...(partial.lockScreen || {}) }
+          : undefined,
     };
     if (!prefFlushTimerRef.current) {
       prefPendingCountRef.current += 1;
@@ -1525,12 +1708,173 @@ export default function App() {
     }
   };
 
+  const handleCloseShortcut = useCallback(() => {
+    const curWindows = windowsRef.current;
+    const focused = focusedWindowIdRef.current
+      ? curWindows.find((w) => w.id === focusedWindowIdRef.current && !w.minimized)
+      : undefined;
+    const topWin =
+      focused ||
+      [...curWindows]
+        .filter((w) => !w.minimized)
+        .sort((a, b) => b.zIndex - a.zIndex)[0];
+    if (!topWin) return;
+
+    if (topWin.kind === 'browser' && activeTabIdRef.current) {
+      sendWs({ type: 'browser_close_tab', tabId: activeTabIdRef.current });
+      return;
+    }
+    if (topWin.kind === 'linux-app' && topWin.appSessionId) {
+      window.dispatchEvent(
+        new CustomEvent('tamga-linux-shortcut', {
+          detail: {
+            sessionId: topWin.appSessionId,
+            viewId: topWin.appViewId || 'main',
+            key: 'w',
+            ctrlKey: true,
+          },
+        })
+      );
+      return;
+    }
+    closeWindowById(topWin.id);
+  }, [closeWindowById, sendWs]);
+
+  const handleDismissScreensaver = useCallback(() => {
+    const wasPreview = screensaverIsPreview;
+    const startedAt = screensaverStartedAtRef.current;
+    lastActivityRef.current = Date.now();
+    setScreensaverActive(false);
+    setScreensaverIsPreview(false);
+    if (wasPreview) return;
+    const ss = meta.preferences.screensaver;
+    if (ss?.requirePassword && authStatus.enabled) {
+      const delayMs = Math.max(0, Number(ss.passwordDelayMinutes ?? 0)) * 60_000;
+      if (Date.now() - startedAt >= delayMs) {
+        activateLockScreen();
+      }
+    }
+  }, [screensaverIsPreview, meta.preferences.screensaver, authStatus.enabled, activateLockScreen]);
+
+  // Prevent accidental browser tab close (Cmd+W / Close button in non-fullscreen browsers)
   useEffect(() => {
+    if (!isAuthorized) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isAuthorized]);
+
+  // Lock KeyW & KeyL in Chromium Fullscreen so Cmd/Ctrl+W closes desktop tabs & Cmd+L locks TamgaOS
+  useEffect(() => {
+    const syncKeyboardLock = () => {
+      const fs = Boolean(document.fullscreenElement);
+      const kb = (
+        navigator as Navigator & {
+          keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void };
+        }
+      ).keyboard;
+      if (fs && kb?.lock) {
+        kb.lock(['KeyW', 'KeyL']).catch(() => {});
+      }
+    };
+    document.addEventListener('fullscreenchange', syncKeyboardLock);
+    return () => document.removeEventListener('fullscreenchange', syncKeyboardLock);
+  }, []);
+
+  // Track user activity & trigger animated Screensaver after configured idle duration
+  useEffect(() => {
+    if (!isAuthorized) return;
+    const markActive = () => {
+      lastActivityRef.current = Date.now();
+    };
+    window.addEventListener('mousemove', markActive, { passive: true });
+    window.addEventListener('mousedown', markActive, { passive: true });
+    window.addEventListener('keydown', markActive, { passive: true });
+    window.addEventListener('wheel', markActive, { passive: true });
+    window.addEventListener('touchstart', markActive, { passive: true });
+
+    const interval = setInterval(() => {
+      const ss = meta.preferences.screensaver;
+      if (!ss?.enabled || locked || screensaverActive) return;
+      const idleMs = Math.max(1, Number(ss.idleMinutes ?? 5)) * 60_000;
+      if (Date.now() - lastActivityRef.current >= idleMs) {
+        screensaverStartedAtRef.current = Date.now();
+        setScreensaverIsPreview(false);
+        setScreensaverActive(true);
+      }
+    }, 10_000);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('mousemove', markActive);
+      window.removeEventListener('mousedown', markActive);
+      window.removeEventListener('keydown', markActive);
+      window.removeEventListener('wheel', markActive);
+      window.removeEventListener('touchstart', markActive);
+    };
+  }, [isAuthorized, meta.preferences.screensaver, locked, screensaverActive]);
+
+  // Forward global shortcuts / activity from embedded proxy WebApp iframes
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'tamga_shortcut') {
+        if (e.data.action === 'lock') {
+          activateLockScreen();
+        } else if (e.data.action === 'close-window') {
+          handleCloseShortcut();
+        }
+      } else if (e.data?.type === 'tamga_activity') {
+        lastActivityRef.current = Date.now();
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [activateLockScreen, handleCloseShortcut]);
+
+  useEffect(() => {
+    const isMacHost = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      lastActivityRef.current = Date.now();
+
       if (locked) {
-        if (e.key === 'Enter' || e.key === ' ') setLocked(false);
+        const needsPassword = Boolean(
+          authStatus.enabled && (meta.preferences.lockScreen?.requirePassword ?? true)
+        );
+        if (!needsPassword && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          unlockDesktop();
+        }
         return;
       }
+
+      const keyLow = e.key.toLowerCase();
+
+      // Cmd+L (macOS) or Ctrl+Alt+L / Super+L (Linux/Win) -> Lock Screen with password
+      const isLockHotkey =
+        keyLow === 'l' &&
+        !e.shiftKey &&
+        (isMacHost
+          ? e.metaKey && !e.ctrlKey && !e.altKey
+          : (e.ctrlKey && e.altKey && !e.metaKey) || (e.metaKey && !e.ctrlKey && !e.altKey));
+      if (isLockHotkey) {
+        e.preventDefault();
+        e.stopPropagation();
+        activateLockScreen();
+        return;
+      }
+
+      // Cmd+W / Ctrl+W -> Close active desktop Chrome tab or top OS window (never close host browser tab)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && keyLow === 'w') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCloseShortcut();
+        return;
+      }
+
       const activeEl = document.activeElement as HTMLElement | null;
       if (
         activeEl &&
@@ -1551,16 +1895,16 @@ export default function App() {
       } else if (e.key === 'Enter' && selectedDesktopPaths.length === 1) {
         const node = desktopNodes.find((n) => n.path === selectedDesktopPaths[0]);
         if (node) handleOpenNode(node);
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+      } else if ((e.metaKey || e.ctrlKey) && keyLow === 'a') {
         e.preventDefault();
         setSelectedDesktopPaths(desktopNodes.map((n) => n.path));
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c' && selectedDesktopPaths.length) {
+      } else if ((e.metaKey || e.ctrlKey) && keyLow === 'c' && selectedDesktopPaths.length) {
         e.preventDefault();
         setClipboard({ mode: 'copy', paths: selectedDesktopPaths });
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'x' && selectedDesktopPaths.length) {
+      } else if ((e.metaKey || e.ctrlKey) && keyLow === 'x' && selectedDesktopPaths.length) {
         e.preventDefault();
         setClipboard({ mode: 'cut', paths: selectedDesktopPaths });
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+      } else if ((e.metaKey || e.ctrlKey) && keyLow === 'v') {
         e.preventDefault();
         handlePaste('/Desktop');
       }
@@ -1568,7 +1912,17 @@ export default function App() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [locked, selectedDesktopPaths, desktopNodes, clipboard]);
+  }, [
+    locked,
+    authStatus.enabled,
+    meta.preferences.lockScreen?.requirePassword,
+    unlockDesktop,
+    activateLockScreen,
+    handleCloseShortcut,
+    selectedDesktopPaths,
+    desktopNodes,
+    clipboard,
+  ]);
 
   if (!authChecked) {
     return <div className="w-screen h-screen bg-[var(--os-bg)]" />;
@@ -1803,6 +2157,20 @@ export default function App() {
               />
             )}
 
+            {win.kind === 'web-app' && (
+              <WebAppWindow
+                url={win.webAppUrl || 'https://antigravity.google.com'}
+                appName={win.title}
+                onTitleChange={(nextTitle) =>
+                  setWindows((prev) =>
+                    prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
+                  )
+                }
+                onOpenInChrome={(targetUrl) => openPrimaryBrowser(targetUrl)}
+                onNotify={pushToast}
+              />
+            )}
+
             {win.kind === 'linux-app' && win.appSessionId && (
               <LinuxAppWindow
                 sessionId={win.appSessionId}
@@ -1810,8 +2178,10 @@ export default function App() {
                 appName={win.title}
                 isFocused={focusedWindowId === win.id}
                 externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
+                scrollSensitivity={meta.preferences.stream?.scrollSensitivity ?? 1.0}
                 onVfsChanged={refreshVfs}
                 onClipboardSync={syncClipboardAcrossDesktop}
+                onLockScreen={activateLockScreen}
                 onNotify={pushToast}
                 onReady={() => {
                   setWindows((prev) =>
@@ -1879,13 +2249,23 @@ export default function App() {
                     forceNew: opts?.forceNew,
                   })
                 }
-                onLaunchCustomCommand={(cmd) =>
+                onLaunchCustomCommand={(cmd) => {
+                  const trimmed = cmd.trim();
+                  if (/^https?:\/\//i.test(trimmed)) {
+                    openWebAppWindow({
+                      appId: 'custom-web',
+                      url: trimmed,
+                      title: trimmed.replace(/^https?:\/\//i, '').split('/')[0] || 'Web Uygulaması',
+                      forceNew: true,
+                    });
+                    return;
+                  }
                   launchLinuxApp({
                     appId: 'custom',
-                    command: cmd,
-                    appName: cmd.split(' ')[0] || 'Uygulama',
-                  })
-                }
+                    command: trimmed,
+                    appName: trimmed.split(' ')[0] || 'Uygulama',
+                  });
+                }}
                 onOpenTerminal={() => openTerminalWindow('/Desktop')}
               />
             )}
@@ -1951,7 +2331,13 @@ export default function App() {
                 onOpenTerminal={(dir) => openTerminalWindow(dir || '/Desktop')}
                 onSwitchDesktop={handleSwitchDesktop}
                 onCreateDesktop={handleCreateDesktop}
-                onLockScreen={() => setLocked(true)}
+                onLockScreen={activateLockScreen}
+                onPreviewScreensaver={() => {
+                  screensaverStartedAtRef.current = Date.now();
+                  setScreensaverIsPreview(true);
+                  setScreensaverActive(true);
+                }}
+                onSendWs={sendWs}
                 onLogout={handleLogout}
                 onNotify={pushToast}
               />
@@ -2025,7 +2411,9 @@ export default function App() {
       )}
 
       {/* TOP-RIGHT SLIDE-IN FULLSCREEN RECOMMENDATION */}
-      {(meta.preferences.ui?.showFullscreenNotice ?? true) && <FullscreenNotice locked={locked} />}
+      {(meta.preferences.ui?.showFullscreenNotice ?? true) && (
+        <FullscreenNotice locked={locked || screensaverActive} />
+      )}
 
       {/* TOAST NOTIFICATIONS */}
       <div
@@ -2138,34 +2526,49 @@ export default function App() {
             focusWindow(winId);
           }
         }}
-        onLockScreen={() => setLocked(true)}
+        onLockScreen={activateLockScreen}
         onReboot={refreshVfs}
         onLogout={handleLogout}
       />
 
+      {/* ANIMATED SCREENSAVER */}
+      <ScreensaverOverlay
+        active={screensaverActive && !locked}
+        scene={meta.preferences.screensaver?.scene || DEFAULT_SCREENSAVER_PREFERENCES.scene}
+        customVideoUrl={meta.preferences.screensaver?.customVideoUrl}
+        currentWallpaperId={meta.preferences.wallpaper}
+        currentCustomWallpaper={meta.preferences.customWallpaper}
+        theme={meta.preferences.theme || 'dark'}
+        requirePassword={Boolean(
+          authStatus.enabled && (meta.preferences.screensaver?.requirePassword ?? true)
+        )}
+        onDismiss={handleDismissScreensaver}
+      />
+
       {/* LOCK SCREEN */}
-      {locked && (
-        <div
-          onClick={() => setLocked(false)}
-          className="fixed inset-0 z-[9998] bg-[var(--os-lock-bg)] backdrop-blur-xl flex flex-col items-center justify-center text-[var(--os-text)] cursor-pointer"
-        >
-          <div className="text-7xl font-extralight font-mono tracking-tight">
-            {lockClock.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
-          </div>
-          <div className="text-sm text-[var(--os-text-muted)] capitalize mt-3">
-            {lockClock.toLocaleDateString('tr-TR', {
-              weekday: 'long',
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric',
-            })}
-          </div>
-          <div className="mt-10 px-5 py-2.5 rounded-full bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] flex items-center gap-2 text-xs text-[var(--os-text-secondary)]">
-            <Lock className="w-3.5 h-3.5" />
-            <span>Açmak için dokunun veya tıklayın</span>
-          </div>
-        </div>
-      )}
+      <LockScreenOverlay
+        locked={locked}
+        style={meta.preferences.lockScreen?.style || DEFAULT_LOCK_SCREEN_PREFERENCES.style}
+        showClock={meta.preferences.lockScreen?.showClock ?? true}
+        requirePassword={meta.preferences.lockScreen?.requirePassword ?? true}
+        wallpaperId={meta.preferences.wallpaper}
+        customWallpaper={meta.preferences.customWallpaper}
+        theme={meta.preferences.theme || 'dark'}
+        authStatus={authStatus}
+        lockClock={lockClock}
+        onUnlock={unlockDesktop}
+        onLogout={authStatus.enabled ? handleLogout : undefined}
+      />
+
+      {/* OFFLINE / DISCONNECTED BLUR OVERLAY */}
+      <OfflineBannerOverlay
+        offline={!isBrowserOnline || wsDisconnected}
+        onRetry={() => {
+          setIsBrowserOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
+          setWsReconnectNonce((n) => n + 1);
+          refreshVfs();
+        }}
+      />
 
       {/* BRIGHTNESS OVERLAY */}
       {brightness < 100 && (

@@ -23,6 +23,7 @@ export interface StreamPreferences {
   x11MaxQuality: number;
   x11MotionQuality: number;
   audioEnabled: boolean;
+  scrollSensitivity?: number;
 }
 
 export interface BrowserPreferences {
@@ -37,6 +38,32 @@ export interface TerminalPreferences {
 
 export interface UiPreferences {
   showFullscreenNotice: boolean;
+}
+
+export interface MediaPreferences {
+  speakerDeviceId: string;
+  micEnabled: boolean;
+  micDeviceId: string;
+  micGain: number;
+  cameraEnabled: boolean;
+  cameraDeviceId: string;
+  cameraResolution: '480p' | '720p';
+  cameraMirror: boolean;
+}
+
+export interface ScreensaverPreferences {
+  enabled: boolean;
+  idleMinutes: number;
+  scene: string;
+  customVideoUrl?: string;
+  requirePassword: boolean;
+  passwordDelayMinutes: number;
+}
+
+export interface LockScreenPreferences {
+  style: 'wallpaper' | 'blur' | 'minimal' | 'clock';
+  requirePassword: boolean;
+  showClock: boolean;
 }
 
 export interface DockPreferences {
@@ -69,6 +96,9 @@ export interface DesktopMeta {
     terminal: TerminalPreferences;
     ui: UiPreferences;
     dock: DockPreferences;
+    media?: MediaPreferences;
+    screensaver?: ScreensaverPreferences;
+    lockScreen?: LockScreenPreferences;
   };
 }
 
@@ -84,6 +114,7 @@ export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
   x11MaxQuality: 86,
   x11MotionQuality: 58,
   audioEnabled: true,
+  scrollSensitivity: 1.0,
 };
 
 export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = {
@@ -98,6 +129,32 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showFullscreenNotice: true,
+};
+
+export const DEFAULT_MEDIA_PREFERENCES: MediaPreferences = {
+  speakerDeviceId: 'default',
+  micEnabled: false,
+  micDeviceId: 'default',
+  micGain: 100,
+  cameraEnabled: false,
+  cameraDeviceId: 'default',
+  cameraResolution: '720p',
+  cameraMirror: true,
+};
+
+export const DEFAULT_SCREENSAVER_PREFERENCES: ScreensaverPreferences = {
+  enabled: false,
+  idleMinutes: 5,
+  scene: 'wheat-field',
+  customVideoUrl: '',
+  requirePassword: true,
+  passwordDelayMinutes: 0,
+};
+
+export const DEFAULT_LOCK_SCREEN_PREFERENCES: LockScreenPreferences = {
+  style: 'wallpaper',
+  requirePassword: true,
+  showClock: true,
 };
 
 export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
@@ -228,10 +285,23 @@ export interface TabSummary {
   filePath?: string;
 }
 
-export type SettingsTabId = 'stream' | 'dock' | 'appearance' | 'terminal' | 'system';
+export interface MediaHardwareStatus {
+  pulseRunning: boolean;
+  sinks: Array<{ id: string; name: string; state: string }>;
+  sources: Array<{ id: string; name: string; state: string }>;
+  virtualMicName: string;
+  virtualMicReady: boolean;
+  virtualMicActiveClients: number;
+  videoDevices: string[];
+  v4l2LoopbackReady: boolean;
+  cameraNote: string;
+}
+
+export type SettingsTabId = 'stream' | 'dock' | 'appearance' | 'media' | 'terminal' | 'system';
 
 export type WindowKind =
   | 'browser'
+  | 'web-app'
   | 'folder'
   | 'preview'
   | 'properties'
@@ -248,6 +318,7 @@ export interface OSWindow {
   folderPath?: string;
   previewNodePath?: string;
   vscodeUrl?: string;
+  webAppUrl?: string;
   targetNodePath?: string;
   appSessionId?: string;
   appViewId?: string;
@@ -286,6 +357,7 @@ export interface ToastItem {
 export interface WallpaperPreset {
   id: string;
   name: string;
+  dynamicTime?: boolean;
 }
 
 export const WALLPAPERS: WallpaperPreset[] = [
@@ -295,4 +367,24 @@ export const WALLPAPERS: WallpaperPreset[] = [
   { id: 'geo-waves', name: 'Topo Dalgalar' },
   { id: 'geo-aurora', name: 'Kuzey Işıkları' },
   { id: 'geo-horizon', name: 'Minimal Ufuk' },
+  { id: 'wheat-field', name: 'Buğday Tarlası (Canlı)', dynamicTime: true },
+  { id: 'ocean-horizon', name: 'Okyanus Ufku (Canlı)', dynamicTime: true },
+  { id: 'cherry-blossom', name: 'Kiraz Çiçeği' },
+  { id: 'bamboo-breeze', name: 'Bambu Esintisi' },
+  { id: 'rainy-forest', name: 'Yağmurlu Orman' },
+  { id: 'snowy-pines', name: 'Karlı Çamlık' },
+  { id: 'lavender-valley', name: 'Lavanta Vadisi', dynamicTime: true },
+  { id: 'starry-nebula', name: 'Yıldızlı Nebula' },
+  { id: 'red-canyon', name: 'Kızıl Kanyon', dynamicTime: true },
+  { id: 'solar-eclipse', name: 'Güneş Tutulması' },
+  { id: 'glacial-mirror', name: 'Buzul Yansıması' },
+  { id: 'moonlit-lake', name: 'Ay Işığı Gölü', dynamicTime: true },
+  { id: 'cyber-grid', name: 'Siber Izgara' },
+  { id: 'silk-flow', name: 'İpek Akışı' },
+  { id: 'glass-orbs', name: 'Cam Küreler' },
+  { id: 'golden-waves', name: 'Altın Dalgalar' },
+  { id: 'dark-fractal', name: 'Karanlık Fraktal' },
+  { id: 'volcanic-glow', name: 'Volkanik Parıltı' },
+  { id: 'nordic-sea', name: 'Kuzey Denizi' },
+  { id: 'prism-spectrum', name: 'Prizma Işığı' },
 ];

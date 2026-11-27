@@ -18,10 +18,14 @@ import {
   Sparkles,
   Sun,
   Terminal,
+  Volume2,
   Zap,
 } from 'lucide-react';
 import {
   DEFAULT_DOCK_PREFERENCES,
+  DEFAULT_LOCK_SCREEN_PREFERENCES,
+  DEFAULT_MEDIA_PREFERENCES,
+  DEFAULT_SCREENSAVER_PREFERENCES,
   DEFAULT_STREAM_PREFERENCES,
   DEFAULT_TERMINAL_PREFERENCES,
   DEFAULT_UI_PREFERENCES,
@@ -29,6 +33,9 @@ import {
   type AuthStatus,
   type DesktopMeta,
   type DockPreferences,
+  type LockScreenPreferences,
+  type MediaPreferences,
+  type ScreensaverPreferences,
   type SettingsTabId,
   type StreamPreferences,
   type SystemInfoResponse,
@@ -38,13 +45,14 @@ import {
 import { authApi, buildWallpaperUrl, systemApi } from '../../services/osBridge';
 import { WallpaperThumb } from '../desktop/WallpaperLayer';
 import { formatUptime } from '../../utils/format';
+import { MediaSettingsSection } from './MediaSettingsSection';
 
 export const STREAM_PRESETS: Record<
   'performance' | 'balanced' | 'ultra',
   {
     label: string;
     tag: string;
-    config: Omit<StreamPreferences, 'audioEnabled'>;
+    config: Omit<StreamPreferences, 'audioEnabled' | 'scrollSensitivity'>;
   }
 > = {
   performance: {
@@ -192,6 +200,9 @@ interface SettingsWindowProps {
     terminal?: Partial<DesktopMeta['preferences']['terminal']>;
     ui?: Partial<DesktopMeta['preferences']['ui']>;
     dock?: Partial<DockPreferences>;
+    media?: Partial<MediaPreferences>;
+    screensaver?: Partial<ScreensaverPreferences>;
+    lockScreen?: Partial<LockScreenPreferences>;
   }) => void;
   onToggleTheme: (nextTheme: 'dark' | 'light', origin?: { x: number; y: number }) => void;
   onTriggerWallpaperUpload: () => void;
@@ -202,6 +213,8 @@ interface SettingsWindowProps {
   onSwitchDesktop: (id: string) => void;
   onCreateDesktop: (name?: string) => void;
   onLockScreen: () => void;
+  onPreviewScreensaver?: () => void;
+  onSendWs?: (msg: Record<string, unknown>) => void;
   onLogout?: () => void;
   onNotify: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
@@ -214,6 +227,7 @@ const NAV_ITEMS: Array<{
   { id: 'stream', label: 'Akış & Kalite', icon: Gauge },
   { id: 'dock', label: 'Dock & Panel', icon: PanelBottom },
   { id: 'appearance', label: 'Görünüm', icon: Palette },
+  { id: 'media', label: 'Ses & Kamera', icon: Volume2 },
   { id: 'terminal', label: 'Uç Birim', icon: Terminal },
   { id: 'system', label: 'Sistem', icon: Shield },
 ];
@@ -240,6 +254,8 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
   onSwitchDesktop,
   onCreateDesktop,
   onLockScreen,
+  onPreviewScreensaver,
+  onSendWs,
   onLogout,
   onNotify,
 }) => {
@@ -265,6 +281,18 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
   const ui = {
     ...DEFAULT_UI_PREFERENCES,
     ...(meta.preferences.ui || {}),
+  };
+  const media: MediaPreferences = {
+    ...DEFAULT_MEDIA_PREFERENCES,
+    ...(meta.preferences.media || {}),
+  };
+  const screensaver: ScreensaverPreferences = {
+    ...DEFAULT_SCREENSAVER_PREFERENCES,
+    ...(meta.preferences.screensaver || {}),
+  };
+  const lockScreen: LockScreenPreferences = {
+    ...DEFAULT_LOCK_SCREEN_PREFERENCES,
+    ...(meta.preferences.lockScreen || {}),
   };
 
   useEffect(() => {
@@ -292,12 +320,25 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
       stream: {
         ...STREAM_PRESETS[presetKey].config,
         audioEnabled: stream.audioEnabled,
+        scrollSensitivity: stream.scrollSensitivity ?? 1.0,
       },
     });
   };
 
   const updateDock = (partial: Partial<DockPreferences>) => {
     onUpdatePreferences({ dock: partial });
+  };
+
+  const updateMedia = (partial: Partial<MediaPreferences>) => {
+    onUpdatePreferences({ media: partial });
+  };
+
+  const updateScreensaver = (partial: Partial<ScreensaverPreferences>) => {
+    onUpdatePreferences({ screensaver: partial });
+  };
+
+  const updateLockScreen = (partial: Partial<LockScreenPreferences>) => {
+    onUpdatePreferences({ lockScreen: partial });
   };
 
   const handlePasswordChange = async (e: React.FormEvent) => {
@@ -605,6 +646,29 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     />
                   }
                 />
+
+                <div className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium flex items-center">
+                      Trackpad / Kaydırma Hızı
+                      <InfoTip text="Chrome, VS Code ve diğer Linux native pencerelerde iki parmak trackpad ve fare tekerleği kaydırma hızını ayarlar (1.0x = Doğal macOS hızı)." />
+                    </span>
+                    <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                      {(stream.scrollSensitivity ?? 1.0).toFixed(1)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="stream-scroll-sensitivity"
+                    min={0.3}
+                    max={2.5}
+                    step={0.1}
+                    value={stream.scrollSensitivity ?? 1.0}
+                    onChange={(e) => updateStream({ scrollSensitivity: Number(e.target.value) }, false)}
+                    style={{ accentColor: 'var(--os-accent-bg)' }}
+                    className="w-full"
+                  />
+                </div>
               </div>
             </>
           )}
@@ -831,103 +895,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     className="w-full disabled:opacity-35"
                   />
                 </div>
-              </div>
-            </>
-          )}
 
-          {/* 3. APPEARANCE & DAY/NIGHT GEOMETRIC WALLPAPERS */}
-          {activeTab === 'appearance' && (
-            <>
-              <h2 className="text-sm font-semibold tracking-tight">Görünüm</h2>
-
-              {/* Theme */}
-              <div className="grid grid-cols-2 gap-2.5">
-                {(
-                  [
-                    ['dark', 'Gece (Koyu)', Moon],
-                    ['light', 'Gündüz (Açık)', Sun],
-                  ] as const
-                ).map(([tKey, label, Icon]) => {
-                  const active = theme === tKey;
-                  return (
-                    <button
-                      key={tKey}
-                      onClick={(e) => onToggleTheme(tKey, { x: e.clientX, y: e.clientY })}
-                      className={`flex items-center justify-between px-4 py-3 rounded-2xl border text-xs font-medium transition-all ${
-                        active
-                          ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
-                          : 'bg-[var(--os-surface-2)] border-[var(--os-border)] hover:border-[var(--os-border-strong)]'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <Icon className="w-4 h-4" />
-                        <span>{label}</span>
-                      </span>
-                      {active && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Geometric Wallpapers (Dynamic Day/Night) */}
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium flex items-center">
-                    Geometrik Duvar Kağıtları
-                    <InfoTip text="Her geometrik tasarım Gece (Koyu) ve Gündüz (Açık) temasında otomatik olarak farklı renk paleti ve atmosfer sunar." />
-                  </span>
-                  <button
-                    onClick={onTriggerWallpaperUpload}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)]"
-                  >
-                    <ImagePlus className="w-3.5 h-3.5" />
-                    <span>Özel Resim</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2.5">
-                  {WALLPAPERS.map((wp) => {
-                    const active = meta.preferences.wallpaper === wp.id;
-                    return (
-                      <button
-                        key={wp.id}
-                        data-testid={`wp-card-${wp.id}`}
-                        onClick={() => onUpdatePreferences({ wallpaper: wp.id })}
-                        className={`rounded-xl p-1.5 text-left border transition-all ${
-                          active
-                            ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
-                            : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
-                        }`}
-                      >
-                        <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-14" />
-                        <div className="text-[11px] font-medium truncate px-1 pt-1.5">
-                          {wp.name}
-                        </div>
-                      </button>
-                    );
-                  })}
-                  {customWallpaperUrl && (
-                    <button
-                      onClick={() => onUpdatePreferences({ wallpaper: 'custom' })}
-                      className={`rounded-xl p-1.5 text-left border transition-all ${
-                        meta.preferences.wallpaper === 'custom'
-                          ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
-                          : 'border-[var(--os-border)] bg-[var(--os-bg)]'
-                      }`}
-                    >
-                      <img
-                        src={customWallpaperUrl}
-                        alt="Özel"
-                        className="w-full h-14 object-cover rounded-lg"
-                      />
-                      <div className="text-[11px] font-medium truncate px-1 pt-1.5">Özel Resim</div>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Desktop, Dock Size & Display controls */}
-              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
                 <Row
                   label="Hızlı Dock Şablonu"
                   tip="Dock yüksekliği ve Dock simge boyutunu tek dokunuşta ayarlamanızı sağlar."
@@ -1020,7 +988,251 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                     />
                   </div>
                 </div>
+              </div>
+            </>
+          )}
 
+          {/* 3. APPEARANCE, ANIMATED WALLPAPERS, SCREENSAVER & LOCK SCREEN */}
+          {activeTab === 'appearance' && (
+            <>
+              <h2 className="text-sm font-semibold tracking-tight">Görünüm</h2>
+
+              {/* Theme */}
+              <div className="grid grid-cols-2 gap-2.5">
+                {(
+                  [
+                    ['dark', 'Gece (Koyu)', Moon],
+                    ['light', 'Gündüz (Açık)', Sun],
+                  ] as const
+                ).map(([tKey, label, Icon]) => {
+                  const active = theme === tKey;
+                  return (
+                    <button
+                      key={tKey}
+                      onClick={(e) => onToggleTheme(tKey, { x: e.clientX, y: e.clientY })}
+                      className={`flex items-center justify-between px-4 py-3 rounded-2xl border text-xs font-medium transition-all ${
+                        active
+                          ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] border-transparent'
+                          : 'bg-[var(--os-surface-2)] border-[var(--os-border)] hover:border-[var(--os-border-strong)]'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Icon className="w-4 h-4" />
+                        <span>{label}</span>
+                      </span>
+                      {active && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 26 Animated & Clock-Aware Wallpapers */}
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium flex items-center">
+                    Hareketli & Geometrik Duvar Kağıtları ({WALLPAPERS.length})
+                    <InfoTip text="Buğday tarlası ve doğa/geometrik sahneler gerçek saate göre gün ışığından gece yıldızlarına yumuşak animasyonla dönüşür." />
+                  </span>
+                  <button
+                    onClick={onTriggerWallpaperUpload}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)]"
+                  >
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>Özel Resim</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2.5 max-h-72 overflow-y-auto pr-1">
+                  {WALLPAPERS.map((wp) => {
+                    const active = meta.preferences.wallpaper === wp.id;
+                    return (
+                      <button
+                        key={wp.id}
+                        data-testid={`wp-card-${wp.id}`}
+                        onClick={() => onUpdatePreferences({ wallpaper: wp.id })}
+                        className={`rounded-xl p-1.5 text-left border transition-all ${
+                          active
+                            ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
+                            : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
+                        }`}
+                      >
+                        <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-14" />
+                        <div className="text-[11px] font-medium truncate px-1 pt-1.5">
+                          {wp.name}
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {customWallpaperUrl && (
+                    <button
+                      onClick={() => onUpdatePreferences({ wallpaper: 'custom' })}
+                      className={`rounded-xl p-1.5 text-left border transition-all ${
+                        meta.preferences.wallpaper === 'custom'
+                          ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
+                          : 'border-[var(--os-border)] bg-[var(--os-bg)]'
+                      }`}
+                    >
+                      <img
+                        src={customWallpaperUrl}
+                        alt="Özel"
+                        className="w-full h-14 object-cover rounded-lg"
+                      />
+                      <div className="text-[11px] font-medium truncate px-1 pt-1.5">Özel Resim</div>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Clean & Simple Screensaver Controls */}
+              <div
+                data-testid="screensaver-settings-card"
+                className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]"
+              >
+                <Row
+                  label="Ekran Koruyucu"
+                  tip="Belirlenen süre boyunca işlem yapılmazsa seçtiğiniz hareketli sahneyi veya videoyu tam ekran oynatır."
+                  right={
+                    <div className="flex items-center gap-2">
+                      {onPreviewScreensaver && (
+                        <button
+                          type="button"
+                          data-testid="screensaver-preview-btn"
+                          onClick={onPreviewScreensaver}
+                          className="px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)] text-[11px] font-medium"
+                        >
+                          Önizle
+                        </button>
+                      )}
+                      <Toggle
+                        testId="toggle-screensaver-enabled"
+                        checked={screensaver.enabled}
+                        onChange={(v) => updateScreensaver({ enabled: v })}
+                      />
+                    </div>
+                  }
+                />
+
+                <Row
+                  label="Başlama Süresi"
+                  right={
+                    <select
+                      data-testid="screensaver-idle-select"
+                      value={screensaver.idleMinutes}
+                      onChange={(e) => updateScreensaver({ idleMinutes: Number(e.target.value) })}
+                      className="px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text)] focus:outline-none"
+                    >
+                      {[1, 2, 5, 10, 15, 30].map((m) => (
+                        <option key={m} value={m}>
+                          {m} dakika sonra
+                        </option>
+                      ))}
+                    </select>
+                  }
+                />
+
+                <Row
+                  label="Hareketli Sahne / Video"
+                  right={
+                    <select
+                      data-testid="screensaver-scene-select"
+                      value={screensaver.scene}
+                      onChange={(e) => updateScreensaver({ scene: e.target.value })}
+                      className="max-w-[230px] px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text)] focus:outline-none"
+                    >
+                      <option value="wallpaper">Mevcut Arkaplanım (Hareketli)</option>
+                      <option value="clock">Sade Büyük Saat</option>
+                      {WALLPAPERS.map((wp) => (
+                        <option key={wp.id} value={wp.id}>
+                          {wp.name}
+                        </option>
+                      ))}
+                      <option value="custom-video">Özel Video URL (MP4/WebM)</option>
+                    </select>
+                  }
+                />
+
+                {screensaver.scene === 'custom-video' && (
+                  <div className="px-4 py-2.5 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={screensaver.customVideoUrl || ''}
+                      onChange={(e) => updateScreensaver({ customVideoUrl: e.target.value })}
+                      placeholder="https://.../video.mp4 veya /Desktop/video.mp4"
+                      className="flex-1 px-2.5 py-1.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs focus:outline-none"
+                    />
+                  </div>
+                )}
+
+                <Row
+                  label="Uyandırmada Şifre / Giriş İste"
+                  right={
+                    <div className="flex items-center gap-2">
+                      {screensaver.requirePassword && (
+                        <select
+                          data-testid="screensaver-pass-delay"
+                          value={screensaver.passwordDelayMinutes}
+                          onChange={(e) =>
+                            updateScreensaver({ passwordDelayMinutes: Number(e.target.value) })
+                          }
+                          className="px-2 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-[11px] text-[var(--os-text)] focus:outline-none"
+                        >
+                          <option value={0}>Anında</option>
+                          <option value={1}>1 dk sonra</option>
+                          <option value={5}>5 dk sonra</option>
+                          <option value={15}>15 dk sonra</option>
+                        </select>
+                      )}
+                      <Toggle
+                        testId="toggle-screensaver-password"
+                        checked={screensaver.requirePassword}
+                        onChange={(v) => updateScreensaver({ requirePassword: v })}
+                      />
+                    </div>
+                  }
+                />
+              </div>
+
+              {/* Clean Lock Screen Controls */}
+              <div
+                data-testid="lockscreen-settings-card"
+                className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]"
+              >
+                <Row
+                  label="Kilit Ekranı Görünümü"
+                  right={
+                    <select
+                      data-testid="lockscreen-style-select"
+                      value={lockScreen.style}
+                      onChange={(e) =>
+                        updateLockScreen({
+                          style: e.target.value as LockScreenPreferences['style'],
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text)] focus:outline-none"
+                    >
+                      <option value="wallpaper">Hareketli Arkaplan & Saat</option>
+                      <option value="blur">Bulanık Masaüstü</option>
+                      <option value="clock">Büyük Saat & Tarih</option>
+                      <option value="minimal">Sade Koyu</option>
+                    </select>
+                  }
+                />
+
+                <Row
+                  label="Kilit Açılışında Parola Sor"
+                  tip="Cmd+L ile kilitlediğinizde veya sekme açıldığında hesap parolanızı ister."
+                  right={
+                    <Toggle
+                      testId="toggle-lock-password"
+                      checked={lockScreen.requirePassword}
+                      onChange={(v) => updateLockScreen({ requirePassword: v })}
+                    />
+                  }
+                />
+              </div>
+
+              {/* Desktop Icon & Display controls (Dock controls live in Dock & Panel) */}
+              <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
                 <Row
                   label="Masaüstü Simge Boyutu"
                   right={
@@ -1110,6 +1322,22 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 />
               </div>
             </>
+          )}
+
+          {/* 4. AUDIO OUTPUT, MICROPHONE & CAMERA HARDWARE */}
+          {activeTab === 'media' && (
+            <MediaSettingsSection
+              media={media}
+              volume={volume}
+              muted={muted}
+              audioEnabled={stream.audioEnabled}
+              onUpdateMedia={updateMedia}
+              onChangeVolume={onChangeVolume}
+              onToggleMute={onToggleMute}
+              onToggleAudioStream={(v) => updateStream({ audioEnabled: v }, false)}
+              onSendWs={(msg) => onSendWs?.(msg)}
+              onNotify={onNotify}
+            />
           )}
 
           {/* 4. TERMINAL */}

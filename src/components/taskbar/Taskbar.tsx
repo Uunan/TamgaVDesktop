@@ -7,7 +7,6 @@ import {
   ChevronRight,
   Eye,
   Folder,
-  Gauge,
   HardDrive,
   Layers,
   Link2,
@@ -311,7 +310,7 @@ const DockAppIcon: React.FC<{ win: OSWindow; size: number }> = ({ win, size }) =
   if (win.kind === 'vscode') {
     return <OriginalAppIcon appId="vscode" iconName="vscode" name={win.title} size={size} />;
   }
-  if (win.kind === 'linux-app') {
+  if (win.kind === 'linux-app' || win.kind === 'web-app') {
     return (
       <OriginalAppIcon
         appId={win.appId}
@@ -983,40 +982,8 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           }}
           className={`fixed z-[9980] w-[344px] max-w-[calc(100vw-24px)] max-h-[calc(100vh-115px)] overflow-y-auto rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-4 space-y-3.5 text-[var(--os-text)] ${flyoutAnimClass}`}
         >
-          {/* Quick Settings Entry Row */}
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => {
-                onOpenSettings('appearance');
-                setFlyout(null);
-              }}
-              data-testid="control-center-settings-btn"
-              className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] transition-colors text-left"
-            >
-              <Settings className="w-4 h-4 text-[var(--os-text)] shrink-0" />
-              <div className="min-w-0">
-                <div className="text-xs font-semibold text-[var(--os-text)] truncate">Sistem Ayarları</div>
-                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Görünüm, Dock, Sistem</div>
-              </div>
-            </button>
-            <button
-              onClick={() => {
-                onOpenSettings('stream');
-                setFlyout(null);
-              }}
-              data-testid="control-center-stream-btn"
-              className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] transition-colors text-left"
-            >
-              <Gauge className="w-4 h-4 text-emerald-500 shrink-0" />
-              <div className="min-w-0">
-                <div className="text-xs font-semibold text-[var(--os-text)] truncate">Akış & Kalite</div>
-                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">45-60 FPS & Netlik</div>
-              </div>
-            </button>
-          </div>
-
           {/* Theme Switcher */}
-          <div className="space-y-1.5 pt-2.5 border-t border-[var(--os-border)]">
+          <div className="space-y-1.5">
             <div className="text-[11px] text-[var(--os-text-muted)]">Görünüm</div>
             <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
               <button
@@ -1186,23 +1153,38 @@ export const Taskbar: React.FC<TaskbarProps> = ({
             </div>
           </div>
 
-          {/* System Telemetry Strip */}
-          <div className="pt-2.5 border-t border-[var(--os-border)] grid grid-cols-3 gap-2 text-[11px]">
-            <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
-              <div className="text-[var(--os-text-subtle)]">CPU</div>
-              <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">
-                %{telemetry?.cpuPercent ?? 6}
+          {/* System Telemetry Strip + Single Settings Icon on Left of CPU / RAM */}
+          <div className="pt-2.5 border-t border-[var(--os-border)] flex items-stretch gap-2 text-[11px]">
+            <button
+              type="button"
+              onClick={() => {
+                onOpenSettings('appearance');
+                setFlyout(null);
+              }}
+              data-testid="control-center-settings-btn"
+              title="Ayarlar"
+              aria-label="Ayarlar"
+              className="w-11 shrink-0 rounded-xl bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)] flex items-center justify-center text-[var(--os-text)] transition-colors"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+            <div className="flex-1 grid grid-cols-3 gap-1.5 min-w-0">
+              <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
+                <div className="text-[var(--os-text-subtle)]">CPU</div>
+                <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">
+                  %{telemetry?.cpuPercent ?? 6}
+                </div>
               </div>
-            </div>
-            <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
-              <div className="text-[var(--os-text-subtle)]">Bellek</div>
-              <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">
-                %{telemetry?.ramPercent ?? 35}
+              <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
+                <div className="text-[var(--os-text-subtle)]">Bellek</div>
+                <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">
+                  %{telemetry?.ramPercent ?? 35}
+                </div>
               </div>
-            </div>
-            <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
-              <div className="text-[var(--os-text-subtle)]">Gecikme</div>
-              <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">{pingMs} ms</div>
+              <div className="p-2 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)]">
+                <div className="text-[var(--os-text-subtle)]">Gecikme</div>
+                <div className="font-mono font-semibold text-[var(--os-text)] mt-0.5">{pingMs} ms</div>
+              </div>
             </div>
           </div>
           <div className="text-[10px] text-[var(--os-text-subtle)] flex justify-between">

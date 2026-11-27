@@ -23,12 +23,14 @@ interface LinuxAppWindowProps {
   appName: string;
   isFocused?: boolean;
   externalDropHighlighted?: boolean;
+  scrollSensitivity?: number;
   onTitleChange?: (title: string) => void;
   onReady?: () => void;
   onAppExit?: () => void;
   onWindowOpened?: (extra: ExtraLinuxWindowEvent) => void;
   onVfsChanged?: () => void;
   onClipboardSync?: (text: string) => void;
+  onLockScreen?: () => void;
   onNotify?: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
@@ -41,12 +43,14 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   appName,
   isFocused = true,
   externalDropHighlighted = false,
+  scrollSensitivity = 1.0,
   onTitleChange,
   onReady,
   onAppExit,
   onWindowOpened,
   onVfsChanged,
   onClipboardSync,
+  onLockScreen,
   onNotify,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -78,6 +82,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   onWindowOpenedRef.current = onWindowOpened;
   const onClipSyncRef = useRef(onClipboardSync);
   onClipSyncRef.current = onClipboardSync;
+  const onLockScreenRef = useRef(onLockScreen);
+  onLockScreenRef.current = onLockScreen;
+  const scrollSensRef = useRef(scrollSensitivity);
+  scrollSensRef.current = scrollSensitivity;
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
@@ -458,6 +466,32 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
   }, [sessionId, viewId]);
 
+  useEffect(() => {
+    const onShortcut = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        sessionId?: string;
+        viewId?: string;
+        key?: string;
+        ctrlKey?: boolean;
+        altKey?: boolean;
+        shiftKey?: boolean;
+      }>).detail;
+      if (!detail || detail.sessionId !== sessionId) return;
+      if (detail.viewId && detail.viewId !== viewId) return;
+      if (detail.key) {
+        sendInput({
+          type: 'shortcut',
+          key: detail.key,
+          ctrlKey: Boolean(detail.ctrlKey),
+          altKey: Boolean(detail.altKey),
+          shiftKey: Boolean(detail.shiftKey),
+        });
+      }
+    };
+    window.addEventListener('tamga-linux-shortcut', onShortcut);
+    return () => window.removeEventListener('tamga-linux-shortcut', onShortcut);
+  }, [sessionId, viewId]);
+
   const toCoords = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -470,28 +504,51 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
   };
 
-  // Non-passive native wheel listener with 16ms delta coalescing so high-Hz trackpads & Cmd+Scroll zoom feel silky smooth
+  // Non-passive native wheel listener with pixel-faithful Mac trackpad accumulator (~10x smoother vs raw 1-click-per-event)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingWheel: {
-      x: number;
-      y: number;
-      deltaX: number;
-      deltaY: number;
-      ctrlKey: boolean;
-      metaKey: boolean;
-      shiftKey: boolean;
-      altKey: boolean;
-    } | null = null;
+    let accumX = 0;
+    let accumY = 0;
+    let lastWheelAt = 0;
+    let pendingCoords = { x: 0, y: 0, shiftKey: false, altKey: false };
 
     const flushWheel = () => {
       wheelTimer = null;
-      if (!pendingWheel) return;
-      const w = pendingWheel;
-      pendingWheel = null;
-      sendInput({ type: 'wheel', ...w });
+      const sens = Math.max(0.25, Math.min(3.0, Number(scrollSensRef.current) || 1.0));
+      const pxPerTickY = 105 / sens;
+      const pxPerTickX = 115 / sens;
+
+      let ticksY = 0;
+      if (Math.abs(accumY) >= pxPerTickY) {
+        const count = Math.min(6, Math.floor(Math.abs(accumY) / pxPerTickY));
+        ticksY = Math.sign(accumY) * count;
+        accumY -= ticksY * pxPerTickY;
+      }
+
+      let ticksX = 0;
+      if (Math.abs(accumX) >= pxPerTickX) {
+        const count = Math.min(4, Math.floor(Math.abs(accumX) / pxPerTickX));
+        ticksX = Math.sign(accumX) * count;
+        accumX -= ticksX * pxPerTickX;
+      }
+
+      if (ticksY !== 0 || ticksX !== 0) {
+        sendInput({
+          type: 'wheel',
+          x: pendingCoords.x,
+          y: pendingCoords.y,
+          deltaX: ticksX * pxPerTickX,
+          deltaY: ticksY * pxPerTickY,
+          ticksX: Math.abs(ticksX),
+          ticksY: Math.abs(ticksY),
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: pendingCoords.shiftKey,
+          altKey: pendingCoords.altKey,
+        });
+      }
     };
 
     const handleWheel = (e: WheelEvent) => {
@@ -499,15 +556,21 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       e.stopPropagation();
       const { x, y } = toCoords(e.clientX, e.clientY);
       const ctrl = e.ctrlKey || e.metaKey;
-      // Send modifier-zoom ticks immediately for snappy GIMP zoom; coalesce rapid plain scroll deltas over 16ms
+      const modeScale = e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? 480 : 1;
+      let dx = e.deltaX * modeScale;
+      const dy = e.deltaY * modeScale;
+
       if (ctrl) {
-        flushWheel();
+        accumX = 0;
+        accumY = 0;
         sendInput({
           type: 'wheel',
           x,
           y,
-          deltaX: e.deltaX,
-          deltaY: e.deltaY,
+          deltaX: dx,
+          deltaY: dy,
+          ticksY: Math.abs(dy) >= 2 ? 1 : 0,
+          ticksX: 0,
           ctrlKey: true,
           metaKey: e.metaKey,
           shiftKey: e.shiftKey,
@@ -515,24 +578,40 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         });
         return;
       }
-      if (pendingWheel) {
-        pendingWheel.x = x;
-        pendingWheel.y = y;
-        pendingWheel.deltaX += e.deltaX;
-        pendingWheel.deltaY += e.deltaY;
-      } else {
-        pendingWheel = {
-          x,
-          y,
-          deltaX: e.deltaX,
-          deltaY: e.deltaY,
-          ctrlKey: false,
-          metaKey: false,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-        };
+
+      const now = performance.now();
+      if (now - lastWheelAt > 320) {
+        accumX = 0;
+        accumY = 0;
       }
-      if (!wheelTimer) {
+      lastWheelAt = now;
+
+      // Suppress accidental horizontal drift during primarily vertical two-finger Mac trackpad swipes
+      if (Math.abs(dx) < Math.abs(dy) * 0.45 && Math.abs(dx) < 14) {
+        dx = 0;
+      }
+
+      // Reset residual accumulator immediately when scroll direction reverses
+      if (dy !== 0 && accumY !== 0 && Math.sign(dy) !== Math.sign(accumY)) {
+        accumY = 0;
+      }
+      if (dx !== 0 && accumX !== 0 && Math.sign(dx) !== Math.sign(accumX)) {
+        accumX = 0;
+      }
+
+      accumX += dx;
+      accumY += dy;
+      pendingCoords = { x, y, shiftKey: e.shiftKey, altKey: e.altKey };
+
+      const sens = Math.max(0.25, Math.min(3.0, Number(scrollSensRef.current) || 1.0));
+      const thresholdY = 105 / sens;
+      if (Math.abs(accumY) >= thresholdY || Math.abs(accumX) >= 115 / sens) {
+        if (wheelTimer) {
+          clearTimeout(wheelTimer);
+          wheelTimer = null;
+        }
+        flushWheel();
+      } else if (!wheelTimer) {
         wheelTimer = setTimeout(flushWheel, 16);
       }
     };
@@ -676,6 +755,18 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             return;
           }
 
+          // Cmd+L on macOS (or Ctrl+Alt+L elsewhere) locks TamgaOS even while an X11 Linux window is focused; Ctrl+L remains Chrome URL bar / terminal clear
+          if (
+            e.key.toLowerCase() === 'l' &&
+            !e.shiftKey &&
+            (IS_MAC_HOST ? e.metaKey && !e.ctrlKey && !e.altKey : e.ctrlKey && e.altKey && !e.metaKey)
+          ) {
+            e.preventDefault();
+            e.stopPropagation();
+            onLockScreenRef.current?.();
+            return;
+          }
+
           // Translate macOS Cmd+<key> & Windows/Linux Ctrl+<key> shortcuts cleanly into X11 shortcuts
           if (
             hasCmdOrCtrl &&
@@ -790,10 +881,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           const { x, y } = toCoords(e.clientX, e.clientY);
           if (e.pointerType === 'touch' && touchStateRef.current) {
             const dy = touchStateRef.current.lastY - e.clientY;
-            if (Math.abs(dy) > 4) {
+            if (Math.abs(dy) >= 24) {
               touchStateRef.current.moved = true;
               touchStateRef.current.lastY = e.clientY;
-              sendInput({ type: 'wheel', x, y, deltaY: dy * 2.2, deltaX: 0 });
+              sendInput({ type: 'wheel', x, y, deltaY: dy, deltaX: 0, ticksY: 1, ticksX: 0 });
             }
             return;
           }

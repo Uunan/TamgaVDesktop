@@ -585,12 +585,12 @@ export const AppStoreWindow: React.FC<AppStoreWindowProps> = ({
                 type="text"
                 value={customCmd}
                 onChange={(e) => setCustomCmd(e.target.value)}
-                placeholder="Özel Linux komutu çalıştır (örn: xcalc, gedit)..."
+                placeholder="Özel komut veya web URL çalıştır (örn: https://..., xcalc)..."
                 className="flex-1 px-3 py-1.5 rounded-xl bg-[var(--os-bg)] border border-[var(--os-border)] text-xs font-mono focus:outline-none"
               />
               <button
                 type="submit"
-                disabled={!customCmd.trim() || !runtime?.guiReady}
+                disabled={!customCmd.trim() || (!runtime?.guiReady && !/^https?:\/\//i.test(customCmd.trim()))}
                 className="px-3.5 py-1.5 rounded-xl bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] text-xs font-semibold disabled:opacity-40"
               >
                 Çalıştır

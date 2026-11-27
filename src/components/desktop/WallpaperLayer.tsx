@@ -1,11 +1,14 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { buildWallpaperUrl } from '../../services/osBridge';
+import { renderExtraWallpaper } from './ExtraWallpapers';
 
 interface WallpaperSpec {
   key: string;
   wallpaperId: string;
   theme: 'dark' | 'light';
   customUrl?: string;
+  hour?: number;
+  animated?: boolean;
 }
 
 /* 1. GEOMETRİK DAĞ — Gece: Yıldızlı derin lacivert-obsidyen zirveler + ay ışığı | Gündüz: Gün doğumu pastel dağlar */
@@ -279,36 +282,57 @@ const GeoHorizonSvg: React.FC<{ theme: 'dark' | 'light' }> = ({ theme }) => {
   );
 };
 
-function renderWallpaperContent(spec: WallpaperSpec) {
+export function renderWallpaperContent(spec: WallpaperSpec) {
+  const hour = spec.hour ?? new Date().getHours();
+  const wrapCls = spec.animated ? 'w-full h-full wp-anim' : 'w-full h-full';
+
   if (spec.wallpaperId === 'custom' && spec.customUrl) {
     return (
-      <img
-        src={spec.customUrl}
-        alt="Masaüstü Arka Planı"
-        className="w-full h-full object-cover select-none"
-        draggable={false}
-      />
+      <div className={wrapCls}>
+        <img
+          src={spec.customUrl}
+          alt="Masaüstü Arka Planı"
+          className={`w-full h-full object-cover select-none ${spec.animated ? 'wp-kenburns' : ''}`}
+          draggable={false}
+        />
+      </div>
     );
   }
+
+  const extra = renderExtraWallpaper(spec.wallpaperId, spec.theme, hour);
+  if (extra) {
+    return <div className={wrapCls}>{extra}</div>;
+  }
+
+  let baseNode: React.ReactNode;
   switch (spec.wallpaperId) {
     case 'geo-dunes':
-      return <GeoDunesSvg theme={spec.theme} />;
+      baseNode = <GeoDunesSvg theme={spec.theme} />;
+      break;
     case 'geo-prism':
-      return <GeoPrismSvg theme={spec.theme} />;
+      baseNode = <GeoPrismSvg theme={spec.theme} />;
+      break;
     case 'geo-waves':
-      return <GeoWavesSvg theme={spec.theme} />;
+      baseNode = <GeoWavesSvg theme={spec.theme} />;
+      break;
     case 'geo-aurora':
-      return <GeoAuroraSvg theme={spec.theme} />;
+      baseNode = <GeoAuroraSvg theme={spec.theme} />;
+      break;
     case 'geo-horizon':
-      return <GeoHorizonSvg theme={spec.theme} />;
+      baseNode = <GeoHorizonSvg theme={spec.theme} />;
+      break;
     case 'graphite-flat':
-      return <div className="w-full h-full" style={{ background: spec.theme === 'dark' ? '#26262a' : '#e5e7eb' }} />;
+      baseNode = <div className="w-full h-full" style={{ background: spec.theme === 'dark' ? '#26262a' : '#e5e7eb' }} />;
+      break;
     case 'obsidian-flat':
-      return <div className="w-full h-full" style={{ background: spec.theme === 'dark' ? '#131316' : '#f4f4f5' }} />;
+      baseNode = <div className="w-full h-full" style={{ background: spec.theme === 'dark' ? '#131316' : '#f4f4f5' }} />;
+      break;
     case 'mono-peaks':
     default:
-      return <MonoPeaksSvg theme={spec.theme} />;
+      baseNode = <MonoPeaksSvg theme={spec.theme} />;
+      break;
   }
+  return <div className={wrapCls}><div className={spec.animated ? 'w-full h-full wp-kenburns' : 'w-full h-full'}>{baseNode}</div></div>;
 }
 
 export const WallpaperThumb: React.FC<{
@@ -317,7 +341,7 @@ export const WallpaperThumb: React.FC<{
   className?: string;
 }> = React.memo(({ wallpaperId, theme, className = 'w-full h-14' }) => (
   <div className={`overflow-hidden rounded-lg pointer-events-none ${className}`}>
-    {renderWallpaperContent({ key: `${wallpaperId}:${theme}`, wallpaperId, theme })}
+    {renderWallpaperContent({ key: `${wallpaperId}:${theme}`, wallpaperId, theme, animated: false })}
   </div>
 ));
 
@@ -325,16 +349,25 @@ export const WallpaperLayer: React.FC<{
   wallpaperId: string;
   theme: 'dark' | 'light';
   customWallpaper?: string;
-}> = React.memo(({ wallpaperId, theme, customWallpaper }) => {
+  animated?: boolean;
+}> = React.memo(({ wallpaperId, theme, customWallpaper, animated = true }) => {
+  const [clockHour, setClockHour] = useState(() => new Date().getHours());
+  useEffect(() => {
+    const id = setInterval(() => setClockHour(new Date().getHours()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const targetUrl =
     wallpaperId === 'custom' && customWallpaper ? buildWallpaperUrl(customWallpaper) : undefined;
-  const targetKey = `${wallpaperId}:${theme}:${targetUrl || ''}`;
+  const targetKey = `${wallpaperId}:${theme}:${targetUrl || ''}:${clockHour}:${animated ? '1' : '0'}`;
 
   const [current, setCurrent] = useState<WallpaperSpec>({
     key: targetKey,
     wallpaperId,
     theme,
     customUrl: targetUrl,
+    hour: clockHour,
+    animated,
   });
   const [previous, setPrevious] = useState<WallpaperSpec | null>(null);
   const [animating, setAnimating] = useState(false);
@@ -354,6 +387,8 @@ export const WallpaperLayer: React.FC<{
         wallpaperId,
         theme,
         customUrl: targetUrl,
+        hour: clockHour,
+        animated,
       });
       setAnimating(true);
       timerRef.current = setTimeout(() => {
@@ -374,7 +409,7 @@ export const WallpaperLayer: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [targetKey, wallpaperId, theme, targetUrl, current]);
+  }, [targetKey, wallpaperId, theme, targetUrl, clockHour, animated, current]);
 
   useEffect(() => {
     return () => {

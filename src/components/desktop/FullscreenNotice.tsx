@@ -61,6 +61,14 @@ export const FullscreenNotice: React.FC<FullscreenNoticeProps> = ({ locked = fal
         await el.mozRequestFullScreen();
       }
       setIsFullscreen(checkIsFullscreen());
+      const kb = (
+        navigator as Navigator & {
+          keyboard?: { lock?: (keys?: string[]) => Promise<void> };
+        }
+      ).keyboard;
+      if (kb?.lock) {
+        kb.lock(['KeyW', 'KeyL']).catch(() => {});
+      }
     } catch {
       // Ignore browser policy rejections
     }

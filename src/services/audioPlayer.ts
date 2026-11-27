@@ -7,6 +7,7 @@ class RemoteAudioPlayer {
   private volume = 0.8;
   private muted = false;
   private unlocked = false;
+  private sinkId = 'default';
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -28,6 +29,9 @@ class RemoteAudioPlayer {
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = this.muted ? 0 : this.volume;
       this.gainNode.connect(this.ctx.destination);
+      if (this.sinkId && this.sinkId !== 'default') {
+        this.applySinkId(this.sinkId).catch(() => {});
+      }
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
@@ -36,6 +40,55 @@ class RemoteAudioPlayer {
       this.unlocked = true;
     }
     return this.ctx;
+  }
+
+  private async applySinkId(deviceId: string): Promise<boolean> {
+    if (!this.ctx) return false;
+    const anyCtx = this.ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+    if (typeof anyCtx.setSinkId !== 'function') return false;
+    try {
+      await anyCtx.setSinkId(deviceId === 'default' ? '' : deviceId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async setOutputDevice(deviceId: string): Promise<boolean> {
+    this.sinkId = deviceId || 'default';
+    this.ensureContext();
+    return this.applySinkId(this.sinkId);
+  }
+
+  public supportsOutputSelection(): boolean {
+    if (typeof window === 'undefined') return false;
+    const AC =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    return Boolean(AC && typeof (AC.prototype as { setSinkId?: unknown }).setSinkId === 'function');
+  }
+
+  public async playTestTone(): Promise<void> {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.gainNode) return;
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => {});
+    }
+    const now = ctx.currentTime + 0.02;
+    const notes = [523.25, 659.25];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
+      env.gain.setValueAtTime(0.0001, now + idx * 0.14);
+      env.gain.exponentialRampToValueAtTime(0.24, now + idx * 0.14 + 0.02);
+      env.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.14 + 0.22);
+      osc.connect(env);
+      env.connect(this.gainNode!);
+      osc.start(now + idx * 0.14);
+      osc.stop(now + idx * 0.14 + 0.24);
+    });
   }
 
   public setVolume(percent: number, muted: boolean) {

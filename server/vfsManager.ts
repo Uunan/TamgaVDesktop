@@ -27,6 +27,7 @@ export interface StreamPreferences {
   x11MaxQuality: number;
   x11MotionQuality: number;
   audioEnabled: boolean;
+  scrollSensitivity?: number;
 }
 
 export interface BrowserPreferences {
@@ -41,6 +42,32 @@ export interface TerminalPreferences {
 
 export interface UiPreferences {
   showFullscreenNotice: boolean;
+}
+
+export interface MediaPreferences {
+  speakerDeviceId: string;
+  micEnabled: boolean;
+  micDeviceId: string;
+  micGain: number;
+  cameraEnabled: boolean;
+  cameraDeviceId: string;
+  cameraResolution: '480p' | '720p';
+  cameraMirror: boolean;
+}
+
+export interface ScreensaverPreferences {
+  enabled: boolean;
+  idleMinutes: number;
+  scene: string;
+  customVideoUrl?: string;
+  requirePassword: boolean;
+  passwordDelayMinutes: number;
+}
+
+export interface LockScreenPreferences {
+  style: 'wallpaper' | 'blur' | 'minimal' | 'clock';
+  requirePassword: boolean;
+  showClock: boolean;
 }
 
 export interface DockPreferences {
@@ -73,6 +100,9 @@ export interface DesktopMeta {
     terminal: TerminalPreferences;
     ui: UiPreferences;
     dock: DockPreferences;
+    media?: MediaPreferences;
+    screensaver?: ScreensaverPreferences;
+    lockScreen?: LockScreenPreferences;
   };
 }
 
@@ -88,6 +118,7 @@ export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
   x11MaxQuality: 86,
   x11MotionQuality: 58,
   audioEnabled: true,
+  scrollSensitivity: 1.0,
 };
 
 export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = {
@@ -102,6 +133,32 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showFullscreenNotice: true,
+};
+
+export const DEFAULT_MEDIA_PREFERENCES: MediaPreferences = {
+  speakerDeviceId: 'default',
+  micEnabled: false,
+  micDeviceId: 'default',
+  micGain: 100,
+  cameraEnabled: false,
+  cameraDeviceId: 'default',
+  cameraResolution: '720p',
+  cameraMirror: true,
+};
+
+export const DEFAULT_SCREENSAVER_PREFERENCES: ScreensaverPreferences = {
+  enabled: false,
+  idleMinutes: 5,
+  scene: 'wheat-field',
+  customVideoUrl: '',
+  requirePassword: true,
+  passwordDelayMinutes: 0,
+};
+
+export const DEFAULT_LOCK_SCREEN_PREFERENCES: LockScreenPreferences = {
+  style: 'wallpaper',
+  requirePassword: true,
+  showClock: true,
 };
 
 export const DEFAULT_DOCK_PREFERENCES: DockPreferences = {
@@ -381,6 +438,18 @@ export class VFSManager {
               ...DEFAULT_DOCK_PREFERENCES,
               ...(parsed.preferences?.dock || {}),
             },
+            media: {
+              ...DEFAULT_MEDIA_PREFERENCES,
+              ...(parsed.preferences?.media || {}),
+            },
+            screensaver: {
+              ...DEFAULT_SCREENSAVER_PREFERENCES,
+              ...(parsed.preferences?.screensaver || {}),
+            },
+            lockScreen: {
+              ...DEFAULT_LOCK_SCREEN_PREFERENCES,
+              ...(parsed.preferences?.lockScreen || {}),
+            },
           },
         };
       } catch {
@@ -401,6 +470,9 @@ export class VFSManager {
         terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
         ui: { ...DEFAULT_UI_PREFERENCES },
         dock: { ...DEFAULT_DOCK_PREFERENCES },
+        media: { ...DEFAULT_MEDIA_PREFERENCES },
+        screensaver: { ...DEFAULT_SCREENSAVER_PREFERENCES },
+        lockScreen: { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
       },
     };
   }
@@ -879,12 +951,18 @@ export class VFSManager {
   public updateMeta(partial: {
     positions?: Record<string, { x: number; y: number }>;
     preferences?: Partial<
-      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui' | 'dock'> & {
+      Omit<
+        DesktopMeta['preferences'],
+        'stream' | 'browser' | 'terminal' | 'ui' | 'dock' | 'media' | 'screensaver' | 'lockScreen'
+      > & {
         stream?: Partial<StreamPreferences>;
         browser?: Partial<BrowserPreferences>;
         terminal?: Partial<TerminalPreferences>;
         ui?: Partial<UiPreferences>;
         dock?: Partial<DockPreferences>;
+        media?: Partial<MediaPreferences>;
+        screensaver?: Partial<ScreensaverPreferences>;
+        lockScreen?: Partial<LockScreenPreferences>;
       }
     >;
   }): DesktopMeta {
@@ -892,7 +970,8 @@ export class VFSManager {
       this.meta.positions = { ...this.meta.positions, ...partial.positions };
     }
     if (partial.preferences) {
-      const { stream, browser, terminal, ui, dock, ...rest } = partial.preferences;
+      const { stream, browser, terminal, ui, dock, media, screensaver, lockScreen, ...rest } =
+        partial.preferences;
       this.meta.preferences = {
         ...this.meta.preferences,
         ...rest,
@@ -907,6 +986,27 @@ export class VFSManager {
           : this.meta.preferences.terminal,
         ui: ui ? { ...this.meta.preferences.ui, ...ui } : this.meta.preferences.ui,
         dock: dock ? { ...this.meta.preferences.dock, ...dock } : this.meta.preferences.dock,
+        media: media
+          ? {
+              ...DEFAULT_MEDIA_PREFERENCES,
+              ...(this.meta.preferences.media || {}),
+              ...media,
+            }
+          : this.meta.preferences.media || { ...DEFAULT_MEDIA_PREFERENCES },
+        screensaver: screensaver
+          ? {
+              ...DEFAULT_SCREENSAVER_PREFERENCES,
+              ...(this.meta.preferences.screensaver || {}),
+              ...screensaver,
+            }
+          : this.meta.preferences.screensaver || { ...DEFAULT_SCREENSAVER_PREFERENCES },
+        lockScreen: lockScreen
+          ? {
+              ...DEFAULT_LOCK_SCREEN_PREFERENCES,
+              ...(this.meta.preferences.lockScreen || {}),
+              ...lockScreen,
+            }
+          : this.meta.preferences.lockScreen || { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
       };
       if (!this.meta.preferences.customWallpaper) {
         delete this.meta.preferences.customWallpaper;

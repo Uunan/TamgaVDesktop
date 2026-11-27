@@ -911,7 +911,10 @@ export class LinuxAppManager {
         accent: def.accent,
         featured: def.featured,
         iconName: def.id,
-        installed: def.id === 'antigravity-web' ? true : Boolean(foundBin),
+        installed:
+          def.launchMode === 'web' && /^https?:\/\//i.test(def.defaultCommand)
+            ? true
+            : Boolean(foundBin),
         installable: process.platform === 'linux',
         uninstallable: process.platform === 'linux' && Boolean(def.uninstallScript || def.packageName),
         packageName: def.packageName,

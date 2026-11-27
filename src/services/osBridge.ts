@@ -298,12 +298,18 @@ export const vfsApi = {
   updateMeta: (partial: {
     positions?: Record<string, { x: number; y: number }>;
     preferences?: Partial<
-      Omit<DesktopMeta['preferences'], 'stream' | 'browser' | 'terminal' | 'ui' | 'dock'> & {
+      Omit<
+        DesktopMeta['preferences'],
+        'stream' | 'browser' | 'terminal' | 'ui' | 'dock' | 'media' | 'screensaver' | 'lockScreen'
+      > & {
         stream?: Partial<DesktopMeta['preferences']['stream']>;
         browser?: Partial<DesktopMeta['preferences']['browser']>;
         terminal?: Partial<DesktopMeta['preferences']['terminal']>;
         ui?: Partial<DesktopMeta['preferences']['ui']>;
         dock?: Partial<DesktopMeta['preferences']['dock']>;
+        media?: Partial<NonNullable<DesktopMeta['preferences']['media']>>;
+        screensaver?: Partial<NonNullable<DesktopMeta['preferences']['screensaver']>>;
+        lockScreen?: Partial<NonNullable<DesktopMeta['preferences']['lockScreen']>>;
       }
     >;
   }) =>
@@ -314,6 +320,39 @@ export const vfsApi = {
 
   resetPositions: () =>
     jsonReq<{ meta: DesktopMeta }>('/api/vfs/reset-positions', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
+export const mediaApi = {
+  status: () =>
+    jsonReq<{
+      pulseRunning: boolean;
+      sinks: Array<{ id: string; name: string; state: string }>;
+      sources: Array<{ id: string; name: string; state: string }>;
+      virtualMicName: string;
+      virtualMicReady: boolean;
+      virtualMicActiveClients: number;
+      videoDevices: string[];
+      v4l2LoopbackReady: boolean;
+      cameraNote: string;
+    }>('/api/media/status'),
+  setupMic: () =>
+    jsonReq<{ ready: boolean; sourceName: string }>('/api/media/setup-mic', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  setupCamera: (installDriver = false) =>
+    jsonReq<{ ready: boolean; videoDevices: string[]; note: string }>('/api/media/setup-camera', {
+      method: 'POST',
+      body: JSON.stringify({ installDriver }),
+    }),
+};
+
+export const webAppApi = {
+  syncChromeCookies: () =>
+    jsonReq<{ importedCount: number }>('/web-app-proxy/sync-chrome-cookies', {
       method: 'POST',
       body: JSON.stringify({}),
     }),
