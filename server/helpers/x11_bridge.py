@@ -1045,9 +1045,12 @@ def main() -> None:
                             ticks_y = 0
                         if ticks_y > 0 and abs(dy) > 0:
                             btn = 5 if dy > 0 else 4
-                            for _ in range(ticks_y):
+                            for idx in range(ticks_y):
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+                                if idx + 1 < ticks_y:
+                                    libX11.XFlush(dpy)
+                                    time.sleep(0.010)
                         if raw_ticks_x is not None:
                             ticks_x = max(0, min(4, abs(int(raw_ticks_x))))
                         elif abs(dx) >= 48:
@@ -1056,9 +1059,12 @@ def main() -> None:
                             ticks_x = 0
                         if ticks_x > 0 and abs(dx) > 0:
                             btn = 7 if dx > 0 else 6
-                            for _ in range(ticks_x):
+                            for idx in range(ticks_x):
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
                                 libXtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+                                if idx + 1 < ticks_x:
+                                    libX11.XFlush(dpy)
+                                    time.sleep(0.010)
                         if want_alt and alt_kc:
                             libXtst.XTestFakeKeyEvent(dpy, alt_kc, 0, 0)
                         if want_shift and shift_kc:

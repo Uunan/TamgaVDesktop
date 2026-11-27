@@ -243,7 +243,9 @@ function buildChromiumRuntimeFlags(
   if (!alreadyHas('--disable-gpu-compositing')) flags.push('--disable-gpu-compositing');
   if (!alreadyHas('--disable-gpu-vsync')) flags.push('--disable-gpu-vsync');
   if (!alreadyHas('--num-raster-threads')) flags.push('--num-raster-threads=2');
-  if (!alreadyHas('--disable-smooth-scrolling')) flags.push('--disable-smooth-scrolling');
+  if (!alreadyHas('--enable-smooth-scrolling') && !alreadyHas('--disable-smooth-scrolling')) {
+    flags.push('--enable-smooth-scrolling');
+  }
   if (!alreadyHas('--disable-renderer-backgrounding')) flags.push('--disable-renderer-backgrounding');
   if (!alreadyHas('--disable-background-timer-throttling')) {
     flags.push('--disable-background-timer-throttling');
@@ -1183,7 +1185,7 @@ export class LinuxAppSession {
     fs.mkdirSync(path.join(xdgConfigHome, 'gtk-3.0'), { recursive: true });
     fs.mkdirSync(path.join(xdgConfigHome, 'gtk-4.0'), { recursive: true });
 
-    const gtkIni = '[Settings]\ngtk-decoration-layout=:\ngtk-dialogs-use-header=0\ngtk-enable-animations=0\n';
+    const gtkIni = '[Settings]\ngtk-decoration-layout=:\ngtk-dialogs-use-header=0\ngtk-enable-animations=1\n';
     try {
       fs.writeFileSync(path.join(xdgConfigHome, 'gtk-3.0', 'settings.ini'), gtkIni, 'utf-8');
       fs.writeFileSync(path.join(xdgConfigHome, 'gtk-4.0', 'settings.ini'), gtkIni, 'utf-8');
@@ -1236,9 +1238,11 @@ export class LinuxAppSession {
           'user_pref("browser.sessionstore.resume_from_crash", false);',
           'user_pref("browser.startup.homepage", "https://www.google.com");',
           'user_pref("browser.tabs.inTitlebar", 0);',
-          'user_pref("general.smoothScroll", false);',
-          'user_pref("toolkit.cosmeticAnimations.enabled", false);',
-          'user_pref("ui.prefersReducedMotion", 1);',
+          'user_pref("general.smoothScroll", true);',
+          'user_pref("general.smoothScroll.mouseWheel.durationMinMS", 140);',
+          'user_pref("general.smoothScroll.mouseWheel.durationMaxMS", 220);',
+          'user_pref("toolkit.cosmeticAnimations.enabled", true);',
+          'user_pref("ui.prefersReducedMotion", 0);',
           'user_pref("dom.ipc.processCount", 2);',
           'user_pref("dom.disable_window_move_resize", false);',
           'user_pref("browser.link.open_newwindow.restriction", 0);',
@@ -1371,6 +1375,37 @@ export class LinuxAppSession {
             },
           };
           fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf-8');
+        } catch {}
+      } else if (baseBin === 'code' || baseBin === 'codium' || baseBin === 'antigravity') {
+        try {
+          const userCfgDir =
+            baseBin === 'antigravity'
+              ? path.join(xdgConfigHome, 'Antigravity', 'User')
+              : path.join(profileDir, 'User');
+          fs.mkdirSync(userCfgDir, { recursive: true });
+          const settingsPath = path.join(userCfgDir, 'settings.json');
+          let settings: Record<string, unknown> = {};
+          if (fs.existsSync(settingsPath)) {
+            try {
+              settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+            } catch {
+              settings = {};
+            }
+          }
+          let changed = false;
+          for (const key of [
+            'editor.smoothScrolling',
+            'workbench.list.smoothScrolling',
+            'terminal.integrated.smoothScrolling',
+          ]) {
+            if (settings[key] === undefined) {
+              settings[key] = true;
+              changed = true;
+            }
+          }
+          if (changed) {
+            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+          }
         } catch {}
       }
 

@@ -711,37 +711,56 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
   };
 
-  // Non-passive native wheel listener with pixel-faithful Mac trackpad accumulator (~10x smoother vs raw 1-click-per-event)
+  // Non-passive native wheel listener with eager start & rhythmic drip so Mac trackpad glides smoothly
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     let accumX = 0;
     let accumY = 0;
+    let gestureStartedY = false;
+    let gestureStartedX = false;
     let lastWheelAt = 0;
+    let lastTickSentAt = 0;
     let pendingCoords = { x: 0, y: 0, shiftKey: false, altKey: false };
 
     const flushWheel = () => {
       wheelTimer = null;
+      const now = performance.now();
       const sens = Math.max(0.25, Math.min(3.0, Number(scrollSensRef.current) || 1.0));
-      const pxPerTickY = 105 / sens;
-      const pxPerTickX = 115 / sens;
+      const pxPerTickY = 88 / sens;
+      const pxPerTickX = 100 / sens;
+      const eagerStartY = Math.max(12, 24 / sens);
+      const eagerStartX = Math.max(16, 32 / sens);
 
       let ticksY = 0;
-      if (Math.abs(accumY) >= pxPerTickY) {
-        const count = Math.min(6, Math.floor(Math.abs(accumY) / pxPerTickY));
-        ticksY = Math.sign(accumY) * count;
+      if (!gestureStartedY && Math.abs(accumY) >= eagerStartY) {
+        // Respond immediately when fingers start gliding on trackpad (zero dead-zone freeze!)
+        ticksY = Math.sign(accumY);
+        gestureStartedY = true;
+        const rem = Math.abs(accumY) - pxPerTickY * 0.72;
+        accumY = rem > 0 ? Math.sign(accumY) * rem : 0;
+      } else if (Math.abs(accumY) >= pxPerTickY) {
+        // Drip 1 smooth tick per beat (2 only on very fast flicks) so app smooth-scroll animators glide seamlessly
+        const rawCount = Math.floor(Math.abs(accumY) / pxPerTickY);
+        const stepCount = rawCount >= 4 ? 2 : 1;
+        ticksY = Math.sign(accumY) * stepCount;
         accumY -= ticksY * pxPerTickY;
       }
 
       let ticksX = 0;
-      if (Math.abs(accumX) >= pxPerTickX) {
-        const count = Math.min(4, Math.floor(Math.abs(accumX) / pxPerTickX));
-        ticksX = Math.sign(accumX) * count;
+      if (!gestureStartedX && Math.abs(accumX) >= eagerStartX) {
+        ticksX = Math.sign(accumX);
+        gestureStartedX = true;
+        const rem = Math.abs(accumX) - pxPerTickX * 0.72;
+        accumX = rem > 0 ? Math.sign(accumX) * rem : 0;
+      } else if (Math.abs(accumX) >= pxPerTickX) {
+        ticksX = Math.sign(accumX);
         accumX -= ticksX * pxPerTickX;
       }
 
       if (ticksY !== 0 || ticksX !== 0) {
+        lastTickSentAt = now;
         sendInput({
           type: 'wheel',
           x: pendingCoords.x,
@@ -755,6 +774,11 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
           shiftKey: pendingCoords.shiftKey,
           altKey: pendingCoords.altKey,
         });
+      }
+
+      // If rapid flick still has queued travel, keep dripping smoothly every 18ms (~55Hz)
+      if (Math.abs(accumY) >= pxPerTickY || Math.abs(accumX) >= pxPerTickX) {
+        wheelTimer = setTimeout(flushWheel, 18);
       }
     };
 
@@ -770,6 +794,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       if (ctrl) {
         accumX = 0;
         accumY = 0;
+        gestureStartedY = false;
+        gestureStartedX = false;
         sendInput({
           type: 'wheel',
           x,
@@ -787,9 +813,11 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       }
 
       const now = performance.now();
-      if (now - lastWheelAt > 320) {
+      if (now - lastWheelAt > 240) {
         accumX = 0;
         accumY = 0;
+        gestureStartedY = false;
+        gestureStartedX = false;
       }
       lastWheelAt = now;
 
@@ -801,25 +829,33 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       // Reset residual accumulator immediately when scroll direction reverses
       if (dy !== 0 && accumY !== 0 && Math.sign(dy) !== Math.sign(accumY)) {
         accumY = 0;
+        gestureStartedY = false;
       }
       if (dx !== 0 && accumX !== 0 && Math.sign(dx) !== Math.sign(accumX)) {
         accumX = 0;
+        gestureStartedX = false;
       }
 
-      accumX += dx;
-      accumY += dy;
+      // Cap extreme flick backlog so scroll stops briskly when user lifts fingers
+      const sens = Math.max(0.25, Math.min(3.0, Number(scrollSensRef.current) || 1.0));
+      const maxBacklog = (88 / sens) * 5;
+      accumX = Math.max(-maxBacklog, Math.min(maxBacklog, accumX + dx));
+      accumY = Math.max(-maxBacklog, Math.min(maxBacklog, accumY + dy));
       pendingCoords = { x, y, shiftKey: e.shiftKey, altKey: e.altKey };
 
-      const sens = Math.max(0.25, Math.min(3.0, Number(scrollSensRef.current) || 1.0));
-      const thresholdY = 105 / sens;
-      if (Math.abs(accumY) >= thresholdY || Math.abs(accumX) >= 115 / sens) {
-        if (wheelTimer) {
-          clearTimeout(wheelTimer);
-          wheelTimer = null;
+      const readyY = !gestureStartedY ? Math.abs(accumY) >= Math.max(12, 24 / sens) : Math.abs(accumY) >= 88 / sens;
+      const readyX = !gestureStartedX ? Math.abs(accumX) >= Math.max(16, 32 / sens) : Math.abs(accumX) >= 100 / sens;
+      if (readyY || readyX) {
+        const sinceLast = now - lastTickSentAt;
+        if (sinceLast >= 16) {
+          if (wheelTimer) {
+            clearTimeout(wheelTimer);
+            wheelTimer = null;
+          }
+          flushWheel();
+        } else if (!wheelTimer) {
+          wheelTimer = setTimeout(flushWheel, Math.max(4, 18 - sinceLast));
         }
-        flushWheel();
-      } else if (!wheelTimer) {
-        wheelTimer = setTimeout(flushWheel, 16);
       }
     };
     canvas.addEventListener('wheel', handleWheel, { passive: false });
