@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
   FileCode2,
   FileText,
@@ -29,6 +30,7 @@ interface PreviewWindowProps {
   onTitleChange: (title: string, path: string) => void;
   onVfsSaved: () => void;
   onSetWallpaper?: (node: VFSNode) => void;
+  onOpenContextMenu?: (x: number, y: number, node: VFSNode) => void;
   onNotify?: (title: string, message: string, kind?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
@@ -61,6 +63,7 @@ export const PreviewWindow: React.FC<PreviewWindowProps> = ({
   onTitleChange,
   onVfsSaved,
   onSetWallpaper,
+  onOpenContextMenu,
   onNotify,
 }) => {
   const [activePath, setActivePath] = useState(initialPath);
@@ -214,6 +217,17 @@ export const PreviewWindow: React.FC<PreviewWindowProps> = ({
     <div
       data-testid="preview-window"
       data-preview-kind={kind}
+      onContextMenu={(e) => {
+        const targetEl = e.target as HTMLElement | null;
+        if (editing && targetEl && (targetEl.tagName === 'TEXTAREA' || targetEl.tagName === 'INPUT')) {
+          return;
+        }
+        if (onOpenContextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenContextMenu(e.clientX, e.clientY, node);
+        }
+      }}
       className="flex-1 min-h-0 flex flex-col bg-[var(--os-surface)] text-[var(--os-text)] select-none"
     >
       {/* Minimalist macOS Preview Toolbar */}
@@ -348,6 +362,22 @@ export const PreviewWindow: React.FC<PreviewWindowProps> = ({
                 </button>
               )}
             </>
+          )}
+
+          {onOpenContextMenu && (
+            <button
+              type="button"
+              data-testid="preview-open-with-btn"
+              title="Birlikte Aç"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                onOpenContextMenu(rect.left, rect.bottom + 6, node);
+              }}
+              className="px-2 py-1.5 rounded-lg bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] border border-[var(--os-border)] text-[11px] font-medium flex items-center gap-1.5 text-[var(--os-text-secondary)] hover:text-[var(--os-text)]"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Birlikte Aç</span>
+            </button>
           )}
 
           <button

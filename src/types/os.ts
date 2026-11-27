@@ -99,6 +99,7 @@ export interface DesktopMeta {
     media?: MediaPreferences;
     screensaver?: ScreensaverPreferences;
     lockScreen?: LockScreenPreferences;
+    defaultApps?: Record<string, string>;
   };
 }
 

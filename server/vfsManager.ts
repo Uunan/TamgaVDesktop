@@ -103,6 +103,7 @@ export interface DesktopMeta {
     media?: MediaPreferences;
     screensaver?: ScreensaverPreferences;
     lockScreen?: LockScreenPreferences;
+    defaultApps?: Record<string, string>;
   };
 }
 
@@ -450,6 +451,10 @@ export class VFSManager {
               ...DEFAULT_LOCK_SCREEN_PREFERENCES,
               ...(parsed.preferences?.lockScreen || {}),
             },
+            defaultApps:
+              parsed.preferences?.defaultApps && typeof parsed.preferences.defaultApps === 'object'
+                ? parsed.preferences.defaultApps
+                : {},
           },
         };
       } catch {
@@ -473,6 +478,7 @@ export class VFSManager {
         media: { ...DEFAULT_MEDIA_PREFERENCES },
         screensaver: { ...DEFAULT_SCREENSAVER_PREFERENCES },
         lockScreen: { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
+        defaultApps: {},
       },
     };
   }
@@ -970,8 +976,18 @@ export class VFSManager {
       this.meta.positions = { ...this.meta.positions, ...partial.positions };
     }
     if (partial.preferences) {
-      const { stream, browser, terminal, ui, dock, media, screensaver, lockScreen, ...rest } =
-        partial.preferences;
+      const {
+        stream,
+        browser,
+        terminal,
+        ui,
+        dock,
+        media,
+        screensaver,
+        lockScreen,
+        defaultApps,
+        ...rest
+      } = partial.preferences;
       this.meta.preferences = {
         ...this.meta.preferences,
         ...rest,
@@ -1007,6 +1023,12 @@ export class VFSManager {
               ...lockScreen,
             }
           : this.meta.preferences.lockScreen || { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
+        defaultApps: defaultApps
+          ? {
+              ...(this.meta.preferences.defaultApps || {}),
+              ...defaultApps,
+            }
+          : this.meta.preferences.defaultApps || {},
       };
       if (!this.meta.preferences.customWallpaper) {
         delete this.meta.preferences.customWallpaper;

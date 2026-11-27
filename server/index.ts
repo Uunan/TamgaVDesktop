@@ -8,7 +8,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import multer from 'multer';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
@@ -32,7 +32,7 @@ import { VSCodeServerManager } from './vscodeManager';
 import { WebAppProxyManager } from './webAppProxy';
 import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.3.1';
+export const TAMGA_VERSION = '2.3.2';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -582,6 +582,33 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         return;
       }
 
+      const requestedVfsPaths: string[] = Array.isArray(req.body?.vfsPaths)
+        ? req.body.vfsPaths.map((x: unknown) => String(x)).filter(Boolean)
+        : [];
+      const realFiles = requestedVfsPaths
+        .map((vp) => {
+          try {
+            return vfs.resolveDiskPath(vp);
+          } catch {
+            return null;
+          }
+        })
+        .filter((p): p is string => Boolean(p && fs.existsSync(p)));
+
+      const baseBin = path.basename(command.split(/\s+/)[0] || '').toLowerCase();
+      const isBrowserLaunch =
+        appId === 'chrome' ||
+        appId === 'firefox' ||
+        appId === 'brave' ||
+        ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'firefox', 'firefox-esr', 'brave-browser'].includes(
+          baseBin
+        );
+
+      let initialUrl = req.body?.initialUrl ? String(req.body.initialUrl) : undefined;
+      if (!initialUrl && isBrowserLaunch && realFiles.length > 0) {
+        initialUrl = pathToFileURL(realFiles[0]).href;
+      }
+
       const sessionId =
         String(req.body?.sessionId || '') ||
         `app-${appId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -592,7 +619,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         appId,
         appName,
         command,
-        initialUrl: req.body?.initialUrl ? String(req.body.initialUrl) : undefined,
+        initialUrl,
+        initialFiles: realFiles.length > 0 ? realFiles : undefined,
+        reuseExisting: Boolean(req.body?.reuseExisting),
         needsNoSandbox: Boolean(req.body?.needsNoSandbox ?? found?.needsNoSandbox),
         desktopDataRoot: vfs.getInstanceRoot(),
         width: Number(req.body?.width) || 720,

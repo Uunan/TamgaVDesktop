@@ -96,6 +96,8 @@ export const appsApi = {
     command?: string;
     appName?: string;
     initialUrl?: string;
+    vfsPaths?: string[];
+    reuseExisting?: boolean;
     needsNoSandbox?: boolean;
     width?: number;
     height?: number;
@@ -300,7 +302,15 @@ export const vfsApi = {
     preferences?: Partial<
       Omit<
         DesktopMeta['preferences'],
-        'stream' | 'browser' | 'terminal' | 'ui' | 'dock' | 'media' | 'screensaver' | 'lockScreen'
+        | 'stream'
+        | 'browser'
+        | 'terminal'
+        | 'ui'
+        | 'dock'
+        | 'media'
+        | 'screensaver'
+        | 'lockScreen'
+        | 'defaultApps'
       > & {
         stream?: Partial<DesktopMeta['preferences']['stream']>;
         browser?: Partial<DesktopMeta['preferences']['browser']>;
@@ -310,6 +320,7 @@ export const vfsApi = {
         media?: Partial<NonNullable<DesktopMeta['preferences']['media']>>;
         screensaver?: Partial<NonNullable<DesktopMeta['preferences']['screensaver']>>;
         lockScreen?: Partial<NonNullable<DesktopMeta['preferences']['lockScreen']>>;
+        defaultApps?: Record<string, string>;
       }
     >;
   }) =>

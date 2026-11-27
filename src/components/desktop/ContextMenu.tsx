@@ -1,11 +1,13 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
+  Check,
   ChevronRight,
   ClipboardPaste,
   Copy,
   Download,
   ExternalLink,
+  Eye,
   FileCode,
   FilePlus2,
   FileSpreadsheet,
@@ -26,8 +28,15 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { ClipboardState, DesktopMeta, SettingsTabId, VFSNode } from '../../types/os';
+import type { ClipboardState, DesktopMeta, LinuxAppInfo, SettingsTabId, VFSNode } from '../../types/os';
 import { isImageExtension } from '../../utils/format';
+import {
+  getExtensionKey,
+  getOpenWithOptions,
+  type OpenWithOption,
+  type OpenWithTargetId,
+} from '../../utils/openWith';
+import { OriginalAppIcon, TerminalAppIcon } from '../icons/FileIcon';
 
 export interface ContextMenuItemTarget {
   kind: 'desktop' | 'folder-bg' | 'nodes' | 'recycle-bin-icon' | 'system-icon';
@@ -44,6 +53,8 @@ interface ContextMenuProps {
   clipboard: ClipboardState | null;
   preferences: DesktopMeta['preferences'];
   hasTrashItems: boolean;
+  linuxApps: LinuxAppInfo[];
+  linuxGuiReady: boolean;
   onClose: () => void;
   onCreateFolder: (dirPath: string, pos?: { x: number; y: number }) => void;
   onCreateQuickFile: (dirPath: string, fileName: string, pos?: { x: number; y: number }) => void;
@@ -52,6 +63,8 @@ interface ContextMenuProps {
   onTriggerWallpaperUpload: () => void;
   onSetWallpaperFromNode: (node: VFSNode) => void;
   onOpenNode: (node: VFSNode) => void;
+  onOpenNodeWith: (node: VFSNode, targetId: OpenWithTargetId) => void;
+  onSetDefaultOpenWith: (node: VFSNode, targetId: OpenWithTargetId, label: string) => void;
   onStartRename: (node: VFSNode) => void;
   onCopy: (nodes: VFSNode[]) => void;
   onCut: (nodes: VFSNode[]) => void;
@@ -81,6 +94,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   clipboard,
   preferences,
   hasTrashItems,
+  linuxApps,
+  linuxGuiReady,
   onClose,
   onCreateFolder,
   onCreateQuickFile,
@@ -89,6 +104,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onTriggerWallpaperUpload,
   onSetWallpaperFromNode,
   onOpenNode,
+  onOpenNodeWith,
+  onSetDefaultOpenWith,
   onStartRename,
   onCopy,
   onCut,
@@ -112,7 +129,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
-  const [subMenu, setSubMenu] = useState<'new-file' | 'view' | null>(null);
+  const [subMenu, setSubMenu] = useState<'new-file' | 'view' | 'open-with' | null>(null);
 
   useLayoutEffect(() => {
     const el = menuRef.current;
@@ -151,13 +168,100 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const selectedNodes = target.nodes || [];
   const firstNode = selectedNodes[0];
   const isInTrash = target.dirPath === '/.trash' || Boolean(firstNode?.path.startsWith('/.trash/'));
-  const flipSubLeft = pos.left + 440 > window.innerWidth;
+  const flipSubLeft = pos.left + 490 > window.innerWidth;
+  const flipSubUp = pos.top + 400 > window.innerHeight - 84;
   const canSetAsWallpaper =
     selectedNodes.length === 1 &&
     Boolean(firstNode) &&
     !firstNode.isDir &&
     !isInTrash &&
     (isImageExtension(firstNode.extension) || firstNode.extension === 'avif');
+  const canOpenWith =
+    target.kind === 'nodes' &&
+    selectedNodes.length === 1 &&
+    Boolean(firstNode) &&
+    !firstNode.isDir &&
+    !isInTrash;
+
+  const openWithOptions = useMemo(
+    () =>
+      canOpenWith && firstNode
+        ? getOpenWithOptions(firstNode, linuxApps, linuxGuiReady, preferences.defaultApps)
+        : [],
+    [canOpenWith, firstNode, linuxApps, linuxGuiReady, preferences.defaultApps]
+  );
+
+  const recommendedOpenWith = useMemo(
+    () => openWithOptions.filter((o) => o.recommended || o.isDefault),
+    [openWithOptions]
+  );
+  const otherOpenWith = useMemo(
+    () => openWithOptions.filter((o) => !o.recommended && !o.isDefault),
+    [openWithOptions]
+  );
+  const defaultOpenWith = openWithOptions.find((o) => o.isDefault) || openWithOptions[0];
+
+  const renderOpenWithIcon = (opt: OpenWithOption) => {
+    if (opt.iconKind === 'preview') {
+      return <Eye className="w-4 h-4 text-[var(--os-text-muted)] shrink-0" />;
+    }
+    if (opt.iconKind === 'terminal') {
+      return <TerminalAppIcon size={16} />;
+    }
+    const cleanIconId = opt.id === 'vscode-web' ? 'vscode' : opt.iconAppId;
+    return (
+      <OriginalAppIcon
+        appId={cleanIconId}
+        iconName={cleanIconId}
+        name={opt.label}
+        size={16}
+      />
+    );
+  };
+
+  const renderOpenWithRow = (opt: OpenWithOption) => (
+    <div
+      key={opt.id}
+      className="group/ow flex items-center gap-1 rounded-lg hover:bg-[var(--os-hover)] transition-colors pr-1.5"
+    >
+      <button
+        data-testid={`ctx-open-with-${opt.id}`}
+        onClick={() => firstNode && run(() => onOpenNodeWith(firstNode, opt.id))}
+        className="flex-1 min-w-0 px-2.5 py-2 flex items-center gap-2.5 text-left text-[var(--os-text)]"
+      >
+        <span className="w-4 h-4 flex items-center justify-center shrink-0">
+          {renderOpenWithIcon(opt)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium leading-tight">{opt.label}</span>
+          <span className="block truncate text-[10px] text-[var(--os-text-subtle)] leading-tight mt-0.5">
+            {opt.subtitle}
+          </span>
+        </span>
+      </button>
+      {opt.isDefault ? (
+        <span className="px-1.5 py-0.5 rounded bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] text-[9px] font-semibold shrink-0 flex items-center gap-0.5">
+          <Check className="w-2.5 h-2.5" />
+          Varsayılan
+        </span>
+      ) : (
+        <button
+          type="button"
+          data-testid={`ctx-set-default-${opt.id}`}
+          title={`.${getExtensionKey(firstNode!)} için varsayılan yap`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (firstNode) {
+              run(() => onSetDefaultOpenWith(firstNode, opt.id, opt.label));
+            }
+          }}
+          className="px-1.5 py-0.5 rounded border border-[var(--os-border-strong)] bg-[var(--os-bg)] hover:bg-[var(--os-surface-3)] text-[9px] font-medium text-[var(--os-text-muted)] hover:text-[var(--os-text)] opacity-0 group-hover/ow:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+        >
+          Varsayılan Yap
+        </button>
+      )}
+    </div>
+  );
 
   const itemCls =
     'w-full px-3 py-2 rounded-lg flex items-center justify-between hover:bg-[var(--os-hover)] text-[var(--os-text)] transition-colors';
@@ -211,12 +315,61 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         <>
           {!isInTrash && (
             <>
-              <button onClick={() => run(() => onOpenNode(firstNode))} className={itemCls}>
+              <button
+                data-testid="ctx-open-node"
+                onClick={() => run(() => onOpenNode(firstNode))}
+                className={itemCls}
+              >
                 <span className="flex items-center gap-2.5 font-medium">
                   <FolderOpen className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
                   <span>Aç</span>
                 </span>
+                {canOpenWith && defaultOpenWith && (
+                  <span className="text-[10px] text-[var(--os-text-subtle)] truncate max-w-[96px]">
+                    {defaultOpenWith.label}
+                  </span>
+                )}
               </button>
+
+              {canOpenWith && (
+                <div onMouseEnter={() => setSubMenu('open-with')} className="relative">
+                  <button
+                    data-testid="ctx-open-with"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSubMenu((s) => (s === 'open-with' ? null : 'open-with'));
+                    }}
+                    className={itemCls}
+                  >
+                    <span className="flex items-center gap-2.5 font-medium">
+                      <ExternalLink className="w-3.5 h-3.5 text-[var(--os-text-muted)]" />
+                      <span>Birlikte Aç</span>
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 text-[var(--os-text-subtle)]" />
+                  </button>
+
+                  {subMenu === 'open-with' && (
+                    <div
+                      data-testid="ctx-open-with-submenu"
+                      style={{ boxShadow: 'var(--os-shadow)' }}
+                      className={`absolute ${flipSubUp ? 'bottom-0' : 'top-0'} ${
+                        flipSubLeft ? 'right-full mr-1.5' : 'left-full ml-1.5'
+                      } w-72 max-h-[min(360px,68vh)] overflow-y-auto rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border-strong)] p-1.5 z-10`}
+                    >
+                      {recommendedOpenWith.map(renderOpenWithRow)}
+                      {otherOpenWith.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-[var(--os-border)]" />
+                          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--os-text-subtle)]">
+                            Diğer Uygulamalar
+                          </div>
+                          {otherOpenWith.map(renderOpenWithRow)}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {selectedNodes.length === 1 && firstNode.isDir && (
                 <button

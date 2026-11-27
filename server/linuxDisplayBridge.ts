@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { resolveHelperPath } from './terminalManager';
 import { mediaBridge } from './mediaBridge';
 
@@ -285,6 +286,8 @@ export interface LinuxAppSessionOptions {
   appName: string;
   command: string;
   initialUrl?: string;
+  initialFiles?: string[];
+  reuseExisting?: boolean;
   needsNoSandbox?: boolean;
   desktopDataRoot: string;
   bridgeInfo?: BridgeEndpointInfo;
@@ -615,6 +618,7 @@ export class LinuxAppSession {
   private desktopDataRoot: string;
   private command: string;
   private initialUrl: string;
+  private initialFiles: string[];
   private bridgeInfo?: BridgeEndpointInfo;
   private needsNoSandbox: boolean;
   private tempDir: string;
@@ -646,6 +650,7 @@ export class LinuxAppSession {
     this.title = opts.appName;
     this.command = opts.command;
     this.initialUrl = opts.initialUrl ? opts.initialUrl.trim() : '';
+    this.initialFiles = Array.isArray(opts.initialFiles) ? opts.initialFiles.filter(Boolean) : [];
     this.bridgeInfo = opts.bridgeInfo;
     this.needsNoSandbox = Boolean(opts.needsNoSandbox);
     this.desktopDataRoot = opts.desktopDataRoot;
@@ -1345,7 +1350,12 @@ export class LinuxAppSession {
       if (extraNewWindow && supportsUserDataDir && !finalCmd.includes('--new-window')) {
         extraFlags.push('--new-window');
       }
-      if ((baseBin === 'code' || baseBin === 'codium') && !extraNewWindow && !this.initialUrl) {
+      if (
+        (baseBin === 'code' || baseBin === 'codium') &&
+        !extraNewWindow &&
+        !this.initialUrl &&
+        this.initialFiles.length === 0
+      ) {
         const projectsDir = path.join(this.desktopDataRoot, 'vfs', 'Projects');
         try {
           fs.mkdirSync(projectsDir, { recursive: true });
@@ -1356,10 +1366,17 @@ export class LinuxAppSession {
       }
       if (!extraNewWindow && isChromiumBrowser && this.initialUrl) {
         extraFlags.push(`'${this.initialUrl.replace(/'/g, "'\\''")}'`);
+      } else if (!extraNewWindow && this.initialFiles.length > 0) {
+        for (const fp of this.initialFiles) {
+          extraFlags.push(`'${fp.replace(/'/g, "'\\''")}'`);
+        }
       }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
     } else if (extraNewWindow && baseBin === 'gimp') {
       finalCmd = `${finalCmd} -n`;
+    } else if (!extraNewWindow && this.initialFiles.length > 0) {
+      const quoted = this.initialFiles.map((fp) => `'${fp.replace(/'/g, "'\\''")}'`).join(' ');
+      finalCmd = `${finalCmd} ${quoted}`;
     }
 
     return { cmd: finalCmd, cwd: desktopFilesDir, xdgConfigHome };
@@ -1523,11 +1540,25 @@ export class LinuxAppSession {
 
     let cmd = `${this.command} ${quotedFiles}`;
     if (baseBin === 'firefox' || baseBin === 'firefox-esr') {
-      cmd = `${this.command} -profile "${profileDir}" ${quotedFiles}`;
+      const fileUris = realPaths
+        .map((p) => `'${pathToFileURL(p).href.replace(/'/g, "'\\''")}'`)
+        .join(' ');
+      cmd = `${this.command} -profile "${profileDir}" ${fileUris}`;
     } else if (
       ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'brave-browser'].includes(baseBin)
     ) {
-      cmd = `${this.command} ${isRoot ? '--no-sandbox' : ''} --test-type --user-data-dir="${profileDir}" ${quotedFiles}`;
+      const chromeFlags = buildChromiumRuntimeFlags(isRoot, true, (f) => this.command.includes(f));
+      const fileUris = realPaths
+        .map((p) => `'${pathToFileURL(p).href.replace(/'/g, "'\\''")}'`)
+        .join(' ');
+      cmd = `${this.command} ${chromeFlags.join(' ')} --user-data-dir="${profileDir}" ${fileUris}`;
+    } else if (['code', 'codium', 'antigravity', 'cursor'].includes(baseBin)) {
+      const electronFlags = buildChromiumRuntimeFlags(isRoot, false, (f) => this.command.includes(f));
+      const dataDirFlag =
+        baseBin === 'code' || baseBin === 'codium' ? `--user-data-dir="${profileDir}"` : '';
+      cmd = `${this.command} ${electronFlags.join(' ')} ${dataDirFlag} ${quotedFiles}`
+        .replace(/\s+/g, ' ')
+        .trim();
     } else if (baseBin === 'gimp') {
       // GIMP automatically forwards file paths to the already-running instance on the same DISPLAY!
       cmd = `${this.command} ${quotedFiles}`;
@@ -2010,18 +2041,26 @@ export class LinuxDisplayBridge {
     if (existingById) return { session: existingById, openedAsExtraWindow: false };
 
     // Avoid profile-lock crash (Firefox/Chrome): open tab if initialUrl provided, else spawn extra window!
-    const existingProfileSession = this.findActiveProfileSession(
-      opts.desktopId,
-      opts.appId,
-      opts.command
-    );
+    const baseBin = path.basename(opts.command.split(/\s+/)[0] || '');
+    const existingProfileSession =
+      this.findActiveProfileSession(opts.desktopId, opts.appId, opts.command) ||
+      (opts.reuseExisting
+        ? Array.from(this.sessions.values()).find(
+            (s) => s.desktopId === opts.desktopId && (s.appId === opts.appId || path.basename(s.appId) === baseBin)
+          )
+        : undefined);
     if (existingProfileSession) {
       if (opts.initialUrl) {
         existingProfileSession.openUrlInBrowser(opts.initialUrl);
+      } else if (opts.initialFiles && opts.initialFiles.length > 0) {
+        existingProfileSession.openFiles(opts.initialFiles);
       } else {
         existingProfileSession.spawnExtraWindow();
       }
-      return { session: existingProfileSession, openedAsExtraWindow: !opts.initialUrl };
+      return {
+        session: existingProfileSession,
+        openedAsExtraWindow: !opts.initialUrl && !(opts.initialFiles && opts.initialFiles.length > 0),
+      };
     }
 
     const displayNum = findFreeDisplay(this.usedDisplays);

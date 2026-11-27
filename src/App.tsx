@@ -37,6 +37,13 @@ import { WindowFrame } from './components/desktop/WindowFrame';
 import { FolderWindow } from './components/desktop/FolderWindow';
 import { ChromiumTabStrip, ChromiumWindowBody } from './components/browser/ChromiumWindow';
 import { ContextMenu, type ContextMenuItemTarget } from './components/desktop/ContextMenu';
+import {
+  getDefaultOpenWithTarget,
+  getExtensionKey,
+  getPrimaryBrowserApp,
+  isHtmlExtension,
+  type OpenWithTargetId,
+} from './utils/openWith';
 import { NewCustomFileModal, PropertiesPane } from './components/desktop/FileDialogs';
 import { FullscreenNotice } from './components/desktop/FullscreenNotice';
 import {
@@ -231,6 +238,7 @@ export default function App() {
     media?: Partial<MediaPreferences>;
     screensaver?: Partial<ScreensaverPreferences>;
     lockScreen?: Partial<LockScreenPreferences>;
+    defaultApps?: Record<string, string>;
   } | null>(null);
   const prefFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [uploadTargetDir, setUploadTargetDir] = useState('/Desktop');
@@ -750,6 +758,8 @@ export default function App() {
       appName?: string;
       iconName?: string;
       initialUrl?: string;
+      vfsPaths?: string[];
+      reuseExisting?: boolean;
       needsNoSandbox?: boolean;
       launchMode?: 'gui' | 'terminal' | 'web';
       forceNew?: boolean;
@@ -861,11 +871,14 @@ export default function App() {
         });
 
         // If backend opened an extra window inside an active profile session (e.g. Firefox),
-        // or opened an initialUrl tab inside an already-open browser session, focus existing window!
+        // or opened an initialUrl/file tab inside an already-open session, focus existing window!
         const existingWin = windowsRef.current.find(
           (w) => w.kind === 'linux-app' && w.appSessionId === res.sessionId
         );
-        if (existingWin && (res.openedAsExtraWindow || params.initialUrl)) {
+        if (
+          existingWin &&
+          (res.openedAsExtraWindow || params.initialUrl || (params.vfsPaths && params.vfsPaths.length > 0))
+        ) {
           if (!res.openedAsExtraWindow) {
             focusWindow(existingWin.id);
           }
@@ -983,6 +996,37 @@ export default function App() {
     [focusWindow, pushToast]
   );
 
+  const openNodeInBrowser = useCallback(
+    (node: VFSNode) => {
+      const primaryBrowser = getPrimaryBrowserApp(linuxApps);
+      if (primaryBrowser) {
+        launchLinuxApp({
+          appId: primaryBrowser.id,
+          command: primaryBrowser.command,
+          appName: primaryBrowser.name,
+          iconName: primaryBrowser.iconName,
+          vfsPaths: [node.path],
+          reuseExisting: true,
+          needsNoSandbox: primaryBrowser.needsNoSandbox ?? true,
+        });
+        return;
+      }
+      if (linuxRuntime?.guiReady) {
+        launchLinuxApp({
+          appId: 'chrome',
+          command: 'google-chrome-stable',
+          appName: 'Google Chrome',
+          vfsPaths: [node.path],
+          reuseExisting: true,
+          needsNoSandbox: true,
+        });
+        return;
+      }
+      openChromiumWindow(`file://${node.path}`);
+    },
+    [linuxApps, linuxRuntime?.guiReady, launchLinuxApp, openChromiumWindow]
+  );
+
   const openPrimaryBrowser = useCallback(
     (arg?: string | { forceNew?: boolean }) => {
       const initialUrl = typeof arg === 'string' ? arg : undefined;
@@ -991,33 +1035,35 @@ export default function App() {
       if (initialUrl && initialUrl.startsWith('file://')) {
         const vfsPath = initialUrl.slice('file://'.length);
         const found = allNodes.find((n) => n.path === vfsPath);
-        if (found) {
-          openPreviewWindow(found);
+        if (found && !found.isDir) {
+          openNodeInBrowser(found);
           return;
         }
         openChromiumWindow(initialUrl);
         return;
       }
 
+      const primaryBrowser = getPrimaryBrowserApp(linuxApps);
+      const preferredId = primaryBrowser?.id || 'chrome';
+
       if (!forceNew && !initialUrl) {
-        const existingChrome = windowsRef.current.find(
-          (w) => w.kind === 'linux-app' && w.appId === 'chrome'
+        const existingBrowser = windowsRef.current.find(
+          (w) => w.kind === 'linux-app' && w.appId === preferredId
         );
-        if (existingChrome) {
-          focusWindow(existingChrome.id);
+        if (existingBrowser) {
+          focusWindow(existingBrowser.id);
           return;
         }
       }
 
-      const chromeApp = linuxApps.find((a) => a.id === 'chrome');
-      if (chromeApp?.installed) {
+      if (primaryBrowser) {
         launchLinuxApp({
-          appId: 'chrome',
-          command: chromeApp.command || 'google-chrome-stable',
-          appName: 'Google Chrome',
-          iconName: chromeApp.iconName,
+          appId: primaryBrowser.id,
+          command: primaryBrowser.command || 'google-chrome-stable',
+          appName: primaryBrowser.name || 'Google Chrome',
+          iconName: primaryBrowser.iconName,
           initialUrl,
-          needsNoSandbox: true,
+          needsNoSandbox: primaryBrowser.needsNoSandbox ?? true,
           forceNew,
         });
         return;
@@ -1038,7 +1084,7 @@ export default function App() {
     },
     [
       allNodes,
-      openPreviewWindow,
+      openNodeInBrowser,
       openChromiumWindow,
       focusWindow,
       linuxApps,
@@ -1336,12 +1382,82 @@ export default function App() {
     [allNodes]
   );
 
+  const handleOpenNodeWith = useCallback(
+    (node: VFSNode, targetId: OpenWithTargetId) => {
+      if (node.isDir) {
+        openFolderWindow(node.path);
+        return;
+      }
+      if (targetId === 'browser') {
+        openNodeInBrowser(node);
+        return;
+      }
+      if (targetId === 'chromium-builtin') {
+        openChromiumWindow(`file://${node.path}`);
+        return;
+      }
+      if (targetId === 'preview') {
+        openPreviewWindow(node);
+        return;
+      }
+      if (targetId === 'vscode-web') {
+        const targetFolder = node.parentPath || '/Desktop';
+        const existingVs = windowsRef.current.find((w) => w.kind === 'vscode');
+        openVSCodeWindow({
+          folderPath: targetFolder,
+          forceNew: Boolean(existingVs && existingVs.folderPath !== targetFolder),
+        });
+        return;
+      }
+      if (targetId === 'terminal') {
+        openTerminalWindow(node.parentPath || '/Desktop');
+        return;
+      }
+      if (targetId.startsWith('app:')) {
+        const appId = targetId.slice('app:'.length);
+        const app = linuxApps.find((a) => a.id === appId);
+        if (app && app.installed) {
+          launchLinuxApp({
+            appId: app.id,
+            command: app.command,
+            appName: app.name,
+            iconName: app.iconName,
+            vfsPaths: [node.path],
+            reuseExisting: true,
+            needsNoSandbox: app.needsNoSandbox,
+            launchMode: app.launchMode,
+          });
+          return;
+        }
+      }
+      if (isHtmlExtension(node.extension)) {
+        openNodeInBrowser(node);
+      } else {
+        openPreviewWindow(node);
+      }
+    },
+    [
+      openFolderWindow,
+      openNodeInBrowser,
+      openChromiumWindow,
+      openPreviewWindow,
+      openVSCodeWindow,
+      openTerminalWindow,
+      linuxApps,
+      launchLinuxApp,
+    ]
+  );
+
   const handleOpenNode = useCallback(
     (node: VFSNode) => {
-      if (node.isDir) openFolderWindow(node.path);
-      else openPreviewWindow(node);
+      if (node.isDir) {
+        openFolderWindow(node.path);
+        return;
+      }
+      const targetId = getDefaultOpenWithTarget(node, meta.preferences.defaultApps);
+      handleOpenNodeWith(node, targetId);
     },
-    [openFolderWindow, openPreviewWindow]
+    [openFolderWindow, meta.preferences.defaultApps, handleOpenNodeWith]
   );
 
   const handleCreateFolder = async (parentPath: string, pos?: { x: number; y: number }) => {
@@ -1540,10 +1656,22 @@ export default function App() {
     media?: Partial<MediaPreferences>;
     screensaver?: Partial<ScreensaverPreferences>;
     lockScreen?: Partial<LockScreenPreferences>;
+    defaultApps?: Record<string, string>;
   }) => {
     prefUpdateSeqRef.current += 1;
     setMeta((prev) => {
-      const { stream, browser, terminal, ui, dock, media, screensaver, lockScreen, ...rest } = partial;
+      const {
+        stream,
+        browser,
+        terminal,
+        ui,
+        dock,
+        media,
+        screensaver,
+        lockScreen,
+        defaultApps,
+        ...rest
+      } = partial;
       return {
         ...prev,
         preferences: {
@@ -1573,6 +1701,9 @@ export default function App() {
           lockScreen: lockScreen
             ? { ...DEFAULT_LOCK_SCREEN_PREFERENCES, ...(prev.preferences.lockScreen || {}), ...lockScreen }
             : prev.preferences.lockScreen || { ...DEFAULT_LOCK_SCREEN_PREFERENCES },
+          defaultApps: defaultApps
+            ? { ...(prev.preferences.defaultApps || {}), ...defaultApps }
+            : prev.preferences.defaultApps || {},
         },
       };
     });
@@ -1595,6 +1726,10 @@ export default function App() {
         partial.lockScreen || prevQ.lockScreen
           ? { ...(prevQ.lockScreen || {}), ...(partial.lockScreen || {}) }
           : undefined,
+      defaultApps:
+        partial.defaultApps || prevQ.defaultApps
+          ? { ...(prevQ.defaultApps || {}), ...(partial.defaultApps || {}) }
+          : undefined,
     };
     if (!prefFlushTimerRef.current) {
       prefPendingCountRef.current += 1;
@@ -1602,6 +1737,17 @@ export default function App() {
         void flushQueuedPreferences();
       }, 45);
     }
+  };
+
+  const handleSetDefaultOpenWith = (node: VFSNode, targetId: OpenWithTargetId, label: string) => {
+    const extKey = getExtensionKey(node);
+    const extDisplay = extKey === '_noext' ? 'Uzantısız' : `.${extKey}`;
+    handleUpdatePreferences({
+      defaultApps: {
+        [extKey]: targetId,
+      },
+    });
+    pushToast('Varsayılan Uygulama', `${extDisplay} dosyaları artık ${label} ile açılacak.`, 'success');
   };
 
   useEffect(() => {
@@ -1922,6 +2068,7 @@ export default function App() {
     selectedDesktopPaths,
     desktopNodes,
     clipboard,
+    handleOpenNode,
   ]);
 
   if (!authChecked) {
@@ -2120,6 +2267,13 @@ export default function App() {
                 }
                 onVfsSaved={refreshVfs}
                 onSetWallpaper={handleSetWallpaperFromNode}
+                onOpenContextMenu={(x, y, node) =>
+                  setCtxMenu({
+                    x,
+                    y,
+                    target: { kind: 'nodes', dirPath: node.parentPath, nodes: [node] },
+                  })
+                }
                 onNotify={pushToast}
               />
             )}
@@ -2355,6 +2509,8 @@ export default function App() {
           clipboard={clipboard}
           preferences={meta.preferences}
           hasTrashItems={trashCount > 0}
+          linuxApps={linuxApps}
+          linuxGuiReady={Boolean(linuxRuntime?.guiReady)}
           onClose={() => setCtxMenu(null)}
           onCreateFolder={handleCreateFolder}
           onCreateQuickFile={handleCreateFile}
@@ -2366,6 +2522,8 @@ export default function App() {
           onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
           onSetWallpaperFromNode={handleSetWallpaperFromNode}
           onOpenNode={handleOpenNode}
+          onOpenNodeWith={handleOpenNodeWith}
+          onSetDefaultOpenWith={handleSetDefaultOpenWith}
           onStartRename={(node) => setRenamingPath(node.path)}
           onCopy={(nodes) => setClipboard({ mode: 'copy', paths: nodes.map((n) => n.path) })}
           onCut={(nodes) => setClipboard({ mode: 'cut', paths: nodes.map((n) => n.path) })}
