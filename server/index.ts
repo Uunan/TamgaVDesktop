@@ -30,7 +30,7 @@ import {
 } from './linuxDisplayBridge';
 import { VSCodeServerManager } from './vscodeManager';
 
-export const TAMGA_VERSION = '2.1.1';
+export const TAMGA_VERSION = '2.2.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',

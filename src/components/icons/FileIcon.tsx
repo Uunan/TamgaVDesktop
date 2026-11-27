@@ -587,6 +587,9 @@ const BUNDLED_APP_ICON_MAP: Record<string, string> = {
 
   // AI & IDEs / Development
   antigravity: 'antigravity',
+  'antigravity-cli': 'antigravity',
+  'antigravity-web': 'antigravity',
+  agy: 'antigravity',
   'google-antigravity': 'antigravity',
   codex: 'codex',
   'openai-codex': 'codex',
@@ -599,7 +602,9 @@ const BUNDLED_APP_ICON_MAP: Record<string, string> = {
   gemini: 'gemini-cli',
   '@google/gemini-cli': 'gemini-cli',
   vscode: 'vscode',
+  'vscode-web': 'vscode',
   code: 'vscode',
+  'code-tunnel': 'vscode',
   'visual-studio-code': 'vscode',
   'com.visualstudio.code': 'vscode',
   vscodium: 'vscodium',
@@ -707,6 +712,13 @@ export interface OriginalAppIconProps {
   className?: string;
 }
 
+function resolveVariantBadge(appId?: string, iconName?: string): 'CLI' | 'WEB' | null {
+  const key = (iconName || appId || '').toLowerCase();
+  if (key === 'antigravity-cli') return 'CLI';
+  if (key === 'antigravity-web' || key === 'vscode-web') return 'WEB';
+  return null;
+}
+
 export const OriginalAppIcon: React.FC<OriginalAppIconProps> = ({
   appId,
   iconName,
@@ -722,15 +734,35 @@ export const OriginalAppIcon: React.FC<OriginalAppIconProps> = ({
     resolveBundledAppIconUrl(iconName) ||
     resolveBundledAppIconUrl(name);
 
+  const variantBadge = resolveVariantBadge(appId, iconName);
+
   if (bundledUrl) {
-    return (
+    const imgEl = (
       <img
         src={bundledUrl}
         alt={name || appId || ''}
         style={{ width: size, height: size }}
-        className={`object-contain shrink-0 drop-shadow-sm select-none ${className}`}
+        className={`object-contain shrink-0 drop-shadow-sm select-none ${variantBadge ? '' : className}`}
         draggable={false}
       />
+    );
+    if (!variantBadge) return imgEl;
+    return (
+      <span
+        style={{ width: size, height: size }}
+        className={`relative inline-flex items-center justify-center shrink-0 select-none ${className}`}
+      >
+        {imgEl}
+        <span
+          className={`absolute -bottom-0.5 -right-1 px-1 py-[1px] rounded text-[7.5px] font-bold tracking-tight leading-none border shadow-sm ${
+            variantBadge === 'WEB'
+              ? 'bg-sky-500 text-white border-sky-300/60'
+              : 'bg-zinc-900 text-emerald-300 border-zinc-600'
+          }`}
+        >
+          {variantBadge}
+        </span>
+      </span>
     );
   }
 

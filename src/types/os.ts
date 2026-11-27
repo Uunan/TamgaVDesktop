@@ -173,7 +173,7 @@ export interface LinuxAppInfo {
   packageName?: string;
   desktopFile?: string;
   needsNoSandbox?: boolean;
-  launchMode?: 'gui' | 'terminal';
+  launchMode?: 'gui' | 'terminal' | 'web';
 }
 
 export interface AptSearchResult {

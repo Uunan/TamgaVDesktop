@@ -10,6 +10,7 @@ import type {
   Page,
 } from 'playwright-core';
 import type { VFSManager } from './vfsManager.js';
+import { ensureGoogleApiIpv4Preference, ensureIpv4LoopbackProxy } from './linuxDisplayBridge.js';
 
 const require = createRequire(import.meta.url);
 
@@ -520,6 +521,13 @@ export class ChromiumCluster {
         devShmOk = Number(shmStat.bavail) * Number(shmStat.bsize) >= 256 * 1024 * 1024;
       } catch {}
 
+      let proxyPort = 0;
+      try {
+        if (await ensureGoogleApiIpv4Preference()) {
+          proxyPort = await ensureIpv4LoopbackProxy();
+        }
+      } catch {}
+
       const launched = await chromiumApi.launch({
         executablePath,
         headless: true,
@@ -527,6 +535,12 @@ export class ChromiumCluster {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           ...(devShmOk ? [] : ['--disable-dev-shm-usage']),
+          ...(proxyPort > 0
+            ? [
+                `--proxy-server=http://127.0.0.1:${proxyPort}`,
+                '--proxy-bypass-list=<-loopback>;localhost;127.0.0.1',
+              ]
+            : []),
           '--disable-blink-features=AutomationControlled',
           '--autoplay-policy=no-user-gesture-required',
           '--font-render-hinting=medium',

@@ -569,9 +569,9 @@ export default function App() {
           {
             id,
             kind: 'vscode',
-            title: 'Visual Studio Code',
-            appId: 'vscode',
-            appIconName: 'vscode',
+            title: 'Visual Studio Code Web',
+            appId: 'vscode-web',
+            appIconName: 'vscode-web',
             folderPath: opts?.folderPath || '/Projects',
             vscodeUrl: opts?.url,
             x: Math.max(18, Math.round((vw - width) / 2) + offset),
@@ -606,7 +606,7 @@ export default function App() {
       iconName?: string;
       initialUrl?: string;
       needsNoSandbox?: boolean;
-      launchMode?: 'gui' | 'terminal';
+      launchMode?: 'gui' | 'terminal' | 'web';
       forceNew?: boolean;
     }) => {
       remoteAudio.ensureContext();
@@ -615,12 +615,15 @@ export default function App() {
       const viewportWidth = Math.max(960, vw - 36);
       const viewportHeight = Math.max(600, vh - 32 - 42);
       const isBrowserApp =
-        params.appId === 'chrome' || params.appId === 'firefox' || params.appId === 'brave';
+        params.appId === 'chrome' ||
+        params.appId === 'firefox' ||
+        params.appId === 'brave' ||
+        params.appId === 'antigravity-web';
       const width = Math.min(isBrowserApp ? 1160 : 740, vw - 36);
       const height = Math.min(isBrowserApp ? 730 : 520, vh - 32);
 
-      // Run Visual Studio Code in 100% Web-Native DOM mode (zero video lag, zero remote cursor!)
-      if (params.appId === 'vscode' || params.command?.trim() === 'code') {
+      // Run VS Code Web in Web-Native DOM mode while leaving 'vscode' as native Linux Desktop app
+      if (params.appId === 'vscode-web') {
         openVSCodeWindow({ folderPath: '/Projects', forceNew: params.forceNew });
         return;
       }
@@ -632,9 +635,40 @@ export default function App() {
       const effectiveMode =
         params.launchMode ||
         foundApp?.launchMode ||
-        (['codex', 'claude-code', 'gemini-cli'].includes(params.appId || '') ? 'terminal' : 'gui');
+        (['codex', 'claude-code', 'gemini-cli', 'antigravity-cli'].includes(params.appId || '')
+          ? 'terminal'
+          : 'gui');
 
-      // Run TUI AI Agents (OpenAI Codex, Claude Code, Gemini CLI) in crisp 60fps TrueColor PTY window
+      // Launch official Antigravity WEB via Google Chrome session (keeps Google sign-in + IPv4 relay)
+      // or built-in Chromium fallback if Linux GUI browsers aren't available.
+      if (params.appId === 'antigravity-web' || effectiveMode === 'web') {
+        const targetUrl =
+          params.initialUrl ||
+          (foundApp?.command && /^https?:\/\//i.test(foundApp.command)
+            ? foundApp.command
+            : 'https://antigravity.google.com');
+        const preferredBrowser =
+          ['chrome', 'brave', 'firefox']
+            .map((bid) => linuxApps.find((a) => a.id === bid && a.installed))
+            .find(Boolean) || null;
+        if (linuxRuntime?.guiReady && preferredBrowser) {
+          params = {
+            ...params,
+            appId: preferredBrowser.id,
+            command: preferredBrowser.command,
+            appName: preferredBrowser.name,
+            iconName: preferredBrowser.id,
+            needsNoSandbox: preferredBrowser.needsNoSandbox,
+            launchMode: 'gui',
+            initialUrl: targetUrl,
+          };
+        } else {
+          openChromiumWindow(targetUrl);
+          return;
+        }
+      }
+
+      // Run TUI AI Agents (OpenAI Codex CLI, Claude Code CLI, Gemini CLI, Antigravity CLI) in crisp 60fps TrueColor PTY window
       if (effectiveMode === 'terminal') {
         if (!params.forceNew && params.appId) {
           const existingTui = windowsRef.current.find(
@@ -738,7 +772,7 @@ export default function App() {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast, openVSCodeWindow, linuxApps, focusWindow]
+    [pushToast, openVSCodeWindow, linuxApps, focusWindow, linuxRuntime?.guiReady, openChromiumWindow]
   );
 
   const openPreviewWindow = useCallback((node: VFSNode) => {
@@ -2091,7 +2125,6 @@ export default function App() {
         onOpenFolder={openFolderWindow}
         onOpenNode={handleOpenNode}
         onCloseWindow={closeWindowById}
-        onUpdateDock={(partial) => handleUpdatePreferences({ dock: partial })}
         onToggleWindowFromTaskbar={(winId) => {
           const target = windows.find((w) => w.id === winId);
           if (!target) return;

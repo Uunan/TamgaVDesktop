@@ -19,7 +19,7 @@ export interface LinuxAppInfo {
   packageName?: string;
   desktopFile?: string;
   needsNoSandbox?: boolean;
-  launchMode?: 'gui' | 'terminal';
+  launchMode?: 'gui' | 'terminal' | 'web';
 }
 
 export interface AptSearchResult {
@@ -49,7 +49,7 @@ interface CatalogAppDef {
   accent: string;
   featured?: boolean;
   needsNoSandbox?: boolean;
-  launchMode?: 'gui' | 'terminal';
+  launchMode?: 'gui' | 'terminal' | 'web';
   packageName?: string;
   installScript: string;
   uninstallScript?: string;
@@ -185,10 +185,47 @@ rm -rf /opt/antigravity /usr/local/bin/antigravity /usr/share/applications/antig
 apt-get remove -y antigravity 2>/dev/null || true`,
   },
   {
+    id: 'antigravity-cli',
+    name: 'Antigravity CLI',
+    publisher: 'Google DeepMind',
+    description: 'Resmi Google Antigravity terminal ajanı ve AI geliştirme CLI aracı (agy)',
+    binaryNames: ['agy', '/usr/local/bin/agy', '/root/.gemini/bin/agy', '/root/.local/bin/agy'],
+    defaultCommand: 'agy',
+    category: 'development',
+    accent: '#6366f1',
+    featured: true,
+    launchMode: 'terminal',
+    installScript: [
+      'set -e',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'if ! command -v curl >/dev/null 2>&1; then apt-get update -y && apt-get install -y curl ca-certificates tar gzip; fi',
+      'if [ -x /root/.gemini/bin/agy ] && [ ! -e /usr/local/bin/agy ]; then ln -sf /root/.gemini/bin/agy /usr/local/bin/agy; fi',
+      'if [ ! -x /usr/local/bin/agy ]; then curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin; fi',
+    ].join('\n'),
+    uninstallScript: 'set -e\nrm -f /usr/local/bin/agy /root/.local/bin/agy',
+  },
+  {
+    id: 'antigravity-web',
+    name: 'Antigravity WEB',
+    publisher: 'Google DeepMind',
+    description: 'Google Antigravity resmi web çalışma alanı (antigravity.google.com)',
+    binaryNames: ['google-chrome-stable', 'google-chrome', 'firefox', 'brave-browser'],
+    defaultCommand: 'https://antigravity.google.com',
+    category: 'development',
+    accent: '#818cf8',
+    featured: true,
+    launchMode: 'web',
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+apt-get update -y && apt-get install -y /tmp/google-chrome.deb
+rm -f /tmp/google-chrome.deb`,
+  },
+  {
     id: 'codex',
-    name: 'OpenAI Codex',
+    name: 'OpenAI Codex CLI',
     publisher: 'OpenAI',
-    description: 'Resmi OpenAI Codex otonom yazılım geliştirme ajanı (@openai/codex)',
+    description: 'Resmi OpenAI Codex terminal yazılım geliştirme ajanı (@openai/codex)',
     binaryNames: ['codex', '/usr/local/bin/codex', '/usr/bin/codex'],
     defaultCommand: 'codex',
     category: 'development',
@@ -206,9 +243,9 @@ apt-get remove -y antigravity 2>/dev/null || true`,
   },
   {
     id: 'claude-code',
-    name: 'Claude Code',
+    name: 'Claude Code CLI',
     publisher: 'Anthropic',
-    description: 'Resmi Anthropic Claude otonom kodlama ve mühendislik ajanı (@anthropic-ai/claude-code)',
+    description: 'Resmi Anthropic Claude terminal kodlama ve mühendislik ajanı (@anthropic-ai/claude-code)',
     binaryNames: ['claude', '/usr/local/bin/claude', '/usr/bin/claude'],
     defaultCommand: 'claude',
     category: 'development',
@@ -289,13 +326,14 @@ apt-get remove -y antigravity 2>/dev/null || true`,
     id: 'vscode',
     name: 'Visual Studio Code',
     publisher: 'Microsoft',
-    description: 'Zengin eklenti ekosistemiyle modern kod editörü (Web-Native + Linux)',
+    description: 'Tam eklenti ve webview uyumlu yerel Linux masaüstü Visual Studio Code (Native)',
     binaryNames: ['code'],
     defaultCommand: 'code',
     category: 'development',
     accent: '#0ea5e9',
     featured: true,
     needsNoSandbox: true,
+    launchMode: 'gui',
     packageName: 'code',
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -305,6 +343,25 @@ wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --ye
 echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
 apt-get update -y && apt-get install -y code`,
     uninstallScript: APT_REMOVE('code'),
+  },
+  {
+    id: 'vscode-web',
+    name: 'Visual Studio Code Web',
+    publisher: 'Microsoft',
+    description: 'Tarayıcı tabanlı ultra hızlı yerel web Visual Studio Code editörü (Web DOM)',
+    binaryNames: ['/usr/share/code/bin/code-tunnel', 'code-tunnel', 'code'],
+    defaultCommand: 'code-tunnel serve-web',
+    category: 'development',
+    accent: '#38bdf8',
+    featured: true,
+    launchMode: 'web',
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && apt-get install -y wget gpg apt-transport-https
+mkdir -p /etc/apt/keyrings
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --yes > /etc/apt/keyrings/packages.microsoft.gpg
+echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+apt-get update -y && apt-get install -y code`,
   },
   {
     id: 'chrome',
@@ -849,12 +906,12 @@ export class LinuxAppManager {
         name: def.name,
         publisher: def.publisher,
         description: def.description,
-        command: foundBin || def.defaultCommand,
+        command: def.launchMode === 'web' ? def.defaultCommand : foundBin || def.defaultCommand,
         category: def.category,
         accent: def.accent,
         featured: def.featured,
         iconName: def.id,
-        installed: Boolean(foundBin),
+        installed: def.id === 'antigravity-web' ? true : Boolean(foundBin),
         installable: process.platform === 'linux',
         uninstallable: process.platform === 'linux' && Boolean(def.uninstallScript || def.packageName),
         packageName: def.packageName,

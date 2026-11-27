@@ -86,7 +86,6 @@ interface TaskbarProps {
   onOpenNode: (node: VFSNode) => void;
   onToggleWindowFromTaskbar: (winId: string) => void;
   onCloseWindow: (winId: string) => void;
-  onUpdateDock?: (partial: Partial<DockPreferences>) => void;
   onLockScreen: () => void;
   onReboot: () => void;
   onLogout?: () => void;
@@ -362,7 +361,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
   onOpenNode,
   onToggleWindowFromTaskbar,
   onCloseWindow,
-  onUpdateDock,
   onLockScreen,
   onReboot,
   onLogout,
@@ -989,7 +987,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
           <div className="grid grid-cols-2 gap-1.5">
             <button
               onClick={() => {
-                onOpenSettings('dock');
+                onOpenSettings('appearance');
                 setFlyout(null);
               }}
               data-testid="control-center-settings-btn"
@@ -998,7 +996,7 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               <Settings className="w-4 h-4 text-[var(--os-text)] shrink-0" />
               <div className="min-w-0">
                 <div className="text-xs font-semibold text-[var(--os-text)] truncate">Sistem Ayarları</div>
-                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Dock, Tema, Sistem</div>
+                <div className="text-[10px] text-[var(--os-text-subtle)] truncate">Görünüm, Dock, Sistem</div>
               </div>
             </button>
             <button
@@ -1135,53 +1133,6 @@ export const Taskbar: React.FC<TaskbarProps> = ({
               </button>
             </form>
           </div>
-
-          {onUpdateDock && (
-            <div className="space-y-2 pt-2.5 border-t border-[var(--os-border)]">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
-                    <span>Dock Boyutu</span>
-                    <span className="font-mono">{barScale.toFixed(2)}x</span>
-                  </div>
-                  <input
-                    type="range"
-                    data-testid="cc-dock-bar-scale"
-                    min={0.85}
-                    max={1.8}
-                    step={0.05}
-                    value={barScale}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      onUpdateDock({
-                        barScale: val,
-                        size: val < 1.15 ? 'sm' : val > 1.55 ? 'lg' : 'md',
-                      });
-                    }}
-                    style={{ accentColor: 'var(--os-accent-bg)' }}
-                    className="w-full"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] text-[var(--os-text-muted)]">
-                    <span>Simge Boyutu</span>
-                    <span className="font-mono">{iconScale.toFixed(2)}x</span>
-                  </div>
-                  <input
-                    type="range"
-                    data-testid="cc-dock-icon-scale"
-                    min={0.85}
-                    max={1.9}
-                    step={0.05}
-                    value={iconScale}
-                    onChange={(e) => onUpdateDock({ iconScale: Number(e.target.value) })}
-                    style={{ accentColor: 'var(--os-accent-bg)' }}
-                    className="w-full"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Audio & Brightness */}
           <div className="space-y-2.5 pt-2.5 border-t border-[var(--os-border)]">

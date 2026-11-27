@@ -786,99 +786,6 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 </div>
 
                 <Row
-                  label="Hızlı Boyut Şablonu"
-                  tip="Dock yüksekliği ve simge boyutunu tek dokunuşta ayarlamanızı sağlar."
-                  right={
-                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
-                      {(
-                        [
-                          { sz: 'sm', label: 'Kompakt (1.0x)', scale: 1.0 },
-                          { sz: 'md', label: 'Varsayılan (1.4x)', scale: 1.4 },
-                          { sz: 'lg', label: 'Geniş (1.65x)', scale: 1.65 },
-                        ] as const
-                      ).map((item) => {
-                        const isMatch =
-                          Math.abs((dock.barScale ?? 1.4) - item.scale) < 0.04 &&
-                          Math.abs((dock.iconScale ?? 1.4) - item.scale) < 0.04;
-                        return (
-                          <button
-                            key={item.sz}
-                            data-testid={`dock-size-preset-${item.sz}`}
-                            onClick={() =>
-                              updateDock({
-                                size: item.sz,
-                                barScale: item.scale,
-                                iconScale: item.scale,
-                              })
-                            }
-                            className={`px-2 py-1 rounded-md text-[11px] ${
-                              isMatch
-                                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
-                                : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
-                            }`}
-                          >
-                            {item.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  }
-                />
-
-                <div className="px-4 py-3 grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="font-medium flex items-center">
-                        Dock Büyüklüğü
-                        <InfoTip text="Dock çubuğunun yüksekliğini/kalınlığını ve düğme çerçeve boyutunu bağımsız olarak ayarlar." />
-                      </span>
-                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
-                        {(dock.barScale ?? 1.4).toFixed(2)}x · {Math.round(54 * (dock.barScale ?? 1.4))}px
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      data-testid="dock-bar-scale"
-                      min={0.85}
-                      max={1.8}
-                      step={0.05}
-                      value={dock.barScale ?? 1.4}
-                      onChange={(e) => {
-                        const val = Number(e.target.value);
-                        updateDock({
-                          barScale: val,
-                          size: val < 1.15 ? 'sm' : val > 1.55 ? 'lg' : 'md',
-                        });
-                      }}
-                      style={{ accentColor: 'var(--os-accent-bg)' }}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="font-medium flex items-center">
-                        Dock Simge Büyüklüğü
-                        <InfoTip text="Dock içerisindeki uygulama simgelerinin büyüklüğünü bağımsız olarak belirler." />
-                      </span>
-                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
-                        {(dock.iconScale ?? 1.4).toFixed(2)}x · {Math.round(23 * (dock.iconScale ?? 1.4))}px
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      data-testid="dock-icon-scale"
-                      min={0.85}
-                      max={1.9}
-                      step={0.05}
-                      value={dock.iconScale ?? 1.4}
-                      onChange={(e) => updateDock({ iconScale: Number(e.target.value) })}
-                      style={{ accentColor: 'var(--os-accent-bg)' }}
-                      className="w-full"
-                    />
-                  </div>
-                </div>
-
-                <Row
                   label="Uygulama Etiketleri"
                   tip="Yatay Dock'ta sabit simgelerin yanında isimlerini göster veya yalnızca ikon kullan."
                   right={
@@ -1019,10 +926,103 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 </div>
               </div>
 
-              {/* Desktop & Display controls */}
+              {/* Desktop, Dock Size & Display controls */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
                 <Row
-                  label="Simge Boyutu"
+                  label="Hızlı Dock Şablonu"
+                  tip="Dock yüksekliği ve Dock simge boyutunu tek dokunuşta ayarlamanızı sağlar."
+                  right={
+                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
+                      {(
+                        [
+                          { sz: 'sm', label: 'Kompakt (1.0x)', scale: 1.0 },
+                          { sz: 'md', label: 'Varsayılan (1.4x)', scale: 1.4 },
+                          { sz: 'lg', label: 'Geniş (1.65x)', scale: 1.65 },
+                        ] as const
+                      ).map((item) => {
+                        const isMatch =
+                          Math.abs((dock.barScale ?? 1.4) - item.scale) < 0.04 &&
+                          Math.abs((dock.iconScale ?? 1.4) - item.scale) < 0.04;
+                        return (
+                          <button
+                            key={item.sz}
+                            data-testid={`dock-size-preset-${item.sz}`}
+                            onClick={() =>
+                              updateDock({
+                                size: item.sz,
+                                barScale: item.scale,
+                                iconScale: item.scale,
+                              })
+                            }
+                            className={`px-2 py-1 rounded-md text-[11px] ${
+                              isMatch
+                                ? 'bg-[var(--os-accent-bg)] text-[var(--os-accent-fg)] font-medium'
+                                : 'text-[var(--os-text-muted)] hover:text-[var(--os-text)]'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  }
+                />
+
+                <div className="px-4 py-3 grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Dock Boyutu
+                        <InfoTip text="Dock çubuğunun yüksekliğini/kalınlığını ve düğme çerçeve boyutunu bağımsız olarak ayarlar." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {(dock.barScale ?? 1.4).toFixed(2)}x · {Math.round(54 * (dock.barScale ?? 1.4))}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="dock-bar-scale"
+                      min={0.85}
+                      max={1.8}
+                      step={0.05}
+                      value={dock.barScale ?? 1.4}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        updateDock({
+                          barScale: val,
+                          size: val < 1.15 ? 'sm' : val > 1.55 ? 'lg' : 'md',
+                        });
+                      }}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium flex items-center">
+                        Dock Simge Boyutu
+                        <InfoTip text="Dock içerisindeki uygulama simgelerinin büyüklüğünü bağımsız olarak belirler." />
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--os-text-muted)]">
+                        {(dock.iconScale ?? 1.4).toFixed(2)}x · {Math.round(23 * (dock.iconScale ?? 1.4))}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="dock-icon-scale"
+                      min={0.85}
+                      max={1.9}
+                      step={0.05}
+                      value={dock.iconScale ?? 1.4}
+                      onChange={(e) => updateDock({ iconScale: Number(e.target.value) })}
+                      style={{ accentColor: 'var(--os-accent-bg)' }}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <Row
+                  label="Masaüstü Simge Boyutu"
                   right={
                     <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)]">
                       {(

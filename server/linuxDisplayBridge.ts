@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
@@ -7,6 +9,9 @@ import { resolveHelperPath } from './terminalManager';
 
 let ipv6ProbePromise: Promise<boolean> | null = null;
 let googleIpv6Blocked = false;
+let ipv4ProxyServer: http.Server | null = null;
+let ipv4ProxyPort = 0;
+let ipv4ProxyPromise: Promise<number> | null = null;
 
 function probeHostHttpCode(hostname: string, family: 4 | 6, timeoutMs = 2400): Promise<number> {
   return new Promise((resolve) => {
@@ -50,24 +55,137 @@ function patchGaiConfPreferIpv4(): void {
   }
 }
 
+function isIpv6FallbackNeededByGai(): boolean {
+  if (googleIpv6Blocked) return true;
+  try {
+    if (fs.existsSync('/etc/gai.conf')) {
+      const txt = fs.readFileSync('/etc/gai.conf', 'utf-8');
+      if (txt.split(/\r?\n/).some((l) => /^\s*precedence\s+::ffff:0:0\/96\s+100\b/.test(l))) {
+        googleIpv6Blocked = true;
+      }
+    }
+  } catch {}
+  return googleIpv6Blocked;
+}
+
+/**
+ * Starts a local loopback HTTP/CONNECT tunnel that forces outbound TCP connections to use IPv4
+ * (`family: 4`) without inspecting or terminating TLS. Chromium & Electron ignore `/etc/gai.conf`
+ * on Linux, so routing them via this local IPv4 forwarder prevents Google `403` errors on broken
+ * VPS IPv6 prefixes (e.g. `signaler-pa.clients6.google.com` during QR verification).
+ */
+export async function ensureIpv4LoopbackProxy(): Promise<number> {
+  if (process.platform !== 'linux') return 0;
+  if (ipv4ProxyPort > 0 && ipv4ProxyServer) return ipv4ProxyPort;
+  if (ipv4ProxyPromise) return ipv4ProxyPromise;
+
+  ipv4ProxyPromise = new Promise<number>((resolve) => {
+    try {
+      const srv = http.createServer((req, res) => {
+        if (!req.url) {
+          res.writeHead(400);
+          res.end('Bad Request');
+          return;
+        }
+        let target: URL;
+        try {
+          target = new URL(req.url);
+        } catch {
+          res.writeHead(400);
+          res.end('Invalid URL');
+          return;
+        }
+        const headers: http.OutgoingHttpHeaders = { ...req.headers };
+        delete headers['proxy-connection'];
+        const up = http.request(
+          {
+            hostname: target.hostname,
+            port: Number(target.port) || 80,
+            path: `${target.pathname}${target.search}`,
+            method: req.method,
+            headers,
+            family: 4,
+          },
+          (upRes) => {
+            res.writeHead(upRes.statusCode || 502, upRes.headers);
+            upRes.pipe(res);
+          }
+        );
+        up.on('error', () => {
+          if (!res.headersSent) res.writeHead(502);
+          res.end();
+        });
+        req.on('error', () => up.destroy());
+        req.pipe(up);
+      });
+
+      srv.on('connect', (req, clientSock, head) => {
+        const raw = req.url || '';
+        const lastColon = raw.lastIndexOf(':');
+        const host = (lastColon > 0 ? raw.slice(0, lastColon) : raw).replace(/^\[|\]$/g, '');
+        const port = Number(lastColon > 0 ? raw.slice(lastColon + 1) : 443) || 443;
+        if (!host) {
+          clientSock.destroy();
+          return;
+        }
+        const upstream = net.connect({ host, port, family: 4 }, () => {
+          upstream.setNoDelay(true);
+          if ('setNoDelay' in clientSock && typeof clientSock.setNoDelay === 'function') {
+            clientSock.setNoDelay(true);
+          }
+          clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          if (head && head.length > 0) upstream.write(head);
+          upstream.pipe(clientSock);
+          clientSock.pipe(upstream);
+        });
+        upstream.on('error', () => clientSock.destroy());
+        clientSock.on('error', () => upstream.destroy());
+      });
+
+      srv.on('error', () => {
+        resolve(0);
+      });
+
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        ipv4ProxyServer = srv;
+        ipv4ProxyPort = addr && typeof addr === 'object' ? addr.port : 0;
+        srv.unref();
+        resolve(ipv4ProxyPort);
+      });
+    } catch {
+      resolve(0);
+    }
+  });
+
+  return ipv4ProxyPromise;
+}
+
+export function getIpv4ProxyPort(): number {
+  return ipv4ProxyPort;
+}
+
 /**
  * Probes Google API endpoints over IPv6 vs IPv4 once at startup. If IPv6 is 403-blocked
- * (common on VPS IPv6 prefixes), enables system/glibc IPv4 precedence cleanly so Antigravity
- * language_server and Electron apps never hit Error 403 (Forbidden)!!1 on IPv6.
+ * (common on VPS IPv6 prefixes), enables system/glibc IPv4 precedence AND spins up the
+ * loopback IPv4 relay so Chrome, Antigravity, and Electron apps never hit 403 on IPv6.
  */
 export async function ensureGoogleApiIpv4Preference(): Promise<boolean> {
   if (process.platform !== 'linux') return false;
   if (!ipv6ProbePromise) {
     ipv6ProbePromise = (async () => {
-      const [v6Code, v4Code] = await Promise.all([
+      const [ccV6, ccV4, sigV6, sigV4] = await Promise.all([
         probeHostHttpCode('daily-cloudcode-pa.googleapis.com', 6),
         probeHostHttpCode('daily-cloudcode-pa.googleapis.com', 4),
+        probeHostHttpCode('signaler-pa.clients6.google.com', 6),
+        probeHostHttpCode('signaler-pa.clients6.google.com', 4),
       ]);
-      const v4Ok = v4Code > 0 && v4Code !== 403 && v4Code < 500;
-      const v6Bad = v6Code === 403 || v6Code === 0;
-      if (v4Ok && v6Bad) {
+      const ccBlocked = ccV4 > 0 && ccV4 !== 403 && ccV4 < 500 && (ccV6 === 403 || ccV6 === 0);
+      const sigBlocked = sigV4 > 0 && sigV4 !== 403 && sigV4 < 500 && (sigV6 === 403 || sigV6 === 0);
+      if (ccBlocked || sigBlocked || isIpv6FallbackNeededByGai()) {
         googleIpv6Blocked = true;
         patchGaiConfPreferIpv4();
+        await ensureIpv4LoopbackProxy();
       }
       return googleIpv6Blocked;
     })();
@@ -77,16 +195,7 @@ export async function ensureGoogleApiIpv4Preference(): Promise<boolean> {
 
 export function applyIpv4PreferenceToEnv<T extends Record<string, string | undefined>>(env: T): T {
   if (process.platform !== 'linux') return env;
-  if (!googleIpv6Blocked) {
-    try {
-      if (fs.existsSync('/etc/gai.conf')) {
-        const txt = fs.readFileSync('/etc/gai.conf', 'utf-8');
-        if (txt.split(/\r?\n/).some((l) => /^\s*precedence\s+::ffff:0:0\/96\s+100\b/.test(l))) {
-          googleIpv6Blocked = true;
-        }
-      }
-    } catch {}
-  }
+  isIpv6FallbackNeededByGai();
   const mut = env as Record<string, string | undefined>;
   const existingGodebug = String(mut.GODEBUG || '');
   if (!/\bnetdns=/.test(existingGodebug)) {
@@ -125,8 +234,6 @@ function buildChromiumRuntimeFlags(
     if (!alreadyHas('--test-type')) flags.push('--test-type');
     if (!alreadyHas('--no-first-run')) flags.push('--no-first-run');
     if (!alreadyHas('--no-default-browser-check')) flags.push('--no-default-browser-check');
-    if (!alreadyHas('--disable-background-networking')) flags.push('--disable-background-networking');
-    if (!alreadyHas('--disable-sync')) flags.push('--disable-sync');
     if (!alreadyHas('--metrics-recording-only')) flags.push('--metrics-recording-only');
     if (!alreadyHas('--no-pings')) flags.push('--no-pings');
   }
@@ -144,6 +251,12 @@ function buildChromiumRuntimeFlags(
     flags.push(
       '--disable-features=UseChromeOSDirectVideoDecoder,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion'
     );
+  }
+  if (ipv4ProxyPort > 0 && !alreadyHas('--proxy-server')) {
+    flags.push(`--proxy-server=http://127.0.0.1:${ipv4ProxyPort}`);
+    if (!alreadyHas('--proxy-bypass-list')) {
+      flags.push("'--proxy-bypass-list=<-loopback>;localhost;127.0.0.1'");
+    }
   }
   if (!hasSufficientDevShm() && !alreadyHas('--disable-dev-shm-usage')) {
     flags.push('--disable-dev-shm-usage');
@@ -1084,6 +1197,7 @@ export class LinuxAppSession {
           'user_pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);',
           'user_pref("gfx.webrender.software", true);',
           'user_pref("gfx.x11-egl.force-disabled", true);',
+          'user_pref("network.dns.disableIPv6", true);',
           'user_pref("browser.download.dir", ' + JSON.stringify(downloadsDir) + ');',
           'user_pref("browser.download.folderList", 2);',
         ].join('\n') + '\n',
@@ -1188,8 +1302,18 @@ export class LinuxAppSession {
             },
             allowed_origin_protocol_pairs: {
               ...((prefs.protocol_handler && prefs.protocol_handler.allowed_origin_protocol_pairs) || {}),
-              'https://antigravity.google': { antigravity: true },
-              'https://accounts.google.com': { antigravity: true },
+              'https://antigravity.google': {
+                antigravity: true,
+                vscode: true,
+                'vscode-insiders': true,
+                vscodium: true,
+              },
+              'https://accounts.google.com': {
+                antigravity: true,
+                vscode: true,
+                'vscode-insiders': true,
+                vscodium: true,
+              },
               'https://vscode.dev': { vscode: true },
               'https://github.com': { vscode: true },
               'https://obsidian.md': { obsidian: true },
@@ -1216,6 +1340,15 @@ export class LinuxAppSession {
       }
       if (extraNewWindow && supportsUserDataDir && !finalCmd.includes('--new-window')) {
         extraFlags.push('--new-window');
+      }
+      if ((baseBin === 'code' || baseBin === 'codium') && !extraNewWindow && !this.initialUrl) {
+        const projectsDir = path.join(this.desktopDataRoot, 'vfs', 'Projects');
+        try {
+          fs.mkdirSync(projectsDir, { recursive: true });
+          if (finalCmd.trim() === baseBin) {
+            extraFlags.push(`"${projectsDir}"`);
+          }
+        } catch {}
       }
       if (!extraNewWindow && isChromiumBrowser && this.initialUrl) {
         extraFlags.push(`'${this.initialUrl.replace(/'/g, "'\\''")}'`);
