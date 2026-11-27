@@ -1,6 +1,6 @@
 {
   "name": "tamga-vdesktop",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": false,
   "type": "module",
   "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, built-in HiDPI Playwright Chromium browser, and seamless native Linux GUI apps.",

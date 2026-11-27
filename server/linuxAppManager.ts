@@ -205,23 +205,6 @@ apt-get remove -y antigravity 2>/dev/null || true`,
     uninstallScript: 'set -e\nrm -f /usr/local/bin/agy /root/.local/bin/agy',
   },
   {
-    id: 'antigravity-web',
-    name: 'Antigravity WEB',
-    publisher: 'Google DeepMind',
-    description: 'Google Antigravity resmi web çalışma alanı (antigravity.google.com)',
-    binaryNames: ['google-chrome-stable', 'google-chrome', 'firefox', 'brave-browser'],
-    defaultCommand: 'https://antigravity.google.com',
-    category: 'development',
-    accent: '#818cf8',
-    featured: true,
-    launchMode: 'web',
-    installScript: `set -e
-export DEBIAN_FRONTEND=noninteractive
-wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-apt-get update -y && apt-get install -y /tmp/google-chrome.deb
-rm -f /tmp/google-chrome.deb`,
-  },
-  {
     id: 'codex',
     name: 'OpenAI Codex CLI',
     publisher: 'OpenAI',

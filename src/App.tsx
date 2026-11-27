@@ -763,7 +763,7 @@ export default function App() {
         params.appId === 'chrome' ||
         params.appId === 'firefox' ||
         params.appId === 'brave' ||
-        params.appId === 'antigravity-web';
+        params.launchMode === 'web';
       const width = Math.min(isBrowserApp ? 1160 : 740, vw - 36);
       const height = Math.min(isBrowserApp ? 730 : 520, vh - 32);
 
@@ -786,15 +786,15 @@ export default function App() {
           ? 'web'
           : 'gui');
 
-      // Run web apps (Antigravity WEB & HTTP/HTTPS web apps) inside native embedded WebAppWindow (just like VS Code Web) without opening X11 Chrome
-      if (params.appId === 'antigravity-web' || effectiveMode === 'web') {
+      // Run HTTP/HTTPS web apps inside native embedded WebAppWindow (just like VS Code Web) without opening X11 Chrome
+      if (effectiveMode === 'web') {
         const targetUrl =
           params.initialUrl ||
           (foundApp?.command && /^https?:\/\//i.test(foundApp.command)
             ? foundApp.command
             : /^https?:\/\//i.test(params.command || '')
             ? String(params.command)
-            : 'https://antigravity.google.com');
+            : 'https://www.google.com');
         openWebAppWindow({
           appId: params.appId || foundApp?.id || 'web-app',
           url: targetUrl,
@@ -2159,7 +2159,7 @@ export default function App() {
 
             {win.kind === 'web-app' && (
               <WebAppWindow
-                url={win.webAppUrl || 'https://antigravity.google.com'}
+                url={win.webAppUrl || 'https://www.google.com'}
                 appName={win.title}
                 onTitleChange={(nextTitle) =>
                   setWindows((prev) =>

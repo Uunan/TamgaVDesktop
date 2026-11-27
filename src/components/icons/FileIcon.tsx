@@ -588,7 +588,6 @@ const BUNDLED_APP_ICON_MAP: Record<string, string> = {
   // AI & IDEs / Development
   antigravity: 'antigravity',
   'antigravity-cli': 'antigravity',
-  'antigravity-web': 'antigravity',
   agy: 'antigravity',
   'google-antigravity': 'antigravity',
   codex: 'codex',
@@ -715,7 +714,7 @@ export interface OriginalAppIconProps {
 function resolveVariantBadge(appId?: string, iconName?: string): 'CLI' | 'WEB' | null {
   const key = (iconName || appId || '').toLowerCase();
   if (key === 'antigravity-cli') return 'CLI';
-  if (key === 'antigravity-web' || key === 'vscode-web') return 'WEB';
+  if (key === 'vscode-web') return 'WEB';
   return null;
 }
 
