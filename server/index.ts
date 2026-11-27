@@ -32,7 +32,7 @@ import { VSCodeServerManager } from './vscodeManager';
 import { WebAppProxyManager } from './webAppProxy';
 import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.3.4';
+export const TAMGA_VERSION = '2.3.5';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -1501,19 +1501,35 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
 
     let dropRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastCongestionLevel: 0 | 1 | 2 = 0;
+    let lastCongestionAt = 0;
     const unsub = session.subscribeView(viewId, {
       onVideoFrame: (framedPkt, done) => {
-        const maxBuf = session.isSmoothBufferEnabled() ? 4_194_304 : 1_048_576;
+        const smooth = session.isSmoothBufferEnabled();
+        const maxBuf = smooth ? 1_310_720 : 786_432;
+        const buffered = ws.bufferedAmount;
+        const level: 0 | 1 | 2 = buffered > 550_000 ? 2 : buffered > 180_000 ? 1 : 0;
+        const now = Date.now();
+        if (level !== lastCongestionLevel || (level > 0 && now - lastCongestionAt > 250)) {
+          lastCongestionLevel = level;
+          lastCongestionAt = now;
+          session.reportCongestion(level, viewId);
+        }
         sendBinary(
           ws,
           framedPkt,
           done,
           () => {
+            // Release leaked in_flight slot immediately so x11_streamer never stalls on inflight_timeout!
+            session.ackVideoFrame(viewId, 1);
+            session.reportCongestion(2, viewId);
+            lastCongestionLevel = 2;
+            lastCongestionAt = Date.now();
             if (!dropRefreshTimer) {
               dropRefreshTimer = setTimeout(() => {
                 dropRefreshTimer = null;
                 session.requestRefresh(viewId);
-              }, 90);
+              }, 110);
             }
           },
           maxBuf

@@ -94,17 +94,36 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   smoothBufferRef.current = smoothBuffer;
   const pingMsRef = useRef(pingMs);
   pingMsRef.current = pingMs;
+  const lastUserInputAtRef = useRef(0);
+  const triggerPaintRef = useRef<(() => void) | null>(null);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
   const [nativeDragOver, setNativeDragOver] = useState(false);
 
   const sendInput = useCallback((payload: Record<string, unknown>) => {
+    const t = payload.type;
+    if (
+      t === 'mousedown' ||
+      t === 'mouseup' ||
+      t === 'keydown' ||
+      t === 'keyup' ||
+      t === 'text' ||
+      t === 'wheel'
+    ) {
+      lastUserInputAtRef.current = performance.now();
+    }
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
   }, []);
+
+  useEffect(() => {
+    if (!smoothBuffer) {
+      triggerPaintRef.current?.();
+    }
+  }, [smoothBuffer]);
 
   useEffect(() => {
     if (!Number.isFinite(pingMs) || pingMs <= 0) return;
@@ -177,13 +196,13 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     let rafId: number | null = null;
     let pendingAckCount = 0;
 
-    // Adaptive PLL jitter-buffer state (active when smoothBuffer is enabled)
+    // Zero-Freeze Elastic De-Jitter Pacer state (active when smoothBuffer is enabled)
     let lastArrivalAt = 0;
     let avgIntervalMs = 33;
-    let jitterMs = 15;
+    let jitterMs = 8;
+    let consecutiveFastFrames = 0;
     let lastPaintedAt = 0;
     let nextDueAt = 0;
-    let primed = false;
 
     const getCtx = (canvas: HTMLCanvasElement) => {
       if (!ctxRef.current) {
@@ -212,14 +231,30 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       ws.send(count === 1 ? '{"type":"ack"}' : JSON.stringify({ type: 'ack', count }));
     };
 
-    const recordFrameArrival = (): number => {
+    const recordFrameArrival = (kind: 'full' | 'patches'): number => {
       const now = performance.now();
       if (lastArrivalAt > 0) {
         const dt = now - lastArrivalAt;
-        if (dt > 5 && dt < 260) {
-          avgIntervalMs = avgIntervalMs * 0.85 + dt * 0.15;
+        const isMotionCandidate = kind === 'full' || dt <= 45;
+        if (dt > 180) {
+          // Resuming after idle/reading pause: never let sparse desktop blinks poison motion cadence!
+          consecutiveFastFrames = 0;
+          avgIntervalMs = 33;
+          jitterMs = Math.max(4, jitterMs * 0.5);
+        } else if (dt < 10) {
+          // Multiple frames clumped inside a single TCP burst -> detect jitter immediately
+          if (isMotionCandidate) consecutiveFastFrames = Math.min(20, consecutiveFastFrames + 1);
+          jitterMs = Math.min(85, jitterMs * 0.78 + Math.max(16, avgIntervalMs) * 0.22);
+        } else if (dt <= 90 && isMotionCandidate) {
+          // Genuine active motion (11..60+ FPS) -> track exact cadence so cushion never starves on 15-22fps capped links
+          consecutiveFastFrames = Math.min(20, consecutiveFastFrames + 1);
+          avgIntervalMs = avgIntervalMs * 0.78 + dt * 0.22;
           const dev = Math.abs(dt - avgIntervalMs);
-          jitterMs = Math.min(140, jitterMs * 0.85 + dev * 0.15);
+          jitterMs = Math.min(85, jitterMs * 0.80 + dev * 0.20);
+        } else if (kind === 'full' && dt <= 150) {
+          // Jitter gap during active full-frame motion -> measure jitter without poisoning fast-start cadence
+          const dev = Math.abs(dt - avgIntervalMs);
+          jitterMs = Math.min(85, jitterMs * 0.82 + dev * 0.18);
         }
       }
       lastArrivalAt = now;
@@ -256,7 +291,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       const now = performance.now();
 
       if (!smoothBufferRef.current) {
-        primed = false;
+        consecutiveFastFrames = 0;
         nextDueAt = 0;
         while (readySlots.has(nextPaintSeq)) {
           const slot = readySlots.get(nextPaintSeq)!;
@@ -276,61 +311,74 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         return;
       }
 
-      // True PLL Adaptive Smooth Clock Pacer:
-      // 1) Matches actual source FPS cadence (avgIntervalMs) instead of draining at 60Hz and starving.
-      // 2) Gently stretches pace (+25% max) when cushion dips and gently compresses (-22% max) when cushion grows.
-      // 3) Paints immediately on first click/keystroke from idle so responsiveness stays snappy.
-      const sourceStepMs = Math.max(16, Math.min(85, avgIntervalMs));
-      const targetBufferMs = Math.min(260, Math.max(75, pingMsRef.current * 0.65 + jitterMs * 2.0 + 35));
-      const targetFrames = Math.max(2.5, Math.min(10, targetBufferMs / sourceStepMs));
-
       if (!readySlots.has(nextPaintSeq)) {
         if (readySlots.size > 0) {
-          // A newer sequence arrived while earlier bitmap is still decoding — keep rAF alive
           schedulePaint();
+        } else if (now - lastArrivalAt > 220) {
+          consecutiveFastFrames = 0;
+          nextDueAt = 0;
         }
+        flushAcks();
         return;
       }
 
-      const queuedCount = readySlots.size;
-      const head = readySlots.get(nextPaintSeq)!;
-      const headAge = now - head.arrivedAt;
-      const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 320;
+      // Zero-Freeze Elastic De-Jitter Pacer:
+      // 1) Never freezes on Frame 1/2 — builds jitter cushion invisibly via gentle <=18% stretch.
+      // 2) Paints small UI delta patches (typing/clicks/hover) immediately with zero artificial delay.
+      // 3) Matches true active motion cadence [16..72ms] so bandwidth-limited streams never starve their cushion.
+      const sourceStepMs = Math.max(16, Math.min(72, avgIntervalMs));
+      const pingExtraMs = Math.max(0, (pingMsRef.current - 60) * 0.40);
+      const targetBufferMs = Math.min(165, Math.max(30, jitterMs * 2.2 + pingExtraMs + 18));
+      const targetFrames = Math.max(1.0, Math.min(4.8, targetBufferMs / sourceStepMs));
 
-      // Guard against extreme queue growth (>20): jump directly to newest full keyframe safely
-      if (queuedCount > 20) {
+      // Guard against runaway queue (>9): jump to latest full keyframe or fast-drain excess patches
+      if (readySlots.size > 9) {
         let latestFullSeq = -1;
         for (const [k, s] of readySlots.entries()) {
           if (s.kind === 'full' && k > latestFullSeq) latestFullSeq = k;
         }
         if (latestFullSeq > nextPaintSeq) {
           dropStaleBefore(latestFullSeq);
+        } else {
+          // Pure patch burst: paint up to 3 stale patches atomically so latency stays bounded
+          let drained = 0;
+          while (readySlots.size > 4 && readySlots.has(nextPaintSeq) && drained < 3) {
+            const s = readySlots.get(nextPaintSeq)!;
+            readySlots.delete(nextPaintSeq);
+            nextPaintSeq += 1;
+            if (paintSlot(canvas, s)) {
+              paintedAny = true;
+              lastPaintedAt = now;
+            }
+            disposeSlot(s);
+            drained += 1;
+          }
         }
+      }
+
+      if (!readySlots.has(nextPaintSeq)) {
+        if (readySlots.size > 0) schedulePaint();
+        flushAcks();
+        return;
       }
 
       const curQueued = readySlots.size;
+      const head = readySlots.get(nextPaintSeq)!;
+      const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 180;
+      const recentInput = now - lastUserInputAtRef.current < 240;
+      const paintNow =
+        !readyFiredRef.current ||
+        wasIdle ||
+        consecutiveFastFrames < 3 ||
+        (head.kind === 'patches' && curQueued === 1) ||
+        (recentInput && head.kind === 'patches' && curQueued <= 3);
+
       const err = curQueued - targetFrames;
-      // Smooth proportional clock speed adjustment (zero sudden stops!)
-      const rateFactor = Math.max(0.76, Math.min(1.26, 1.0 - err * 0.085));
+      // Gentle stretch (+18% max) builds cushion invisibly without freezing; crisp catchup (-36%) drains bursts
+      const rateFactor = Math.max(0.64, Math.min(1.18, 1.0 - err * 0.10));
       const paceMs = Math.max(15, sourceStepMs * rateFactor);
 
-      // Brief one-time cushion prime only when continuous motion starts (queued >= 2)
-      if (!primed) {
-        if (!readyFiredRef.current || (wasIdle && curQueued === 1)) {
-          // Instant response on very first frame or single idle click/keystroke
-          nextDueAt = now;
-        } else if (curQueued >= Math.ceil(targetFrames * 0.7) || headAge >= targetBufferMs * 0.75) {
-          primed = true;
-          nextDueAt = now;
-        } else {
-          schedulePaint();
-          if (curQueued <= 16) flushAcks();
-          return;
-        }
-      }
-
-      // Snap within 4.5ms of display VSync to avoid 16.6ms quantization skips
-      if (nextDueAt === 0 || now >= nextDueAt - 4.5) {
+      if (paintNow || nextDueAt === 0 || now >= nextDueAt - 4.5) {
         const slot = readySlots.get(nextPaintSeq)!;
         readySlots.delete(nextPaintSeq);
         nextPaintSeq += 1;
@@ -340,19 +388,21 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         }
         disposeSlot(slot);
 
-        // Advance phase-locked schedule cleanly without accumulating drift
-        const baseTime = nextDueAt > 0 && Math.abs(now - nextDueAt) < paceMs * 1.4 ? nextDueAt : now;
-        nextDueAt = baseTime + paceMs;
-        if (readySlots.size > targetFrames + 4) {
-          // Gently pull schedule forward if excess frames accumulated
-          nextDueAt = now + Math.max(15, sourceStepMs * 0.72);
+        if (paintNow) {
+          nextDueAt = now + Math.min(36, sourceStepMs);
+        } else {
+          const baseTime = nextDueAt > 0 && Math.abs(now - nextDueAt) < paceMs * 1.4 ? nextDueAt : now;
+          nextDueAt = baseTime + paceMs;
+        }
+        if (readySlots.size > targetFrames + 2.5) {
+          nextDueAt = now + Math.max(15, sourceStepMs * 0.62);
         }
       }
 
       if (readySlots.size > 0) {
         schedulePaint();
-      } else if (now - lastArrivalAt > 300) {
-        primed = false;
+      } else if (now - lastArrivalAt > 220) {
+        consecutiveFastFrames = 0;
         nextDueAt = 0;
       }
 
@@ -360,9 +410,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         readyFiredRef.current = true;
         onReadyRef.current?.();
       }
-      if (readySlots.size <= 16) {
-        flushAcks();
-      }
+      flushAcks();
     };
 
     const schedulePaint = () => {
@@ -370,6 +418,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         rafId = window.requestAnimationFrame(paintLoop);
       }
     };
+    triggerPaintRef.current = schedulePaint;
 
     const dropStaleBefore = (minSeq: number) => {
       if (nextPaintSeq < minSeq) {
@@ -384,7 +433,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
 
     const enqueueFullFrame = (bytes: Uint8Array) => {
-      const arrivedAt = recordFrameArrival();
+      const arrivedAt = recordFrameArrival('full');
       const seq = nextSeq++;
       if (!smoothBufferRef.current) {
         dropStaleBefore(seq);
@@ -406,20 +455,21 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             arrivedAt,
             patches: [{ rx: 0, ry: 0, bitmap }],
           });
-          if (smoothBufferRef.current && readySlots.size <= 16) {
+          if (smoothBufferRef.current) {
             flushAcks();
           }
           schedulePaint();
         })
         .catch(() => {
           readySlots.set(seq, { seq, kind: 'full', fullW: 0, fullH: 0, arrivedAt, failed: true });
+          flushAcks();
           schedulePaint();
         });
     };
 
     const enqueueRectFrame = (buf: ArrayBuffer) => {
       if (buf.byteLength <= 13) return;
-      const arrivedAt = recordFrameArrival();
+      const arrivedAt = recordFrameArrival('patches');
       const seq = nextSeq++;
       pendingAckCount += 1;
       const dv = new DataView(buf);
@@ -443,20 +493,21 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             arrivedAt,
             patches: [{ rx, ry, bitmap }],
           });
-          if (smoothBufferRef.current && readySlots.size <= 16) {
+          if (smoothBufferRef.current) {
             flushAcks();
           }
           schedulePaint();
         })
         .catch(() => {
           readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
+          flushAcks();
           schedulePaint();
         });
     };
 
     const enqueueMultiRectFrame = (buf: ArrayBuffer) => {
       if (buf.byteLength <= 7) return;
-      const arrivedAt = recordFrameArrival();
+      const arrivedAt = recordFrameArrival('patches');
       const dv = new DataView(buf);
       const count = dv.getUint16(1, false);
       const fullW = dv.getUint16(3, false);
@@ -480,6 +531,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       }
       if (jobs.length === 0) {
         readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
+        flushAcks();
         schedulePaint();
         return;
       }
@@ -491,13 +543,14 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             return;
           }
           readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, patches });
-          if (smoothBufferRef.current && readySlots.size <= 16) {
+          if (smoothBufferRef.current) {
             flushAcks();
           }
           schedulePaint();
         })
         .catch(() => {
           readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
+          flushAcks();
           schedulePaint();
         });
     };
@@ -569,6 +622,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
 
     return () => {
       closed = true;
+      triggerPaintRef.current = null;
       if (rafId !== null) window.cancelAnimationFrame(rafId);
       for (const slot of readySlots.values()) {
         disposeSlot(slot);

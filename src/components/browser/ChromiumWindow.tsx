@@ -213,9 +213,6 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
       rafId = null;
       if (closed || smoothQueue.length === 0) return;
       const now = performance.now();
-      const targetBufferMs = Math.min(220, Math.max(70, pingMsRef.current * 0.65 + 45));
-      const head = smoothQueue[0];
-      const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 240;
 
       if (!smoothBufferRef.current) {
         const latest = smoothQueue.pop()!;
@@ -224,13 +221,14 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
         return;
       }
 
-      if (wasIdle && smoothQueue.length === 1) {
+      // Zero-Freeze Burst-Spread Pacer: never stalls waiting for a second frame;
+      // simply spreads clumped multi-frame bursts cleanly at 1 frame per VSync.
+      if (smoothQueue.length > 6) {
+        while (smoothQueue.length > 3) smoothQueue.shift()!.bmp.close();
+      }
+      const minStepMs = smoothQueue.length >= 3 ? 16 : smoothQueue.length === 2 ? 26 : 0;
+      if (lastPaintedAt === 0 || now - lastPaintedAt >= minStepMs) {
         drawBitmap(smoothQueue.shift()!.bmp);
-      } else if (smoothQueue.length >= 2 || now - head.arrivedAt >= targetBufferMs * 0.5) {
-        drawBitmap(smoothQueue.shift()!.bmp);
-        if (smoothQueue.length > 10) {
-          drawBitmap(smoothQueue.shift()!.bmp);
-        }
       }
 
       if (smoothQueue.length > 0 && !closed) {
@@ -263,7 +261,7 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
             return;
           }
           smoothQueue.push({ bmp, arrivedAt });
-          while (smoothQueue.length > 16) {
+          while (smoothQueue.length > 8) {
             smoothQueue.shift()!.bmp.close();
           }
           scheduleSmooth();

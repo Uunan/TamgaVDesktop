@@ -13,6 +13,7 @@ Key performance optimizations:
    so Node.js forwards frames with zero extra Buffer copy.
 5. Sliding window of up to 3 in-flight frames so 100ms-RTT internet links sustain 25-30 FPS smoothly.
 """
+from collections import deque
 import ctypes
 import json
 import math
@@ -790,6 +791,7 @@ def main() -> None:
     root_w, root_h = query_drawable_size(dpy, root)
     last_geom_check = time.monotonic()
     prev_cache = PrevFrameCache()
+    last_sent_bytes = 0
 
     def compress_and_pack_rect(
         base_data: int,
@@ -836,6 +838,7 @@ def main() -> None:
         allow_diff: bool = False,
         bypass_dedup: bool = False,
     ) -> tuple[str, tuple[int, int, int, int] | None]:
+        nonlocal last_sent_bytes
         try:
             img = img_ptr.contents
             bpp = max(1, int(img.bits_per_pixel) // 8)
@@ -860,6 +863,7 @@ def main() -> None:
                 struct.pack_into(">IBHHHHHH", pkt, 0, 13 + jlen, PACKET_RECT_JPEG, rx, ry, rw, rh, full_w, full_h)
                 pkt[17 : 17 + jlen] = jb
                 write_all(out_fd, pkt)
+                last_sent_bytes = len(pkt)
                 prev_cache.sync_rects(base_data, full_w, full_h, stride, bpp, rects)
                 return "sent", rects[0]
 
@@ -890,6 +894,7 @@ def main() -> None:
                     synced.append((rx, ry, rw, rh))
                     sent_bbox = union_rects(sent_bbox, (rx, ry, rw, rh))
                 write_all(out_fd, pkt)
+                last_sent_bytes = len(pkt)
                 prev_cache.sync_rects(base_data, full_w, full_h, stride, bpp, synced)
                 return "sent", sent_bbox
 
@@ -916,6 +921,7 @@ def main() -> None:
                 struct.pack_into(">IB", pkt, 0, 1 + jlen, PACKET_FULL_JPEG)
                 ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 5), jpeg_ptr.value, jlen)
                 write_all(out_fd, pkt)
+                last_sent_bytes = len(pkt)
                 prev_cache.sync_full(base_data, full_w, full_h, stride)
                 return "sent", (0, 0, full_w, full_h)
             finally:
@@ -986,7 +992,7 @@ def main() -> None:
         prefetched: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None,
         bypass_dedup: bool = False,
     ) -> tuple[str, tuple[int, int, int, int] | None]:
-        nonlocal root_w, root_h, last_geom_check, has_sent_full
+        nonlocal root_w, root_h, last_geom_check, has_sent_full, last_sent_bytes
         global last_x_error
 
         if capture_mode == "pixmap" and target_wid and libXcomp is not None:
@@ -1111,6 +1117,7 @@ def main() -> None:
                     )
                     ctypes.memmove((ctypes.c_char * jlen).from_buffer(pkt, 17), jpeg_ptr.value, jlen)
                     write_all(out_fd, pkt)
+                    last_sent_bytes = len(pkt)
                     prev_cache.reset()
                     return "sent", selected_rects[0]
                 finally:
@@ -1130,12 +1137,23 @@ def main() -> None:
             has_sent_full = True
         return status, srect
 
-    # Adaptive quality state (GeForce NOW-style motion drop + crisp TJSAMP_444 settle)
+    # Adaptive quality + Closed-Loop AIMD/Vegas Window Control (prevents TCP RTO collapse on lossy Wi-Fi
+    # while smoothly opening up to 8 in-flight frames on clean high-RTT fiber — zero self-throttling!)
     max_quality = quality
     motion_quality = max(30, min(max_quality, max_quality - 24))
     dynamic_drop = True
     smooth_buffer = False
     client_rtt_sec = 0.04
+    congestion_level = 0  # 0=clear, 1=elevated WS queue, 2=congested WS queue
+    congestion_updated_at = 0.0
+    sent_queue: deque[tuple[float, int]] = deque(maxlen=32)  # (sent_ts, pkt_bytes)
+    inflight_bytes = 0
+    cwnd_frames = 4.0            # Starts at proven 4-frame window (never blasts 10-18 frames blindly!)
+    max_inflight_bytes = 220_000 # Router-safe byte cap (340KB smooth / 220KB normal) prevents Wi-Fi buffer drops
+    min_ack_rtt = 0.0
+    min_ack_rtt_at = 0.0
+    ewma_ack_rtt = 0.0
+    queue_delay_sec = 0.0
     settle_sec = 0.18
     needs_settle = False
     settle_rect: tuple[int, int, int, int] | None = None
@@ -1143,14 +1161,26 @@ def main() -> None:
     pending_damage: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None
 
     def recompute_pipeline_window() -> None:
-        nonlocal max_in_flight
-        if smooth_buffer:
-            buffer_sec = min(0.24, max(0.08, client_rtt_sec * 0.75 + 0.05))
-            bdp_frames = int(math.ceil(max_fps * (client_rtt_sec + buffer_sec))) + 2
-            max_in_flight = max(6, min(18, bdp_frames))
+        nonlocal max_in_flight, max_inflight_bytes, cwnd_frames
+        cwnd_cap = 8.0 if smooth_buffer else 5.0
+        cwnd_frames = max(3.0, min(cwnd_cap, cwnd_frames))
+        max_in_flight = max(3, min(int(cwnd_cap), int(cwnd_frames)))
+        base_byte_cap = 340_000 if smooth_buffer else 220_000
+        if congestion_level >= 2 or queue_delay_sec > 0.14:
+            max_inflight_bytes = int(base_byte_cap * 0.55)
+        elif congestion_level == 1 or queue_delay_sec > 0.085:
+            max_inflight_bytes = int(base_byte_cap * 0.75)
         else:
-            bdp_frames = int(math.ceil(max_fps * client_rtt_sec)) + 2
-            max_in_flight = max(4, min(8, bdp_frames))
+            max_inflight_bytes = base_byte_cap
+
+    def record_frame_sent(ts: float, pkt_b: int) -> None:
+        nonlocal in_flight, in_flight_since, last_sent, inflight_bytes
+        b = max(512, pkt_b)
+        in_flight += 1
+        in_flight_since = ts
+        last_sent = ts
+        inflight_bytes += b
+        sent_queue.append((ts, b))
 
     recompute_pipeline_window()
 
@@ -1159,11 +1189,27 @@ def main() -> None:
 
     while True:
         now = time.monotonic()
-        # Prevent permanent deadlock if a client browser tab goes backgrounded without acking
-        inflight_timeout = max(0.45, client_rtt_sec * 2.6 + (0.28 if smooth_buffer else 0.0))
+        # Decay transient congestion warning automatically if server hasn't refreshed it
+        if congestion_level > 0 and (now - congestion_updated_at) > 1.2:
+            congestion_level = 0
+            recompute_pipeline_window()
+        # Decay queue_delay smoothly during idle periods
+        if queue_delay_sec > 0.0 and (now - last_sent) > 0.45:
+            queue_delay_sec = 0.0
+            recompute_pipeline_window()
+
+        # Prevent deadlock if a client tab goes backgrounded or a TCP segment stalls -> also back off cwnd!
+        inflight_timeout = max(0.35, min(0.85, (min_ack_rtt if min_ack_rtt > 0.0 else client_rtt_sec) * 2.4 + 0.16))
         if in_flight > 0 and (now - in_flight_since) > inflight_timeout:
             in_flight = max(0, in_flight - 1)
             in_flight_since = now
+            if sent_queue:
+                _ts, popped_b = sent_queue.popleft()
+                inflight_bytes = max(0, inflight_bytes - popped_b)
+            if in_flight == 0:
+                inflight_bytes = 0
+            cwnd_frames = max(3.0, cwnd_frames * 0.72)
+            recompute_pipeline_window()
 
         active_interval = min_interval
         if pending_damage and has_sent_full and not force_full:
@@ -1171,11 +1217,13 @@ def main() -> None:
             if pb is not None and (pb[2] * pb[3]) <= int(width * height * 0.22):
                 active_interval = micro_interval
 
+        can_send = (in_flight == 0) or (in_flight < max_in_flight and inflight_bytes < max_inflight_bytes)
+
         wait_timeout = 1.5
-        if dirty and in_flight < max_in_flight:
+        if dirty and can_send:
             elapsed = now - last_sent
             wait_timeout = max(0.0, active_interval - elapsed)
-        elif needs_settle and in_flight < max_in_flight:
+        elif needs_settle and can_send:
             rem = settle_sec - (now - last_motion_at)
             wait_timeout = max(0.0, rem)
         elif now < startup_until:
@@ -1215,11 +1263,43 @@ def main() -> None:
                             except ValueError:
                                 ack_n = 1
                         in_flight = max(0, in_flight - ack_n)
-                        in_flight_since = time.monotonic()
+                        now_ack = time.monotonic()
+                        in_flight_since = now_ack
+                        latest_sent_ts = 0.0
+                        acked_b = 0
+                        for _ in range(ack_n):
+                            if sent_queue:
+                                ts0, pb0 = sent_queue.popleft()
+                                latest_sent_ts = ts0
+                                acked_b += pb0
+                        inflight_bytes = max(0, inflight_bytes - acked_b)
+                        if in_flight == 0:
+                            inflight_bytes = 0
+                        if latest_sent_ts > 0.0:
+                            sample_rtt = max(0.005, min(2.0, now_ack - latest_sent_ts))
+                            if min_ack_rtt <= 0.0 or sample_rtt < min_ack_rtt or (now_ack - min_ack_rtt_at) > 8.0:
+                                min_ack_rtt = sample_rtt
+                                min_ack_rtt_at = now_ack
+                            if ewma_ack_rtt <= 0.0:
+                                ewma_ack_rtt = sample_rtt
+                            else:
+                                ewma_ack_rtt = ewma_ack_rtt * 0.72 + sample_rtt * 0.28
+                            queue_delay_sec = max(0.0, ewma_ack_rtt - min_ack_rtt)
+                            # Closed-Loop AIMD/Vegas cwnd: opens cleanly on high-RTT fiber, protects lossy Wi-Fi!
+                            if congestion_level >= 1 or queue_delay_sec > 0.085:
+                                cwnd_frames = max(3.0, cwnd_frames * 0.78)
+                            elif queue_delay_sec < 0.055:
+                                cwnd_frames = cwnd_frames + (0.35 if smooth_buffer else 0.25)
+                            recompute_pipeline_window()
                     elif s == b"a":
                         if not use_client_ack:
                             in_flight = max(0, in_flight - 1)
                             in_flight_since = time.monotonic()
+                            if sent_queue:
+                                _ts, pb0 = sent_queue.popleft()
+                                inflight_bytes = max(0, inflight_bytes - pb0)
+                            if in_flight == 0:
+                                inflight_bytes = 0
                     elif s.startswith(b"{"):
                         try:
                             cmd = json.loads(s.decode("utf-8"))
@@ -1259,6 +1339,13 @@ def main() -> None:
                                 if "rtt_ms" in cmd:
                                     rtt_ms = max(2.0, min(1200.0, float(cmd["rtt_ms"])))
                                     client_rtt_sec = client_rtt_sec * 0.65 + (rtt_ms / 1000.0) * 0.35
+                            elif ctype == "congestion":
+                                lvl = max(0, min(2, int(cmd.get("level", 0))))
+                                congestion_updated_at = time.monotonic()
+                                if lvl > congestion_level:
+                                    cwnd_frames = max(3.0, cwnd_frames * (0.70 if lvl >= 2 else 0.85))
+                                if lvl != congestion_level:
+                                    congestion_level = lvl
                                     recompute_pipeline_window()
                             elif ctype == "stream_config":
                                 if "fps" in cmd and cmd["fps"]:
@@ -1278,6 +1365,13 @@ def main() -> None:
                                     client_rtt_sec = rtt_ms / 1000.0
                                 if "settle_ms" in cmd and cmd["settle_ms"]:
                                     settle_sec = max(0.10, min(1.2, float(cmd["settle_ms"]) / 1000.0))
+                                congestion_level = 0
+                                cwnd_frames = 4.0
+                                min_ack_rtt = 0.0
+                                ewma_ack_rtt = 0.0
+                                queue_delay_sec = 0.0
+                                inflight_bytes = 0
+                                sent_queue.clear()
                                 recompute_pipeline_window()
                                 prev_cache.reset()
                                 force_full = True
@@ -1340,27 +1434,46 @@ def main() -> None:
             if pb is not None and (pb[2] * pb[3]) <= int(width * height * 0.22):
                 active_interval = micro_interval
 
-        if dirty and in_flight < max_in_flight and (now - last_sent) >= active_interval:
-            is_continuous_motion = (not force_full) and (now - last_sent) < max(0.20, min_interval * 3.0)
-            is_large_update = True
+        can_send = (in_flight == 0) or (in_flight < max_in_flight and inflight_bytes < max_inflight_bytes)
+
+        if dirty and can_send and (now - last_sent) >= active_interval:
+            # Treat <360ms cadence as active motion so heavy webpages/scrolls don't fall back to slow 4:4:4 per frame
+            is_continuous_motion = (not force_full) and (now - last_sent) < max(0.36, min_interval * 4.0)
+            update_ratio = 1.0
             if pending_damage and pending_damage[0] is not None:
                 pb = pending_damage[0]
-                is_large_update = (pb[2] * pb[3]) > int(width * height * 0.35)
-            effective_dynamic_drop = dynamic_drop and (not smooth_buffer)
-            is_rapid_motion = effective_dynamic_drop and is_continuous_motion
-            congestion_drop = 0 if smooth_buffer else (8 if in_flight >= (max_in_flight - 1) else 0)
-            send_qual = (
-                max(30, motion_quality - congestion_drop)
-                if is_rapid_motion
-                else max(45, max_quality)
-            )
-            if is_rapid_motion:
-                subsamp = TJSAMP_420
-            elif force_full or (smooth_buffer and is_continuous_motion and is_large_update):
-                # 4:2:2 preserves full horizontal typography sharpness while encoding ~30% faster & lighter than 4:4:4
-                subsamp = TJSAMP_422
+                update_ratio = float(pb[2] * pb[3]) / float(max(1, width * height))
+            is_small_ui_patch = update_ratio <= 0.18
+
+            if smooth_buffer:
+                # Pure negative-feedback quality control: full crisp quality when queue is clean,
+                # gently relieves bitrate ONLY when real ACK queueing delay (>60ms) or WS backpressure rises.
+                if is_continuous_motion and not is_small_ui_patch:
+                    smooth_base_q = min(max_quality, max(76, motion_quality + 22))
+                    cong_trim = 0 if congestion_level == 0 else (8 if congestion_level == 1 else 16)
+                    if queue_delay_sec > 0.060:
+                        cong_trim = max(cong_trim, min(18, int((queue_delay_sec - 0.060) * 140.0)))
+                    min_smooth_q = min(smooth_base_q, max(52, motion_quality + 6))
+                    send_qual = max(min_smooth_q, smooth_base_q - cong_trim)
+                    subsamp = TJSAMP_420
+                else:
+                    send_qual = max(45, max_quality)
+                    subsamp = TJSAMP_422 if (force_full or not is_small_ui_patch) else TJSAMP_444
             else:
-                subsamp = TJSAMP_444
+                is_rapid_motion = dynamic_drop and is_continuous_motion
+                congestion_drop = 8 if (in_flight >= (max_in_flight - 1) or congestion_level >= 1 or queue_delay_sec > 0.085) else 0
+                send_qual = (
+                    max(30, motion_quality - congestion_drop)
+                    if is_rapid_motion
+                    else max(45, max_quality)
+                )
+                if is_rapid_motion:
+                    subsamp = TJSAMP_420
+                elif force_full:
+                    subsamp = TJSAMP_422
+                else:
+                    subsamp = TJSAMP_444
+
             status, sent_rect = grab_and_send(
                 send_qual,
                 subsamp,
@@ -1373,10 +1486,8 @@ def main() -> None:
             if status == "sent":
                 dirty = False
                 force_full = False
-                in_flight += 1
-                in_flight_since = time.monotonic()
-                last_sent = in_flight_since
-                if (is_rapid_motion and send_qual < max_quality) or (subsamp != TJSAMP_444 and not force_full):
+                record_frame_sent(time.monotonic(), last_sent_bytes)
+                if send_qual < max_quality or (subsamp != TJSAMP_444 and not force_full):
                     needs_settle = True
                     settle_rect = union_rects(settle_rect, sent_rect)
                     last_motion_at = last_sent
@@ -1389,7 +1500,7 @@ def main() -> None:
         elif (
             needs_settle
             and not dirty
-            and in_flight < max_in_flight
+            and can_send
             and (now - last_motion_at) >= settle_sec
         ):
             # Sharpen ONLY the region that actually moved using lossless-chroma 4:4:4!
@@ -1398,9 +1509,7 @@ def main() -> None:
             )
             if status in ("sent", "unchanged"):
                 if status == "sent":
-                    in_flight += 1
-                    in_flight_since = time.monotonic()
-                    last_sent = in_flight_since
+                    record_frame_sent(time.monotonic(), last_sent_bytes)
                 needs_settle = False
                 settle_rect = None
 

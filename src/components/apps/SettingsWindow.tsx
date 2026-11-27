@@ -464,7 +464,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 <div>
                   <Row
                     label="Gecikme Korumalı Akıcı Kalite"
-                    tip="Ping (ms) yükseldiğinde kaliteyi düşürmek yerine kareleri ~80–220 ms adaptif tamponla biraz geriden ama tam netlikte ve takılmadan akıtır."
+                    tip="Ping dalgalandığında bulanıklaşmak yerine kaliteyi yüksek tutar; tıklama ve yazmada sıfır bekleme, kesintisiz kaydırma ve videoda ise ~32–135 ms adaptif akış tamponu ile takılmayı yumuşatır."
                     right={
                       <Toggle
                         testId="toggle-smooth-buffer"
@@ -478,9 +478,9 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                       data-testid="smooth-buffer-status"
                       className="px-4 pb-2.5 -mt-1 text-[11px] text-[var(--os-text-muted)] flex items-center justify-between gap-2"
                     >
-                      <span>Aktif • Kalite düşürme kapalı, adaptif tampon açık</span>
+                      <span>Aktif • Yüksek netlik, anlık tepki + dalgalanma koruması</span>
                       <span className="font-mono text-[10px] text-[var(--os-text-subtle)] shrink-0">
-                        ~{Math.round(Math.min(220, Math.max(80, pingMs * 0.75 + 60)))} ms tampon
+                        ~{Math.round(Math.min(135, Math.max(32, Math.max(0, pingMs - 60) * 0.35 + 34)))} ms tampon
                       </span>
                     </div>
                   )}

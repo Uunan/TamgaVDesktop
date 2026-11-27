@@ -722,6 +722,19 @@ export class LinuxAppSession {
     }
   }
 
+  public reportCongestion(level: 0 | 1 | 2, viewId?: string): void {
+    if (this.closed) return;
+    const payload = JSON.stringify({ type: 'congestion', level }) + '\n';
+    const targets = viewId ? [this.views.get(viewId)].filter(Boolean) : Array.from(this.views.values());
+    for (const v of targets) {
+      if (v && v.streamerMode === 'xdamage' && v.streamerProc?.stdin?.writable) {
+        try {
+          v.streamerProc.stdin.write(payload);
+        } catch {}
+      }
+    }
+  }
+
   public updateStreamConfig(cfg: X11StreamConfig): void {
     if (typeof cfg.fps === 'number' && Number.isFinite(cfg.fps)) {
       this.fps = Math.max(8, Math.min(60, Math.round(cfg.fps)));
