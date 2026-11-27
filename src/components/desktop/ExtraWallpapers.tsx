@@ -6,6 +6,7 @@ interface ExtraWallpaperArtProps {
   hour: number;
   uid: string;
   isAnim: boolean;
+  lowDetail?: boolean;
 }
 
 type DayPhase = 'dawn' | 'day' | 'sunset' | 'night';
@@ -97,10 +98,12 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
   hour,
   uid,
   isAnim,
+  lowDetail = false,
 }) => {
   const dark = theme === 'dark';
   const phase = getDayPhase(hour, theme);
   const sky = getSkyByPhase(phase, dark);
+  const fUrl = (name: string) => (lowDetail ? undefined : `url(#${uid}-${name})`);
 
   switch (id) {
     /* ─── 1. BUĞDAY TARLASI (Living Golden Meadow — Animated + Clock-Aware) ─── */
@@ -381,9 +384,11 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="50%" stopColor={dark ? '#64748b' : '#e2e8f0'} stopOpacity={dark ? '0.28' : '0.52'} />
               <stop offset="100%" stopColor={dark ? '#0f172a' : '#cbd5e1'} stopOpacity="0" />
             </linearGradient>
-            <filter id={`${uid}-blur`} x="-10%" y="-10%" width="120%" height="120%">
-              <feGaussianBlur stdDeviation="22" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-blur`} x="-10%" y="-10%" width="120%" height="120%">
+                <feGaussianBlur stdDeviation="22" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-sky)`} />
@@ -404,7 +409,7 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
             d="M-20,1080 L-20,765 L55,645 L125,755 L205,610 L290,748 L380,655 L465,770 L560,620 L655,758 L755,670 L850,778 L955,635 L1055,765 L1160,660 L1265,775 L1375,625 L1480,762 L1590,655 L1695,770 L1805,620 L1940,760 L1940,1080 Z"
             fill={dark ? '#050c0f' : '#182b33'}
           />
-          <ellipse cx="960" cy="960" rx="940" ry="110" fill={dark ? '#1e3a44' : '#cbd5e1'} opacity="0.22" filter={`url(#${uid}-blur)`} />
+          <ellipse cx="960" cy="960" rx="940" ry="110" fill={dark ? '#1e3a44' : '#cbd5e1'} opacity="0.22" filter={fUrl('blur')} />
 
           {/* Layered angled rain streaks */}
           <g stroke={dark ? '#bae6fd' : '#f8fafc'} strokeLinecap="round">
@@ -600,23 +605,25 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="50%" stopColor="#0284c7" stopOpacity="0.14" />
               <stop offset="100%" stopColor="#020309" stopOpacity="0" />
             </radialGradient>
-            <filter id={`${uid}-cloud`} x="-25%" y="-25%" width="150%" height="150%">
-              <feGaussianBlur stdDeviation="42" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-cloud`} x="-25%" y="-25%" width="150%" height="150%">
+                <feGaussianBlur stdDeviation="42" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-space)`} />
           <g className={isAnim ? 'wp-float' : undefined}>
             <rect width="1920" height="1080" fill={`url(#${uid}-neb1)`} />
-            <ellipse cx="760" cy="490" rx="520" ry="220" transform="rotate(-18 760 490)" fill="#4f46e5" opacity="0.24" filter={`url(#${uid}-cloud)`} />
+            <ellipse cx="760" cy="490" rx="520" ry="220" transform="rotate(-18 760 490)" fill="#4f46e5" opacity="0.24" filter={fUrl('cloud')} />
           </g>
           <g className={isAnim ? 'wp-float-b' : undefined}>
             <rect width="1920" height="1080" fill={`url(#${uid}-neb2)`} />
-            <ellipse cx="1220" cy="590" rx="460" ry="190" transform="rotate(14 1220 590)" fill="#db2777" opacity="0.22" filter={`url(#${uid}-cloud)`} />
+            <ellipse cx="1220" cy="590" rx="460" ry="190" transform="rotate(14 1220 590)" fill="#db2777" opacity="0.22" filter={fUrl('cloud')} />
           </g>
           <g className={isAnim ? 'wp-glow' : undefined}>
             <rect width="1920" height="1080" fill={`url(#${uid}-neb3)`} />
-            <ellipse cx="1010" cy="430" rx="280" ry="120" transform="rotate(-24 1010 430)" fill="#38bdf8" opacity="0.20" filter={`url(#${uid}-cloud)`} />
+            <ellipse cx="1010" cy="430" rx="280" ry="120" transform="rotate(-24 1010 430)" fill="#38bdf8" opacity="0.20" filter={fUrl('cloud')} />
           </g>
 
           {/* Dense multi-magnitude cosmic starfield */}
@@ -669,9 +676,11 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="68%" stopColor={dark ? '#c4b5fd' : '#e0e7ff'} stopOpacity={dark ? '0.58' : '0.85'} />
               <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
             </linearGradient>
-            <filter id={`${uid}-soft`} x="-15%" y="-15%" width="130%" height="130%">
-              <feGaussianBlur stdDeviation="16" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-soft`} x="-15%" y="-15%" width="130%" height="130%">
+                <feGaussianBlur stdDeviation="16" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-bg)`} />
@@ -681,7 +690,7 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
             <path
               d="M-140,680 C240,390 640,860 1120,440 C1480,125 1780,460 2060,290 L2060,640 C1720,760 1440,460 1080,770 C620,1150 220,700 -140,960 Z"
               fill={`url(#${uid}-s1)`}
-              filter={`url(#${uid}-soft)`}
+              filter={fUrl('soft')}
             />
             <path
               d="M-120,690 C250,405 645,865 1120,450 C1480,140 1775,468 2050,305"
@@ -696,7 +705,7 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
             <path
               d="M-140,380 C320,690 780,180 1290,540 C1620,770 1840,560 2060,640 L2060,920 C1780,820 1560,1040 1210,790 C740,455 290,940 -140,640 Z"
               fill={`url(#${uid}-s2)`}
-              filter={`url(#${uid}-soft)`}
+              filter={fUrl('soft')}
             />
             <path
               d="M-120,395 C325,700 785,195 1290,552 C1615,780 1835,575 2050,652"
@@ -733,9 +742,11 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="70%" stopColor="#ea580c" stopOpacity="0.85" />
               <stop offset="100%" stopColor="#dc2626" stopOpacity="0.1" />
             </linearGradient>
-            <filter id={`${uid}-glow`} x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="14" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-glow`} x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="14" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-sky)`} />
@@ -747,7 +758,7 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
           <polygon points="-40,760 320,560 660,670 980,520 1320,660 1650,550 1960,720 1960,1080 -40,1080" fill="#170709" />
 
           {/* Glowing molten fissure veins */}
-          <path d="M580,820 C760,770 880,795 1010,750 C1140,785 1290,775 1440,835" fill="none" stroke={`url(#${uid}-lava)`} strokeWidth="9" filter={`url(#${uid}-glow)`} className={isAnim ? 'wp-glow' : undefined} />
+          <path d="M580,820 C760,770 880,795 1010,750 C1140,785 1290,775 1440,835" fill="none" stroke={`url(#${uid}-lava)`} strokeWidth="9" filter={fUrl('glow')} className={isAnim ? 'wp-glow' : undefined} />
           <path d="M580,820 C760,770 880,795 1010,750 C1140,785 1290,775 1440,835" fill="none" stroke="#fef08a" strokeWidth="2.5" opacity="0.88" />
 
           {/* Foreground craggy basalt silhouette */}
@@ -801,9 +812,11 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="42%" stopColor={dark ? '#1f5c41' : '#538a68'} />
               <stop offset="100%" stopColor={dark ? '#071c13' : '#234a35'} />
             </linearGradient>
-            <filter id={`${uid}-mist`} x="-10%" y="-10%" width="120%" height="120%">
-              <feGaussianBlur stdDeviation="24" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-mist`} x="-10%" y="-10%" width="120%" height="120%">
+                <feGaussianBlur stdDeviation="24" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-bg)`} />
@@ -820,7 +833,7 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
           </g>
 
           {/* Soft forest ground mist */}
-          <ellipse cx="960" cy="860" rx="1020" ry="180" fill={dark ? '#134e3a' : '#f0fdf4'} opacity={dark ? '0.26' : '0.62'} filter={`url(#${uid}-mist)`} className={isAnim ? 'wp-mist' : undefined} />
+          <ellipse cx="960" cy="860" rx="1020" ry="180" fill={dark ? '#134e3a' : '#f0fdf4'} opacity={dark ? '0.26' : '0.62'} filter={fUrl('mist')} className={isAnim ? 'wp-mist' : undefined} />
 
           {/* Sculpted foreground segmented bamboo stalks with joints & lance leaf clusters */}
           {[
@@ -992,12 +1005,16 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="65%" stopColor="#fb923c" stopOpacity="0.28" />
               <stop offset="100%" stopColor="#fb923c" stopOpacity="0" />
             </radialGradient>
-            <filter id={`${uid}-blur`} x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation="24" />
-            </filter>
-            <filter id={`${uid}-fine`} x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="5" />
-            </filter>
+            {!lowDetail && (
+              <>
+                <filter id={`${uid}-blur`} x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="24" />
+                </filter>
+                <filter id={`${uid}-fine`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="5" />
+                </filter>
+              </>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-space)`} />
@@ -1005,13 +1022,13 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
 
           {/* Asymmetric pearlescent solar corona plasma streamers */}
           <g className={isAnim ? 'wp-glow' : undefined}>
-            <ellipse cx="960" cy="518" rx="680" ry="155" transform="rotate(-14 960 518)" fill="#bae6fd" opacity="0.16" filter={`url(#${uid}-blur)`} />
-            <ellipse cx="960" cy="518" rx="520" ry="195" transform="rotate(11 960 518)" fill="#fed7aa" opacity="0.14" filter={`url(#${uid}-blur)`} />
+            <ellipse cx="960" cy="518" rx="680" ry="155" transform="rotate(-14 960 518)" fill="#bae6fd" opacity="0.16" filter={fUrl('blur')} />
+            <ellipse cx="960" cy="518" rx="520" ry="195" transform="rotate(11 960 518)" fill="#fed7aa" opacity="0.14" filter={fUrl('blur')} />
             <rect width="1920" height="1080" fill={`url(#${uid}-corona)`} />
           </g>
 
           {/* Crisp inner chromosphere ring */}
-          <circle cx="960" cy="518" r="196" fill="none" stroke="#fff7ed" strokeWidth="5.5" opacity="0.92" filter={`url(#${uid}-fine)`} />
+          <circle cx="960" cy="518" r="196" fill="none" stroke="#fff7ed" strokeWidth="5.5" opacity="0.92" filter={fUrl('fine')} />
           <circle cx="960" cy="518" r="194" fill="none" stroke="#ffffff" strokeWidth="2" opacity="0.96" />
 
           {/* Velvety obsidian lunar disc */}
@@ -1181,12 +1198,16 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="72%" stopColor={dark ? '#0f2933' : '#94a3b8'} stopOpacity={dark ? '0.62' : '0.42'} />
               <stop offset="100%" stopColor={dark ? '#040c12' : '#475569'} stopOpacity={dark ? '0.90' : '0.50'} />
             </radialGradient>
-            <filter id={`${uid}-shadow`} x="-30%" y="-30%" width="160%" height="160%">
-              <feGaussianBlur stdDeviation="28" />
-            </filter>
-            <filter id={`${uid}-spec`} x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="8" />
-            </filter>
+            {!lowDetail && (
+              <>
+                <filter id={`${uid}-shadow`} x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="28" />
+                </filter>
+                <filter id={`${uid}-spec`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="8" />
+                </filter>
+              </>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-bg)`} />
@@ -1195,24 +1216,24 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
 
           {/* Studio glass sphere 1 — Background right */}
           <g className={isAnim ? 'wp-float-b' : undefined}>
-            <ellipse cx="1360" cy="690" rx="190" ry="42" fill="#020617" opacity={dark ? '0.55' : '0.16'} filter={`url(#${uid}-shadow)`} />
+            <ellipse cx="1360" cy="690" rx="190" ry="42" fill="#020617" opacity={dark ? '0.55' : '0.16'} filter={fUrl('shadow')} />
             <circle cx="1360" cy="430" r="235" fill={`url(#${uid}-orbB)`} stroke="#ffffff" strokeOpacity={dark ? '0.24' : '0.85'} strokeWidth="1.5" />
-            <ellipse cx="1270" cy="330" rx="76" ry="38" transform="rotate(-32 1270 330)" fill="#ffffff" opacity={dark ? '0.28' : '0.72'} filter={`url(#${uid}-spec)`} />
+            <ellipse cx="1270" cy="330" rx="76" ry="38" transform="rotate(-32 1270 330)" fill="#ffffff" opacity={dark ? '0.28' : '0.72'} filter={fUrl('spec')} />
           </g>
 
           {/* Studio glass sphere 2 — Hero center-left */}
           <g className={isAnim ? 'wp-float' : undefined}>
-            <ellipse cx="740" cy="865" rx="260" ry="52" fill="#020617" opacity={dark ? '0.68' : '0.20'} filter={`url(#${uid}-shadow)`} />
+            <ellipse cx="740" cy="865" rx="260" ry="52" fill="#020617" opacity={dark ? '0.68' : '0.20'} filter={fUrl('shadow')} />
             <circle cx="740" cy="545" r="295" fill={`url(#${uid}-orbA)`} stroke="#ffffff" strokeOpacity={dark ? '0.32' : '0.92'} strokeWidth="1.8" />
-            <ellipse cx="628" cy="415" rx="102" ry="48" transform="rotate(-34 628 415)" fill="#ffffff" opacity={dark ? '0.34' : '0.82'} filter={`url(#${uid}-spec)`} />
-            <path d="M525,675 A250,250 0 0,0 915,725" fill="none" stroke="#7dd3fc" strokeWidth="3.5" opacity={dark ? '0.32' : '0.52'} filter={`url(#${uid}-spec)`} />
+            <ellipse cx="628" cy="415" rx="102" ry="48" transform="rotate(-34 628 415)" fill="#ffffff" opacity={dark ? '0.34' : '0.82'} filter={fUrl('spec')} />
+            <path d="M525,675 A250,250 0 0,0 915,725" fill="none" stroke="#7dd3fc" strokeWidth="3.5" opacity={dark ? '0.32' : '0.52'} filter={fUrl('spec')} />
           </g>
 
           {/* Studio glass sphere 3 — Foreground accent */}
           <g className={isAnim ? 'wp-float-b' : undefined} style={isAnim ? { animationDelay: '-2.2s' } : undefined}>
-            <ellipse cx="1140" cy="860" rx="132" ry="28" fill="#020617" opacity={dark ? '0.62' : '0.18'} filter={`url(#${uid}-shadow)`} />
+            <ellipse cx="1140" cy="860" rx="132" ry="28" fill="#020617" opacity={dark ? '0.62' : '0.18'} filter={fUrl('shadow')} />
             <circle cx="1140" cy="700" r="142" fill={`url(#${uid}-orbC)`} stroke="#ffffff" strokeOpacity={dark ? '0.34' : '0.90'} strokeWidth="1.5" />
-            <ellipse cx="1090" cy="642" rx="46" ry="22" transform="rotate(-32 1090 642)" fill="#ffffff" opacity={dark ? '0.38' : '0.84'} filter={`url(#${uid}-spec)`} />
+            <ellipse cx="1090" cy="642" rx="46" ry="22" transform="rotate(-32 1090 642)" fill="#ffffff" opacity={dark ? '0.38' : '0.84'} filter={fUrl('spec')} />
           </g>
         </svg>
       );
@@ -1372,9 +1393,11 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
               <stop offset="48%" stopColor={dark ? '#38bdf8' : '#cbd5e1'} stopOpacity={dark ? '0.10' : '0.45'} />
               <stop offset="100%" stopColor={dark ? '#0f172a' : '#94a3b8'} stopOpacity={dark ? '0.54' : '0.32'} />
             </linearGradient>
-            <filter id={`${uid}-bloom`} x="-20%" y="-40%" width="140%" height="180%">
-              <feGaussianBlur stdDeviation="14" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-bloom`} x="-20%" y="-40%" width="140%" height="180%">
+                <feGaussianBlur stdDeviation="14" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-bg)`} />
@@ -1395,17 +1418,17 @@ export const ExtraWallpaperArt: React.FC<ExtraWallpaperArtProps> = ({
                 points={`1058,${py} 1960,${yTop} 1960,${yBot} 1058,${Number(py) + 14}`}
                 fill={String(color)}
                 opacity={dark ? 0.62 : 0.48}
-                filter={`url(#${uid}-bloom)`}
+                filter={fUrl('bloom')}
               />
             ))}
           </g>
 
           {/* Crisp incoming white optical ray */}
-          <polygon points="-40,660 842,520 842,542 -40,688" fill={`url(#${uid}-beamIn)`} filter={`url(#${uid}-bloom)`} opacity="0.65" />
+          <polygon points="-40,660 842,520 842,542 -40,688" fill={`url(#${uid}-beamIn)`} filter={fUrl('bloom')} opacity="0.65" />
           <line x1="-20" y1="674" x2="846" y2="531" stroke={dark ? '#ffffff' : '#1e293b'} strokeWidth="4" opacity={dark ? '0.94' : '0.68'} />
 
           {/* Internal dispersion beam inside crystal prism */}
-          <polygon points="846,527 1058,524 1068,610 846,536" fill="#ffffff" opacity={dark ? '0.28' : '0.52'} filter={`url(#${uid}-bloom)`} />
+          <polygon points="846,527 1058,524 1068,610 846,536" fill="#ffffff" opacity={dark ? '0.28' : '0.52'} filter={fUrl('bloom')} />
 
           {/* Precision equilateral optical glass prism */}
           <polygon points="940,255 695,725 1185,725" fill={`url(#${uid}-glass)`} />

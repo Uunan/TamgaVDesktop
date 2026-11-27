@@ -1,6 +1,6 @@
 {
   "name": "tamga-vdesktop",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": false,
   "type": "module",
   "description": "TamgaVDesktop — Self-hostable Linux Virtual Desktop OS platform with native web shell, real Linux terminal, built-in HiDPI Playwright Chromium browser, and seamless native Linux GUI apps.",
@@ -51,6 +51,8 @@
     "build:server": "node scripts/build-server.mjs",
     "build": "rm -rf dist && tsc && npm run build:client && npm run build:server",
     "start": "node dist/cli.js start",
+    "test:ui": "node scripts/verify-ui.mjs",
+    "test:bench": "node scripts/benchmark.mjs",
     "postinstall": "node dist/cli.js install-browser --quiet || true",
     "prepublishOnly": "npm run build"
   },

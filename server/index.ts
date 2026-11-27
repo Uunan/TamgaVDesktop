@@ -32,7 +32,7 @@ import { VSCodeServerManager } from './vscodeManager';
 import { WebAppProxyManager } from './webAppProxy';
 import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.4.0';
+export const TAMGA_VERSION = '2.5.0';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -107,6 +107,54 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
   const app = express();
   app.set('trust proxy', config.trustProxy);
   app.use(cors({ origin: true, credentials: true }));
+
+  // Compress API JSON payloads >= 512 bytes with fast Brotli/Gzip to cut WAN bandwidth by ~75%
+  app.use('/api', (req, res, next) => {
+    const accept = String(req.headers['accept-encoding'] || '');
+    const enc: 'br' | 'gzip' | null = accept.includes('br')
+      ? 'br'
+      : accept.includes('gzip')
+      ? 'gzip'
+      : null;
+    if (!enc) {
+      next();
+      return;
+    }
+    const origJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      if (res.headersSent) return origJson(body);
+      const rawJson = JSON.stringify(body);
+      if (!rawJson || rawJson.length < 512) {
+        return origJson(body);
+      }
+      const buf = Buffer.from(rawJson, 'utf-8');
+      const finish = (err: Error | null, compressed: Buffer) => {
+        if (res.headersSent) return;
+        if (err || compressed.length >= buf.length) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Content-Length', String(buf.length));
+          res.end(buf);
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Encoding', enc);
+        res.setHeader('Content-Length', String(compressed.length));
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.end(compressed);
+      };
+      if (enc === 'br') {
+        zlib.brotliCompress(
+          buf,
+          { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } },
+          finish
+        );
+      } else {
+        zlib.gzip(buf, { level: 5 }, finish);
+      }
+      return res;
+    }) as typeof res.json;
+    next();
+  });
 
   // Reverse-proxy 100% Web-Native VS Code BEFORE express.json() so raw request streams stay intact
   app.use('/vscode-web', (req, res) => {
@@ -1104,26 +1152,63 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   });
 
-  // --- Serve Compiled Frontend with In-Memory Brotli / Gzip Compression (4x faster boot over WAN) ---
+  // --- Serve Compiled Frontend with In-Memory Brotli / Gzip Compression (pre-warmed at boot) ---
   const clientDist = resolveClientDistDir();
   if (clientDist) {
-    const staticCompCache = new Map<string, { br: Buffer; gz: Buffer; mime: string }>();
+    const staticCompCache = new Map<string, { br: Buffer; gz: Buffer; mime: string; etag: string }>();
+    const getCompEntry = (fullPath: string, ext: string) => {
+      let entry = staticCompCache.get(fullPath);
+      if (!entry) {
+        const raw = fs.readFileSync(fullPath);
+        const hash = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16);
+        entry = {
+          br: zlib.brotliCompressSync(raw, {
+            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 6 },
+          }),
+          gz: zlib.gzipSync(raw, { level: 6 }),
+          mime: MIME_MAP[ext] || 'application/octet-stream',
+          etag: `"${hash}"`,
+        };
+        staticCompCache.set(fullPath, entry);
+      }
+      return entry;
+    };
+
+    // Pre-warm client dist files in background right after server setup
+    setImmediate(() => {
+      try {
+        const warmDir = (dir: string) => {
+          for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+            const p = path.join(dir, ent.name);
+            if (ent.isDirectory()) warmDir(p);
+            else if (ent.isFile()) {
+              const ext = path.extname(ent.name).slice(1).toLowerCase();
+              if (['html', 'js', 'mjs', 'css', 'svg', 'json'].includes(ext)) {
+                getCompEntry(p, ext);
+              }
+            }
+          }
+        };
+        warmDir(clientDist);
+      } catch {}
+    });
+
+    const pickEnc = (req: express.Request): 'br' | 'gzip' | null => {
+      const accept = String(req.headers['accept-encoding'] || '');
+      return accept.includes('br') ? 'br' : accept.includes('gzip') ? 'gzip' : null;
+    };
+
     app.use((req, res, next) => {
       if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
         next();
         return;
       }
       const ext = path.extname(req.path).slice(1).toLowerCase();
-      if (!['js', 'mjs', 'css', 'svg', 'json'].includes(ext)) {
+      if (!['js', 'mjs', 'css', 'svg', 'json', 'html'].includes(ext)) {
         next();
         return;
       }
-      const accept = String(req.headers['accept-encoding'] || '');
-      const enc: 'br' | 'gzip' | null = accept.includes('br')
-        ? 'br'
-        : accept.includes('gzip')
-        ? 'gzip'
-        : null;
+      const enc = pickEnc(req);
       if (!enc) {
         next();
         return;
@@ -1135,17 +1220,10 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         return;
       }
       try {
-        let entry = staticCompCache.get(fullPath);
-        if (!entry) {
-          const raw = fs.readFileSync(fullPath);
-          entry = {
-            br: zlib.brotliCompressSync(raw, {
-              params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 6 },
-            }),
-            gz: zlib.gzipSync(raw, { level: 6 }),
-            mime: MIME_MAP[ext] || 'application/octet-stream',
-          };
-          staticCompCache.set(fullPath, entry);
+        const entry = getCompEntry(fullPath, ext);
+        if (req.headers['if-none-match'] === entry.etag) {
+          res.status(304).end();
+          return;
         }
         const payload = enc === 'br' ? entry.br : entry.gz;
         const isHashedAsset = req.path.startsWith('/assets/');
@@ -1153,7 +1231,13 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           'Content-Type': entry.mime,
           'Content-Encoding': enc,
           'Content-Length': String(payload.length),
-          'Cache-Control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+          'Cache-Control':
+            ext === 'html'
+              ? 'no-cache'
+              : isHashedAsset
+              ? 'public, max-age=31536000, immutable'
+              : 'public, max-age=3600',
+          ETag: entry.etag,
           Vary: 'Accept-Encoding',
         });
         res.end(payload);
@@ -1188,6 +1272,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       }
       next();
     });
+    const indexHtmlPath = path.join(clientDist, 'index.html');
     app.get('*', (req, res, next) => {
       if (
         req.path.startsWith('/api/') ||
@@ -1197,7 +1282,28 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         next();
         return;
       }
-      res.sendFile(path.join(clientDist, 'index.html'));
+      const enc = pickEnc(req);
+      if (enc) {
+        try {
+          const entry = getCompEntry(indexHtmlPath, 'html');
+          if (req.headers['if-none-match'] === entry.etag) {
+            res.status(304).end();
+            return;
+          }
+          const payload = enc === 'br' ? entry.br : entry.gz;
+          res.writeHead(200, {
+            'Content-Type': entry.mime,
+            'Content-Encoding': enc,
+            'Content-Length': String(payload.length),
+            'Cache-Control': 'no-cache',
+            ETag: entry.etag,
+            Vary: 'Accept-Encoding',
+          });
+          res.end(payload);
+          return;
+        } catch {}
+      }
+      res.sendFile(indexHtmlPath);
     });
   }
 
@@ -1602,6 +1708,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       if (clientDist) {
         console.log(`[TamgaVDesktop] Arayüz sunumu aktif -> ${clientDist}`);
       }
+      setImmediate(() => linuxAppManager.warmUp());
       resolve();
     });
   });

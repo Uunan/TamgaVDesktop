@@ -1076,6 +1076,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                         key={wp.id}
                         data-testid={`wp-card-${wp.id}`}
                         onClick={() => onUpdatePreferences({ wallpaper: wp.id })}
+                        style={{ contain: 'layout paint style' }}
                         className={`group rounded-xl p-1.5 text-left border transition-all ${
                           active
                             ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'

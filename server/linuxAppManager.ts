@@ -927,20 +927,25 @@ rm -rf /opt/telegram /usr/local/bin/telegram-desktop /usr/local/bin/telegram /us
 ];
 
 function whichBinary(name: string): string | null {
-  if (path.isAbsolute(name)) {
-    return fs.existsSync(name) ? name : null;
-  }
-  try {
-    const out = execSync(`command -v ${name}`, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: '/bin/sh',
-    })
-      .toString('utf-8')
-      .trim();
-    return out || null;
-  } catch {
+  if (!name) return null;
+  const checkExec = (candidate: string): string | null => {
+    try {
+      const st = fs.statSync(candidate);
+      if (st.isFile() && (st.mode & 0o111) !== 0) return candidate;
+    } catch {}
     return null;
+  };
+  if (path.isAbsolute(name)) {
+    return checkExec(name);
   }
+  const pathStr =
+    process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+  for (const dir of pathStr.split(path.delimiter)) {
+    if (!dir) continue;
+    const hit = checkExec(path.join(dir, name));
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function readDistroName(): string {
@@ -973,14 +978,36 @@ function categorizeFromDesktop(cats: string): LinuxAppInfo['category'] {
 
 export class LinuxAppManager {
   private installLogs = new Map<string, { status: 'running' | 'done' | 'error'; log: string }>();
+  private runtimeCache: { value: LinuxRuntimeStatus; expiresAt: number } | null = null;
+  private appsCache: { value: LinuxAppInfo[]; expiresAt: number } | null = null;
+  private dpkgSetCache: { value: Set<string>; expiresAt: number } | null = null;
+  private aptSearchCache = new Map<string, { value: AptSearchResult[]; expiresAt: number }>();
 
-  public getRuntimeStatus(): LinuxRuntimeStatus {
+  public invalidateCache() {
+    this.runtimeCache = null;
+    this.appsCache = null;
+    this.dpkgSetCache = null;
+    this.aptSearchCache.clear();
+  }
+
+  public warmUp() {
+    try {
+      this.getRuntimeStatus();
+      this.listApps();
+    } catch {}
+  }
+
+  public getRuntimeStatus(force = false): LinuxRuntimeStatus {
+    const now = Date.now();
+    if (!force && this.runtimeCache && now < this.runtimeCache.expiresAt) {
+      return this.runtimeCache.value;
+    }
     const isLinux = process.platform === 'linux';
     const required = ['Xvfb', 'openbox', 'ffmpeg', 'python3', 'xdotool'];
     const missingDeps = isLinux ? required.filter((bin) => !whichBinary(bin)) : required;
     const hasAudio = isLinux && Boolean(whichBinary('pulseaudio') && whichBinary('parec'));
     const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-    return {
+    const status: LinuxRuntimeStatus = {
       platform: process.platform,
       isLinux,
       guiReady: isLinux && missingDeps.length === 0,
@@ -989,9 +1016,15 @@ export class LinuxAppManager {
       isRoot,
       distro: readDistroName(),
     };
+    this.runtimeCache = { value: status, expiresAt: now + 30_000 };
+    return status;
   }
 
-  public listApps(): LinuxAppInfo[] {
+  public listApps(force = false): LinuxAppInfo[] {
+    const now = Date.now();
+    if (!force && this.appsCache && now < this.appsCache.expiresAt) {
+      return this.appsCache.value;
+    }
     const byId = new Map<string, LinuxAppInfo>();
 
     // 1. Curated Store catalog first
@@ -1000,7 +1033,7 @@ export class LinuxAppManager {
       for (const b of def.binaryNames) {
         const res = whichBinary(b);
         if (res) {
-          foundBin = path.isAbsolute(b) ? b : b;
+          foundBin = b;
           break;
         }
       }
@@ -1118,37 +1151,55 @@ export class LinuxAppManager {
       }
     }
 
-    return Array.from(byId.values());
+    const list = Array.from(byId.values());
+    this.appsCache = { value: list, expiresAt: Date.now() + 30_000 };
+    return list;
   }
 
   public getApp(appId: string): LinuxAppInfo | undefined {
     return this.listApps().find((a) => a.id === appId);
   }
 
+  private getInstalledPackageSet(): Set<string> {
+    const now = Date.now();
+    if (this.dpkgSetCache && now < this.dpkgSetCache.expiresAt) {
+      return this.dpkgSetCache.value;
+    }
+    const installedSet = new Set<string>();
+    try {
+      const dpkgOut = execSync("dpkg-query -W -f='${Package}\\n' 2>/dev/null || true", {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 3000,
+        shell: '/bin/sh',
+      }).toString('utf-8');
+      for (const line of dpkgOut.split('\n')) {
+        if (line.trim()) installedSet.add(line.trim());
+      }
+    } catch {}
+    this.dpkgSetCache = { value: installedSet, expiresAt: now + 20_000 };
+    return installedSet;
+  }
+
   public searchApt(query: string): AptSearchResult[] {
     if (process.platform !== 'linux') return [];
     const clean = query.trim().replace(/[^a-z0-9.+\-\s]/gi, '');
     if (clean.length < 2) return [];
+    const cacheKey = clean.toLowerCase();
+    const now = Date.now();
+    const cached = this.aptSearchCache.get(cacheKey);
+    if (cached && now < cached.expiresAt) {
+      return cached.value;
+    }
     try {
       const raw = execSync(`apt-cache search -- "${clean.replace(/"/g, '')}"`, {
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 4000,
       }).toString('utf-8');
 
-      const installedSet = new Set<string>();
-      try {
-        const dpkgOut = execSync("dpkg-query -W -f='${Package}\\n' 2>/dev/null || true", {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 3000,
-          shell: '/bin/sh',
-        }).toString('utf-8');
-        for (const line of dpkgOut.split('\n')) {
-          if (line.trim()) installedSet.add(line.trim());
-        }
-      } catch {}
+      const installedSet = this.getInstalledPackageSet();
 
       const results: AptSearchResult[] = [];
-      const qLower = clean.toLowerCase();
+      const qLower = cacheKey;
       const lines = raw.split('\n').filter(Boolean);
 
       // Prioritize exact / prefix matches and skip internal lib*/-dev/-dbg/-doc packages unless explicitly searched
@@ -1190,6 +1241,11 @@ export class LinuxAppManager {
       for (const s of scored.slice(0, 36)) {
         results.push(s.item);
       }
+      if (this.aptSearchCache.size >= 50) {
+        const oldestKey = this.aptSearchCache.keys().next().value;
+        if (oldestKey) this.aptSearchCache.delete(oldestKey);
+      }
+      this.aptSearchCache.set(cacheKey, { value: results, expiresAt: now + 15_000 });
       return results;
     } catch {
       return [];
@@ -1278,6 +1334,7 @@ export class LinuxAppManager {
     proc.stdout.on('data', append);
     proc.stderr.on('data', append);
     proc.on('exit', (code) => {
+      this.invalidateCache();
       record.status = code === 0 ? 'done' : 'error';
       record.log +=
         code === 0

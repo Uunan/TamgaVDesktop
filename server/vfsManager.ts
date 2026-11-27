@@ -357,6 +357,7 @@ export class VFSManager {
   private readonly metaFile: string;
   private meta: DesktopMeta;
   private changeListeners: Set<() => void> = new Set();
+  private snapshotCache: { data: { nodes: VFSNode[]; meta: DesktopMeta }; builtAt: number } | null = null;
 
   constructor(desktopId: string, hostRootOverride?: string) {
     this.desktopId = sanitizeDesktopId(desktopId);
@@ -390,6 +391,7 @@ export class VFSManager {
   }
 
   public notifyChange() {
+    this.snapshotCache = null;
     for (const cb of this.changeListeners) {
       try {
         cb();
@@ -486,6 +488,7 @@ export class VFSManager {
   }
 
   private saveMeta() {
+    this.snapshotCache = null;
     fs.mkdirSync(this.instanceRoot, { recursive: true });
     fs.writeFileSync(this.metaFile, JSON.stringify(this.meta, null, 2), 'utf-8');
   }
@@ -630,27 +633,88 @@ export class VFSManager {
   }
 
   public getSnapshot(): { nodes: VFSNode[]; meta: DesktopMeta } {
+    const now = Date.now();
+    if (this.snapshotCache && now - this.snapshotCache.builtAt < 1500) {
+      return { nodes: this.snapshotCache.data.nodes, meta: this.meta };
+    }
     const nodes: VFSNode[] = [];
-    const walk = (vDir: string) => {
+
+    const walk = (vDir: string): number => {
       const diskDir = this.resolveDiskPath(vDir);
-      if (!fs.existsSync(diskDir)) return;
-      if (vDir !== '/') {
-        nodes.push(this.statNode(vDir));
+      let dirEntries: fs.Dirent[];
+      let dirStat: fs.Stats;
+      try {
+        dirStat = fs.statSync(diskDir);
+        if (!dirStat.isDirectory()) return 0;
+        dirEntries = fs.readdirSync(diskDir, { withFileTypes: true });
+      } catch {
+        return 0;
       }
-      const entries = fs.readdirSync(diskDir).filter((e) => e !== '.DS_Store');
-      for (const entry of entries) {
-        const childVPath = vDir === '/' ? `/${entry}` : `${vDir}/${entry}`;
+
+      const visible = dirEntries.filter((e) => e.name !== '.DS_Store');
+      let folderIdx = -1;
+      if (vDir !== '/') {
+        const norm = this.normalizeVirtualPath(vDir);
+        const name = path.posix.basename(norm);
+        const parentPath = path.posix.dirname(norm);
+        folderIdx = nodes.length;
+        nodes.push({
+          name,
+          path: norm,
+          parentPath,
+          isDir: true,
+          extension: 'folder',
+          size: 0,
+          childCount: visible.length,
+          createdAt: dirStat.birthtime.toISOString(),
+          modifiedAt: dirStat.mtime.toISOString(),
+          originalPath: this.meta.trashOrigins[norm],
+        });
+      }
+
+      let totalSize = 0;
+      for (const entry of visible) {
+        const childVPath = vDir === '/' ? `/${entry.name}` : `${vDir}/${entry.name}`;
         const childDisk = this.resolveDiskPath(childVPath);
-        const st = fs.statSync(childDisk);
-        if (st.isDirectory()) {
-          walk(childVPath);
-        } else {
-          nodes.push(this.statNode(childVPath));
+        try {
+          if (entry.isDirectory()) {
+            totalSize += walk(childVPath);
+          } else {
+            const st = fs.statSync(childDisk);
+            if (st.isDirectory()) {
+              totalSize += walk(childVPath);
+            } else {
+              totalSize += st.size;
+              const norm = this.normalizeVirtualPath(childVPath);
+              nodes.push({
+                name: entry.name,
+                path: norm,
+                parentPath: path.posix.dirname(norm),
+                isDir: false,
+                extension: extractExtension(entry.name, false),
+                size: st.size,
+                childCount: 0,
+                createdAt: st.birthtime.toISOString(),
+                modifiedAt: st.mtime.toISOString(),
+                originalPath: this.meta.trashOrigins[norm],
+              });
+            }
+          }
+        } catch {
+          // ignore unreadable or dangling entries
         }
       }
+
+      if (folderIdx !== -1) {
+        nodes[folderIdx].size = totalSize;
+      }
+      return totalSize;
     };
+
     walk('/');
-    return { nodes, meta: this.meta };
+    const result = { nodes, meta: this.meta };
+    this.snapshotCache = { data: result, builtAt: now };
+    return result;
   }
 
   private getUniquePath(parentPath: string, desiredName: string): string {

@@ -1,7 +1,10 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useId, useState } from 'react';
 import { buildWallpaperUrl } from '../../services/osBridge';
 import { WALLPAPERS } from '../../types/os';
-import { ExtraWallpaperArt } from './ExtraWallpapers';
+
+const ExtraWallpaperArt = lazy(() =>
+  import('./ExtraWallpapers').then((m) => ({ default: m.ExtraWallpaperArt }))
+);
 
 interface WallpaperLayerProps {
   wallpaperId: string;
@@ -9,6 +12,7 @@ interface WallpaperLayerProps {
   customWallpaper?: string;
   className?: string;
   animated?: boolean;
+  lowDetail?: boolean;
 }
 
 const DYNAMIC_TIME_IDS = new Set(WALLPAPERS.filter((w) => w.dynamicTime).map((w) => w.id));
@@ -51,8 +55,10 @@ const CoreWallpaperSvg: React.FC<{
   theme: 'dark' | 'light';
   uid: string;
   isAnim: boolean;
-}> = ({ id, theme, uid, isAnim }) => {
+  lowDetail?: boolean;
+}> = ({ id, theme, uid, isAnim, lowDetail = false }) => {
   const { dark } = getCorePalette(theme);
+  const fUrl = (name: string) => (lowDetail ? undefined : `url(#${uid}-${name})`);
 
   switch (id) {
     /* ─── 1. GEOMETRİK DAĞ (TamgaOS Flagship — Static Studio) ─── */
@@ -101,9 +107,11 @@ const CoreWallpaperSvg: React.FC<{
               <stop offset="0%" stopColor={dark ? '#93c5fd' : '#ffffff'} stopOpacity={dark ? '0.52' : '0.92'} />
               <stop offset="100%" stopColor={dark ? '#38bdf8' : '#ffffff'} stopOpacity="0" />
             </linearGradient>
-            <filter id={`${uid}-blur`} x="-10%" y="-10%" width="120%" height="120%">
-              <feGaussianBlur stdDeviation="24" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-blur`} x="-10%" y="-10%" width="120%" height="120%">
+                <feGaussianBlur stdDeviation="24" />
+              </filter>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-sky)`} />
@@ -140,7 +148,7 @@ const CoreWallpaperSvg: React.FC<{
               r="145"
               fill={dark ? '#bae6fd' : '#94a3b8'}
               opacity={dark ? '0.075' : '0.16'}
-              filter={`url(#${uid}-blur)`}
+              filter={fUrl('blur')}
             />
             <circle
               cx="1350"
@@ -182,7 +190,7 @@ const CoreWallpaperSvg: React.FC<{
           <polyline points="820,1080 1290,340 1370,730" fill="none" stroke={`url(#${uid}-rim)`} strokeWidth="2" />
 
           {/* Secondary subtle glacier haze between mid & foreground */}
-          <ellipse cx="960" cy="790" rx="880" ry="120" fill={dark ? '#1e293b' : '#f8fafc'} opacity={dark ? '0.32' : '0.52'} filter={`url(#${uid}-blur)`} className={isAnim ? 'wp-mist' : undefined} style={isAnim ? { animationDelay: '-8s' } : undefined} />
+          <ellipse cx="960" cy="790" rx="880" ry="120" fill={dark ? '#1e293b' : '#f8fafc'} opacity={dark ? '0.32' : '0.52'} filter={fUrl('blur')} className={isAnim ? 'wp-mist' : undefined} style={isAnim ? { animationDelay: '-8s' } : undefined} />
 
           {/* Foreground sculpted obsidian/alabaster peaks */}
           <polygon points="-60,1080 280,580 410,900 320,1080" fill={`url(#${uid}-fglit)`} />
@@ -420,12 +428,16 @@ const CoreWallpaperSvg: React.FC<{
               <stop offset="45%" stopColor="#0e2c3e" />
               <stop offset="100%" stopColor="#030812" />
             </linearGradient>
-            <filter id={`${uid}-glow`} x="-25%" y="-25%" width="150%" height="150%">
-              <feGaussianBlur stdDeviation="28" />
-            </filter>
-            <filter id={`${uid}-soft`} x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="12" />
-            </filter>
+            {!lowDetail && (
+              <>
+                <filter id={`${uid}-glow`} x="-25%" y="-25%" width="150%" height="150%">
+                  <feGaussianBlur stdDeviation="28" />
+                </filter>
+                <filter id={`${uid}-soft`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="12" />
+                </filter>
+              </>
+            )}
           </defs>
 
           <rect width="1920" height="1080" fill={`url(#${uid}-sky)`} />
@@ -452,13 +464,13 @@ const CoreWallpaperSvg: React.FC<{
           </g>
 
           {/* Animated Multi-Ribbon Aurora Curtains */}
-          <g className={isAnim ? 'wp-aurora' : undefined} filter={`url(#${uid}-glow)`}>
+          <g className={isAnim ? 'wp-aurora' : undefined} filter={fUrl('glow')}>
             <path
               d="M-120,470 C190,260 520,440 880,250 C1230,70 1560,310 2040,140 L2040,470 C1580,550 1240,340 890,490 C540,630 210,490 -120,610 Z"
               fill={`url(#${uid}-curtain1)`}
             />
           </g>
-          <g className={isAnim ? 'wp-aurora-b' : undefined} filter={`url(#${uid}-glow)`}>
+          <g className={isAnim ? 'wp-aurora-b' : undefined} filter={fUrl('glow')}>
             <path
               d="M-80,340 C280,150 670,380 1090,190 C1450,35 1740,250 2020,160 L2020,420 C1700,480 1390,290 1040,420 C650,560 280,410 -80,520 Z"
               fill={`url(#${uid}-curtain2)`}
@@ -472,7 +484,7 @@ const CoreWallpaperSvg: React.FC<{
             stroke="#6ee7b7"
             strokeWidth="3.5"
             opacity="0.58"
-            filter={`url(#${uid}-soft)`}
+            filter={fUrl('soft')}
             className={isAnim ? 'wp-aurora' : undefined}
           />
 
@@ -490,7 +502,7 @@ const CoreWallpaperSvg: React.FC<{
           <rect x="0" y="810" width="1920" height="270" fill={`url(#${uid}-lake)`} />
           {/* Inverted mountain silhouette reflection */}
           <polygon points="-40,810 180,975 360,895 620,1040 850,910 1120,1055 1370,920 1640,1015 1960,890 1960,810" fill="#030914" opacity="0.58" />
-          <g opacity="0.28" filter={`url(#${uid}-glow)`} className={isAnim ? 'wp-wave' : undefined}>
+          <g opacity="0.28" filter={fUrl('glow')} className={isAnim ? 'wp-wave' : undefined}>
             <ellipse cx="620" cy="910" rx="540" ry="34" fill="#34d399" />
             <ellipse cx="1320" cy="940" rx="520" ry="32" fill="#38bdf8" />
             <ellipse cx="960" cy="995" rx="640" ry="26" fill="#a855f7" opacity="0.52" />
@@ -552,9 +564,11 @@ const CoreWallpaperSvg: React.FC<{
               <stop offset="78%" stopColor={dark ? '#94a3b8' : '#64748b'} stopOpacity={dark ? '0.35' : '0.22'} />
               <stop offset="100%" stopColor={dark ? '#ffffff' : '#0f172a'} stopOpacity="0" />
             </linearGradient>
-            <filter id={`${uid}-glow`} x="-20%" y="-80%" width="140%" height="260%">
-              <feGaussianBlur stdDeviation="16" />
-            </filter>
+            {!lowDetail && (
+              <filter id={`${uid}-glow`} x="-20%" y="-80%" width="140%" height="260%">
+                <feGaussianBlur stdDeviation="16" />
+              </filter>
+            )}
           </defs>
 
           <rect x="0" y="0" width="1920" height="608" fill={`url(#${uid}-top)`} />
@@ -585,7 +599,7 @@ const CoreWallpaperSvg: React.FC<{
           </g>
 
           {/* Razor-crisp glowing horizon slit */}
-          <rect x="180" y="600" width="1560" height="16" fill={`url(#${uid}-slit)`} filter={`url(#${uid}-glow)`} opacity="0.65" className={isAnim ? 'wp-glow' : undefined} />
+          <rect x="180" y="600" width="1560" height="16" fill={`url(#${uid}-slit)`} filter={fUrl('glow')} opacity="0.65" className={isAnim ? 'wp-glow' : undefined} />
           <rect x="0" y="607" width="1920" height="2.2" fill={`url(#${uid}-slit)`} />
         </svg>
       );
@@ -598,6 +612,7 @@ export const WallpaperLayer: React.FC<WallpaperLayerProps> = ({
   customWallpaper,
   className = 'fixed inset-0 pointer-events-none',
   animated = false,
+  lowDetail = false,
 }) => {
   const rawUid = useId();
   const uid = rawUid.replace(/[^a-zA-Z0-9]/g, '');
@@ -640,9 +655,34 @@ export const WallpaperLayer: React.FC<WallpaperLayerProps> = ({
     >
       <div className="w-full h-full">
         {isCore ? (
-          <CoreWallpaperSvg id={activeId} theme={theme} uid={uid} isAnim={shouldAnimate} />
+          <CoreWallpaperSvg
+            id={activeId}
+            theme={theme}
+            uid={uid}
+            isAnim={shouldAnimate}
+            lowDetail={lowDetail}
+          />
         ) : (
-          <ExtraWallpaperArt id={activeId} theme={theme} hour={hour} uid={uid} isAnim={shouldAnimate} />
+          <Suspense
+            fallback={
+              <div
+                className={`w-full h-full ${
+                  theme === 'dark'
+                    ? 'bg-gradient-to-b from-[#070b14] to-[#0f172a]'
+                    : 'bg-gradient-to-b from-[#e2e8f0] to-[#cbd5e1]'
+                }`}
+              />
+            }
+          >
+            <ExtraWallpaperArt
+              id={activeId}
+              theme={theme}
+              hour={hour}
+              uid={uid}
+              isAnim={shouldAnimate}
+              lowDetail={lowDetail}
+            />
+          </Suspense>
         )}
       </div>
       {/* Subtle studio edge vignette so desktop labels & chrome remain crisp */}
@@ -671,6 +711,7 @@ export const WallpaperThumb: React.FC<{
       theme={theme}
       className="absolute inset-0"
       animated={animated}
+      lowDetail={!animated}
     />
   </div>
 );

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { CheckCircle2, Info, TriangleAlert, X } from 'lucide-react';
 import {
@@ -34,9 +34,7 @@ import { remoteAudio } from './services/audioPlayer';
 import { WallpaperLayer } from './components/desktop/WallpaperLayer';
 import { DesktopCanvas } from './components/desktop/DesktopCanvas';
 import { WindowFrame } from './components/desktop/WindowFrame';
-import { FolderWindow } from './components/desktop/FolderWindow';
-import { ChromiumTabStrip, ChromiumWindowBody } from './components/browser/ChromiumWindow';
-import { ContextMenu, type ContextMenuItemTarget } from './components/desktop/ContextMenu';
+import type { ContextMenuItemTarget } from './components/desktop/ContextMenu';
 import {
   getDefaultOpenWithTarget,
   getExtensionKey,
@@ -44,24 +42,62 @@ import {
   isHtmlExtension,
   type OpenWithTargetId,
 } from './utils/openWith';
-import { NewCustomFileModal, PropertiesPane } from './components/desktop/FileDialogs';
 import { FullscreenNotice } from './components/desktop/FullscreenNotice';
-import {
-  LockScreenOverlay,
-  OfflineBannerOverlay,
-  ScreensaverOverlay,
-} from './components/desktop/DesktopOverlays';
-import { LoginScreen } from './components/auth/LoginScreen';
-import { TerminalWindow } from './components/apps/TerminalWindow';
-import { LinuxAppWindow } from './components/apps/LinuxAppWindow';
-import { AppStoreWindow } from './components/apps/AppStoreWindow';
-import { VSCodeWindow } from './components/apps/VSCodeWindow';
-import { WebAppWindow } from './components/apps/WebAppWindow';
-import { SettingsWindow } from './components/apps/SettingsWindow';
-import { PreviewWindow } from './components/apps/PreviewWindow';
 import { Taskbar } from './components/taskbar/Taskbar';
 import { copyTextToHostClipboard } from './utils/clipboardBridge';
 import { translateFolderDisplayName } from './utils/format';
+
+const FolderWindow = lazy(() =>
+  import('./components/desktop/FolderWindow').then((m) => ({ default: m.FolderWindow }))
+);
+const ChromiumTabStrip = lazy(() =>
+  import('./components/browser/ChromiumWindow').then((m) => ({ default: m.ChromiumTabStrip }))
+);
+const ChromiumWindowBody = lazy(() =>
+  import('./components/browser/ChromiumWindow').then((m) => ({ default: m.ChromiumWindowBody }))
+);
+const ContextMenu = lazy(() =>
+  import('./components/desktop/ContextMenu').then((m) => ({ default: m.ContextMenu }))
+);
+const NewCustomFileModal = lazy(() =>
+  import('./components/desktop/FileDialogs').then((m) => ({ default: m.NewCustomFileModal }))
+);
+const PropertiesPane = lazy(() =>
+  import('./components/desktop/FileDialogs').then((m) => ({ default: m.PropertiesPane }))
+);
+const LockScreenOverlay = lazy(() =>
+  import('./components/desktop/DesktopOverlays').then((m) => ({ default: m.LockScreenOverlay }))
+);
+const OfflineBannerOverlay = lazy(() =>
+  import('./components/desktop/DesktopOverlays').then((m) => ({ default: m.OfflineBannerOverlay }))
+);
+const ScreensaverOverlay = lazy(() =>
+  import('./components/desktop/DesktopOverlays').then((m) => ({ default: m.ScreensaverOverlay }))
+);
+const LoginScreen = lazy(() =>
+  import('./components/auth/LoginScreen').then((m) => ({ default: m.LoginScreen }))
+);
+const TerminalWindow = lazy(() =>
+  import('./components/apps/TerminalWindow').then((m) => ({ default: m.TerminalWindow }))
+);
+const LinuxAppWindow = lazy(() =>
+  import('./components/apps/LinuxAppWindow').then((m) => ({ default: m.LinuxAppWindow }))
+);
+const AppStoreWindow = lazy(() =>
+  import('./components/apps/AppStoreWindow').then((m) => ({ default: m.AppStoreWindow }))
+);
+const VSCodeWindow = lazy(() =>
+  import('./components/apps/VSCodeWindow').then((m) => ({ default: m.VSCodeWindow }))
+);
+const WebAppWindow = lazy(() =>
+  import('./components/apps/WebAppWindow').then((m) => ({ default: m.WebAppWindow }))
+);
+const SettingsWindow = lazy(() =>
+  import('./components/apps/SettingsWindow').then((m) => ({ default: m.SettingsWindow }))
+);
+const PreviewWindow = lazy(() =>
+  import('./components/apps/PreviewWindow').then((m) => ({ default: m.PreviewWindow }))
+);
 
 const DEFAULT_META: DesktopMeta = {
   positions: {},
@@ -393,10 +429,33 @@ export default function App() {
     }
     window.history.replaceState({}, '', url.toString());
     if (isAuthorized) {
-      refreshVfs();
-      refreshApps();
+      refreshVfs().finally(() => {
+        refreshApps();
+      });
     }
   }, [desktopId, isAuthorized, refreshVfs, refreshApps]);
+
+  // Idle-prefetch common desktop UI chunks only AFTER desktop is painted & authorized
+  useEffect(() => {
+    if (!isAuthorized || !prefsReady) return;
+    const warmUi = () => {
+      void import('./components/desktop/ContextMenu');
+      void import('./components/desktop/FolderWindow');
+      void import('./components/apps/AppStoreWindow');
+      void import('./components/apps/SettingsWindow');
+      void import('./components/desktop/ExtraWallpapers');
+    };
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof w.requestIdleCallback === 'function') {
+      const idleId = w.requestIdleCallback(warmUi, { timeout: 1200 });
+      return () => w.cancelIdleCallback?.(idleId);
+    }
+    const tid = setTimeout(warmUi, 650);
+    return () => clearTimeout(tid);
+  }, [isAuthorized, prefsReady]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -2094,14 +2153,16 @@ export default function App() {
 
   if (authStatus.enabled && !authStatus.authenticated) {
     return (
-      <LoginScreen
-        serverName={authStatus.serverName}
-        hostname={authStatus.hostname}
-        version={authStatus.version}
-        onSuccess={(username) =>
-          setAuthStatus((prev) => ({ ...prev, authenticated: true, username }))
-        }
-      />
+      <Suspense fallback={<div className="w-screen h-screen bg-[var(--os-bg)]" />}>
+        <LoginScreen
+          serverName={authStatus.serverName}
+          hostname={authStatus.hostname}
+          version={authStatus.version}
+          onSuccess={(username) =>
+            setAuthStatus((prev) => ({ ...prev, authenticated: true, username }))
+          }
+        />
+      </Suspense>
     );
   }
 
@@ -2238,367 +2299,381 @@ export default function App() {
             overlayTitlebar={win.kind === 'vscode'}
             headerContent={
               win.kind === 'browser' ? (
-                <ChromiumTabStrip
-                  tabs={tabs}
-                  activeTabId={activeTabId}
-                  defaultUrl={
-                    meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
-                  }
-                  sendWs={sendWs}
-                />
+                <Suspense fallback={null}>
+                  <ChromiumTabStrip
+                    tabs={tabs}
+                    activeTabId={activeTabId}
+                    defaultUrl={
+                      meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
+                    }
+                    sendWs={sendWs}
+                  />
+                </Suspense>
               ) : undefined
             }
           >
-            {win.kind === 'browser' && (
-              <ChromiumWindowBody
-                tabs={tabs}
-                activeTabId={activeTabId}
-                subscribeVideoFrame={subscribeVideoFrame}
-                desktopNodes={desktopNodes}
-                allNodes={allNodes}
-                volume={volume}
-                muted={muted}
-                defaultUrl={
-                  meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
-                }
-                maxDpr={meta.preferences.stream?.maxDpr ?? 2}
-                smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
-                pingMs={pingMs}
-                sendWs={sendWs}
-                onOpenFolder={openFolderWindow}
-                onVfsSaved={refreshVfs}
-                onNotify={pushToast}
-                browserCursor={browserCursor}
-              />
-            )}
-
-            {win.kind === 'preview' && win.previewNodePath && (
-              <PreviewWindow
-                initialPath={win.previewNodePath}
-                allNodes={allNodes}
-                onTitleChange={(nextTitle, nextPath) =>
-                  setWindows((prev) =>
-                    prev.map((w) =>
-                      w.id === win.id
-                        ? { ...w, title: nextTitle, previewNodePath: nextPath }
-                        : w
-                    )
-                  )
-                }
-                onVfsSaved={refreshVfs}
-                onSetWallpaper={handleSetWallpaperFromNode}
-                onOpenContextMenu={(x, y, node) =>
-                  setCtxMenu({
-                    x,
-                    y,
-                    target: { kind: 'nodes', dirPath: node.parentPath, nodes: [node] },
-                  })
-                }
-                onNotify={pushToast}
-              />
-            )}
-
-            {win.kind === 'terminal' && win.terminalSessionId && (
-              <TerminalWindow
-                sessionId={win.terminalSessionId}
-                cwdPath={win.terminalCwd}
-                initialCommand={win.terminalInitialCommand}
-                fontSize={meta.preferences.terminal?.fontSize ?? 13}
-                cursorBlink={meta.preferences.terminal?.cursorBlink ?? true}
-                theme={meta.preferences.theme || 'dark'}
-                onClipboardSync={syncClipboardAcrossDesktop}
-                onExit={() => {
-                  setWindows((prev) => prev.filter((w) => w.id !== win.id));
-                }}
-              />
-            )}
-
-            {win.kind === 'vscode' && (
-              <VSCodeWindow
-                folderPath={win.folderPath}
-                directUrl={win.vscodeUrl}
-                theme={meta.preferences.theme || 'dark'}
-                onClipboardSync={syncClipboardAcrossDesktop}
-                onOpenNewWindow={(req) =>
-                  openVSCodeWindow({
-                    folderPath: req.folderPath || win.folderPath,
-                    url: req.url,
-                    width: req.width,
-                    height: req.height,
-                    forceNew: true,
-                  })
-                }
-              />
-            )}
-
-            {win.kind === 'web-app' && (
-              <WebAppWindow
-                url={win.webAppUrl || 'https://www.google.com'}
-                appName={win.title}
-                onTitleChange={(nextTitle) =>
-                  setWindows((prev) =>
-                    prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
-                  )
-                }
-                onOpenInChrome={(targetUrl) => openPrimaryBrowser(targetUrl)}
-                onNotify={pushToast}
-              />
-            )}
-
-            {win.kind === 'linux-app' && win.appSessionId && (
-              <LinuxAppWindow
-                sessionId={win.appSessionId}
-                viewId={win.appViewId || 'main'}
-                appName={win.title}
-                isFocused={focusedWindowId === win.id}
-                externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
-                scrollSensitivity={meta.preferences.stream?.scrollSensitivity ?? 1.0}
-                smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
-                pingMs={pingMs}
-                onVfsChanged={refreshVfs}
-                onClipboardSync={syncClipboardAcrossDesktop}
-                onLockScreen={activateLockScreen}
-                onNotify={pushToast}
-                onReady={() => {
-                  setWindows((prev) =>
-                    prev.map((w) => (w.id === win.id && w.launching ? { ...w, launching: false } : w))
-                  );
-                  focusWindow(win.id);
-                }}
-                onTitleChange={(nextTitle) =>
-                  setWindows((prev) =>
-                    prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
-                  )
-                }
-                onWindowOpened={(extra) => {
-                  const vw = window.innerWidth;
-                  const vh = window.innerHeight;
-                  const pTop = dockPos === 'top' ? dockReserve : 12;
-                  const pBottom = dockPos === 'bottom' ? dockReserve : 12;
-                  const pLeft = dockPos === 'left' ? dockReserve : 12;
-                  const pRight = dockPos === 'right' ? dockReserve : 12;
-                  const availW = Math.max(320, vw - pLeft - pRight);
-                  const availH = Math.max(240, vh - pTop - pBottom);
-                  const extraW = Math.max(240, Math.min(availW, Math.round(extra.width || 900)));
-                  const extraH = Math.max(222, Math.min(availH, Math.round((extra.height || 640) + 42)));
-                  const extraId = `win-linux-${win.appSessionId}-${extra.view}`;
-                  const z = ++nextZRef.current;
-                  setWindows((prev) => {
-                    if (prev.some((w) => w.id === extraId)) return prev;
-                    return [
-                      ...prev,
-                      {
-                        id: extraId,
-                        kind: 'linux-app',
-                        title: extra.title || win.title,
-                        appSessionId: win.appSessionId,
-                        appViewId: extra.view,
-                        appId: win.appId,
-                        appIconName: win.appIconName,
-                        launching: true,
-                        x: Math.max(pLeft, Math.min(vw - pRight - extraW, win.x + 34)),
-                        y: Math.max(pTop, Math.min(vh - pBottom - extraH, win.y + 34)),
-                        width: extraW,
-                        height: extraH,
-                        minimized: false,
-                        maximized: false,
-                        zIndex: z,
-                      },
-                    ];
-                  });
-                  setFocusedWindowId(extraId);
-                  setTimeout(() => {
-                    setWindows((prev) =>
-                      prev.map((w) => (w.id === extraId && w.launching ? { ...w, launching: false } : w))
-                    );
-                  }, 10000);
-                }}
-                onAppExit={() => {
-                  setWindows((prev) => prev.filter((w) => w.id !== win.id));
-                }}
-              />
-            )}
-
-            {win.kind === 'app-store' && (
-              <AppStoreWindow
-                runtime={linuxRuntime}
-                apps={linuxApps}
-                allowInstall={allowAppInstall}
-                onRefreshApps={refreshApps}
-                onLaunchApp={(app, opts) =>
-                  launchLinuxApp({
-                    appId: app.id,
-                    command: app.command,
-                    appName: app.name,
-                    iconName: app.iconName,
-                    needsNoSandbox: app.needsNoSandbox,
-                    launchMode: app.launchMode,
-                    forceNew: opts?.forceNew,
-                  })
-                }
-                onLaunchCustomCommand={(cmd) => {
-                  const trimmed = cmd.trim();
-                  if (/^https?:\/\//i.test(trimmed)) {
-                    openWebAppWindow({
-                      appId: 'custom-web',
-                      url: trimmed,
-                      title: trimmed.replace(/^https?:\/\//i, '').split('/')[0] || 'Web Uygulaması',
-                      forceNew: true,
-                    });
-                    return;
+            <Suspense
+              fallback={
+                <div className="flex-1 flex items-center justify-center text-xs text-[var(--os-text-muted)]">
+                  Yükleniyor...
+                </div>
+              }
+            >
+              {win.kind === 'browser' && (
+                <ChromiumWindowBody
+                  tabs={tabs}
+                  activeTabId={activeTabId}
+                  subscribeVideoFrame={subscribeVideoFrame}
+                  desktopNodes={desktopNodes}
+                  allNodes={allNodes}
+                  volume={volume}
+                  muted={muted}
+                  defaultUrl={
+                    meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
                   }
-                  launchLinuxApp({
-                    appId: 'custom',
-                    command: trimmed,
-                    appName: trimmed.split(' ')[0] || 'Uygulama',
-                  });
-                }}
-                onOpenTerminal={() => openTerminalWindow('/Desktop')}
-              />
-            )}
+                  maxDpr={meta.preferences.stream?.maxDpr ?? 2}
+                  smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
+                  pingMs={pingMs}
+                  sendWs={sendWs}
+                  onOpenFolder={openFolderWindow}
+                  onVfsSaved={refreshVfs}
+                  onNotify={pushToast}
+                  browserCursor={browserCursor}
+                />
+              )}
 
-            {win.kind === 'folder' && (
-              <FolderWindow
-                initialPath={win.folderPath || '/Desktop'}
-                allNodes={allNodes}
-                clipboard={clipboard}
-                externalDropTarget={externalDropTarget}
-                renamingPath={renamingPath}
-                onSetRenamingPath={setRenamingPath}
-                onRenameCommit={handleRenameCommit}
-                onOpenNode={handleOpenNode}
-                onPathChangeTitle={(newTitle, newPath) =>
-                  setWindows((prev) =>
-                    prev.map((w) =>
-                      w.id === win.id ? { ...w, title: newTitle, folderPath: newPath } : w
+              {win.kind === 'preview' && win.previewNodePath && (
+                <PreviewWindow
+                  initialPath={win.previewNodePath}
+                  allNodes={allNodes}
+                  onTitleChange={(nextTitle, nextPath) =>
+                    setWindows((prev) =>
+                      prev.map((w) =>
+                        w.id === win.id
+                          ? { ...w, title: nextTitle, previewNodePath: nextPath }
+                          : w
+                      )
                     )
-                  )
-                }
-                onCreateFolder={(dir) => handleCreateFolder(dir)}
-                onOpenCustomFileDialog={(dir) => setCustomFileDialog({ parentPath: dir })}
-                onUploadFiles={handleUploadFiles}
-                onMoveNodes={handleMoveNodes}
-                onTrashNodes={(nodes) => handleTrashPaths(nodes.map((n) => n.path))}
-                onRestoreNodes={handleRestoreNodes}
-                onEmptyTrash={handleEmptyTrash}
-                onContextMenu={(x, y, target) => setCtxMenu({ x, y, target })}
-              />
-            )}
+                  }
+                  onVfsSaved={refreshVfs}
+                  onSetWallpaper={handleSetWallpaperFromNode}
+                  onOpenContextMenu={(x, y, node) =>
+                    setCtxMenu({
+                      x,
+                      y,
+                      target: { kind: 'nodes', dirPath: node.parentPath, nodes: [node] },
+                    })
+                  }
+                  onNotify={pushToast}
+                />
+              )}
 
-            {win.kind === 'properties' && (
-              <PropertiesPane
-                node={allNodes.find((n) => n.path === win.targetNodePath)}
-                onOpenNode={handleOpenNode}
-                onClose={() => setWindows((prev) => prev.filter((w) => w.id !== win.id))}
-              />
-            )}
+              {win.kind === 'terminal' && win.terminalSessionId && (
+                <TerminalWindow
+                  sessionId={win.terminalSessionId}
+                  cwdPath={win.terminalCwd}
+                  initialCommand={win.terminalInitialCommand}
+                  fontSize={meta.preferences.terminal?.fontSize ?? 13}
+                  cursorBlink={meta.preferences.terminal?.cursorBlink ?? true}
+                  theme={meta.preferences.theme || 'dark'}
+                  onClipboardSync={syncClipboardAcrossDesktop}
+                  onExit={() => {
+                    setWindows((prev) => prev.filter((w) => w.id !== win.id));
+                  }}
+                />
+              )}
 
-            {win.kind === 'settings' && (
-              <SettingsWindow
-                initialTab={win.settingsTab || 'stream'}
-                meta={meta}
-                telemetry={telemetry}
-                pingMs={pingMs}
-                lastFrameKB={lastFrameKB}
-                brightness={brightness}
-                volume={volume}
-                muted={muted}
-                authStatus={authStatus}
-                currentDesktop={currentDesktop}
-                desktops={desktops}
-                onUpdatePreferences={handleUpdatePreferences}
-                onToggleTheme={handleChangeTheme}
-                onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
-                onChangeBrightness={setBrightness}
-                onChangeVolume={(v) => {
-                  setVolume(v);
-                  if (v > 0 && muted) setMuted(false);
-                }}
-                onToggleMute={() => setMuted((m) => !m)}
-                onOpenTerminal={(dir) => openTerminalWindow(dir || '/Desktop')}
-                onSwitchDesktop={handleSwitchDesktop}
-                onCreateDesktop={handleCreateDesktop}
-                onLockScreen={activateLockScreen}
-                onPreviewScreensaver={() => {
-                  screensaverStartedAtRef.current = Date.now();
-                  setScreensaverIsPreview(true);
-                  setScreensaverActive(true);
-                }}
-                onSendWs={sendWs}
-                onLogout={handleLogout}
-                onNotify={pushToast}
-              />
-            )}
+              {win.kind === 'vscode' && (
+                <VSCodeWindow
+                  folderPath={win.folderPath}
+                  directUrl={win.vscodeUrl}
+                  theme={meta.preferences.theme || 'dark'}
+                  onClipboardSync={syncClipboardAcrossDesktop}
+                  onOpenNewWindow={(req) =>
+                    openVSCodeWindow({
+                      folderPath: req.folderPath || win.folderPath,
+                      url: req.url,
+                      width: req.width,
+                      height: req.height,
+                      forceNew: true,
+                    })
+                  }
+                />
+              )}
+
+              {win.kind === 'web-app' && (
+                <WebAppWindow
+                  url={win.webAppUrl || 'https://www.google.com'}
+                  appName={win.title}
+                  onTitleChange={(nextTitle) =>
+                    setWindows((prev) =>
+                      prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
+                    )
+                  }
+                  onOpenInChrome={(targetUrl) => openPrimaryBrowser(targetUrl)}
+                  onNotify={pushToast}
+                />
+              )}
+
+              {win.kind === 'linux-app' && win.appSessionId && (
+                <LinuxAppWindow
+                  sessionId={win.appSessionId}
+                  viewId={win.appViewId || 'main'}
+                  appName={win.title}
+                  isFocused={focusedWindowId === win.id}
+                  externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
+                  scrollSensitivity={meta.preferences.stream?.scrollSensitivity ?? 1.0}
+                  smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
+                  pingMs={pingMs}
+                  onVfsChanged={refreshVfs}
+                  onClipboardSync={syncClipboardAcrossDesktop}
+                  onLockScreen={activateLockScreen}
+                  onNotify={pushToast}
+                  onReady={() => {
+                    setWindows((prev) =>
+                      prev.map((w) => (w.id === win.id && w.launching ? { ...w, launching: false } : w))
+                    );
+                    focusWindow(win.id);
+                  }}
+                  onTitleChange={(nextTitle) =>
+                    setWindows((prev) =>
+                      prev.map((w) => (w.id === win.id ? { ...w, title: nextTitle } : w))
+                    )
+                  }
+                  onWindowOpened={(extra) => {
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
+                    const pTop = dockPos === 'top' ? dockReserve : 12;
+                    const pBottom = dockPos === 'bottom' ? dockReserve : 12;
+                    const pLeft = dockPos === 'left' ? dockReserve : 12;
+                    const pRight = dockPos === 'right' ? dockReserve : 12;
+                    const availW = Math.max(320, vw - pLeft - pRight);
+                    const availH = Math.max(240, vh - pTop - pBottom);
+                    const extraW = Math.max(240, Math.min(availW, Math.round(extra.width || 900)));
+                    const extraH = Math.max(222, Math.min(availH, Math.round((extra.height || 640) + 42)));
+                    const extraId = `win-linux-${win.appSessionId}-${extra.view}`;
+                    const z = ++nextZRef.current;
+                    setWindows((prev) => {
+                      if (prev.some((w) => w.id === extraId)) return prev;
+                      return [
+                        ...prev,
+                        {
+                          id: extraId,
+                          kind: 'linux-app',
+                          title: extra.title || win.title,
+                          appSessionId: win.appSessionId,
+                          appViewId: extra.view,
+                          appId: win.appId,
+                          appIconName: win.appIconName,
+                          launching: true,
+                          x: Math.max(pLeft, Math.min(vw - pRight - extraW, win.x + 34)),
+                          y: Math.max(pTop, Math.min(vh - pBottom - extraH, win.y + 34)),
+                          width: extraW,
+                          height: extraH,
+                          minimized: false,
+                          maximized: false,
+                          zIndex: z,
+                        },
+                      ];
+                    });
+                    setFocusedWindowId(extraId);
+                    setTimeout(() => {
+                      setWindows((prev) =>
+                        prev.map((w) => (w.id === extraId && w.launching ? { ...w, launching: false } : w))
+                      );
+                    }, 10000);
+                  }}
+                  onAppExit={() => {
+                    setWindows((prev) => prev.filter((w) => w.id !== win.id));
+                  }}
+                />
+              )}
+
+              {win.kind === 'app-store' && (
+                <AppStoreWindow
+                  runtime={linuxRuntime}
+                  apps={linuxApps}
+                  allowInstall={allowAppInstall}
+                  onRefreshApps={refreshApps}
+                  onLaunchApp={(app, opts) =>
+                    launchLinuxApp({
+                      appId: app.id,
+                      command: app.command,
+                      appName: app.name,
+                      iconName: app.iconName,
+                      needsNoSandbox: app.needsNoSandbox,
+                      launchMode: app.launchMode,
+                      forceNew: opts?.forceNew,
+                    })
+                  }
+                  onLaunchCustomCommand={(cmd) => {
+                    const trimmed = cmd.trim();
+                    if (/^https?:\/\//i.test(trimmed)) {
+                      openWebAppWindow({
+                        appId: 'custom-web',
+                        url: trimmed,
+                        title: trimmed.replace(/^https?:\/\//i, '').split('/')[0] || 'Web Uygulaması',
+                        forceNew: true,
+                      });
+                      return;
+                    }
+                    launchLinuxApp({
+                      appId: 'custom',
+                      command: trimmed,
+                      appName: trimmed.split(' ')[0] || 'Uygulama',
+                    });
+                  }}
+                  onOpenTerminal={() => openTerminalWindow('/Desktop')}
+                />
+              )}
+
+              {win.kind === 'folder' && (
+                <FolderWindow
+                  initialPath={win.folderPath || '/Desktop'}
+                  allNodes={allNodes}
+                  clipboard={clipboard}
+                  externalDropTarget={externalDropTarget}
+                  renamingPath={renamingPath}
+                  onSetRenamingPath={setRenamingPath}
+                  onRenameCommit={handleRenameCommit}
+                  onOpenNode={handleOpenNode}
+                  onPathChangeTitle={(newTitle, newPath) =>
+                    setWindows((prev) =>
+                      prev.map((w) =>
+                        w.id === win.id ? { ...w, title: newTitle, folderPath: newPath } : w
+                      )
+                    )
+                  }
+                  onCreateFolder={(dir) => handleCreateFolder(dir)}
+                  onOpenCustomFileDialog={(dir) => setCustomFileDialog({ parentPath: dir })}
+                  onUploadFiles={handleUploadFiles}
+                  onMoveNodes={handleMoveNodes}
+                  onTrashNodes={(nodes) => handleTrashPaths(nodes.map((n) => n.path))}
+                  onRestoreNodes={handleRestoreNodes}
+                  onEmptyTrash={handleEmptyTrash}
+                  onContextMenu={(x, y, target) => setCtxMenu({ x, y, target })}
+                />
+              )}
+
+              {win.kind === 'properties' && (
+                <PropertiesPane
+                  node={allNodes.find((n) => n.path === win.targetNodePath)}
+                  onOpenNode={handleOpenNode}
+                  onClose={() => setWindows((prev) => prev.filter((w) => w.id !== win.id))}
+                />
+              )}
+
+              {win.kind === 'settings' && (
+                <SettingsWindow
+                  initialTab={win.settingsTab || 'stream'}
+                  meta={meta}
+                  telemetry={telemetry}
+                  pingMs={pingMs}
+                  lastFrameKB={lastFrameKB}
+                  brightness={brightness}
+                  volume={volume}
+                  muted={muted}
+                  authStatus={authStatus}
+                  currentDesktop={currentDesktop}
+                  desktops={desktops}
+                  onUpdatePreferences={handleUpdatePreferences}
+                  onToggleTheme={handleChangeTheme}
+                  onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
+                  onChangeBrightness={setBrightness}
+                  onChangeVolume={(v) => {
+                    setVolume(v);
+                    if (v > 0 && muted) setMuted(false);
+                  }}
+                  onToggleMute={() => setMuted((m) => !m)}
+                  onOpenTerminal={(dir) => openTerminalWindow(dir || '/Desktop')}
+                  onSwitchDesktop={handleSwitchDesktop}
+                  onCreateDesktop={handleCreateDesktop}
+                  onLockScreen={activateLockScreen}
+                  onPreviewScreensaver={() => {
+                    screensaverStartedAtRef.current = Date.now();
+                    setScreensaverIsPreview(true);
+                    setScreensaverActive(true);
+                  }}
+                  onSendWs={sendWs}
+                  onLogout={handleLogout}
+                  onNotify={pushToast}
+                />
+              )}
+            </Suspense>
           </WindowFrame>
         );
       })}
 
       {/* CONTEXT MENU */}
       {ctxMenu && (
-        <ContextMenu
-          x={ctxMenu.x}
-          y={ctxMenu.y}
-          target={ctxMenu.target}
-          clipboard={clipboard}
-          preferences={meta.preferences}
-          hasTrashItems={trashCount > 0}
-          linuxApps={linuxApps}
-          linuxGuiReady={Boolean(linuxRuntime?.guiReady)}
-          onClose={() => setCtxMenu(null)}
-          onCreateFolder={handleCreateFolder}
-          onCreateQuickFile={handleCreateFile}
-          onOpenCustomFileDialog={(dirPath, pos) => setCustomFileDialog({ parentPath: dirPath, pos })}
-          onTriggerUpload={(dirPath) => {
-            setUploadTargetDir(dirPath);
-            globalUploadRef.current?.click();
-          }}
-          onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
-          onSetWallpaperFromNode={handleSetWallpaperFromNode}
-          onOpenNode={handleOpenNode}
-          onOpenNodeWith={handleOpenNodeWith}
-          onSetDefaultOpenWith={handleSetDefaultOpenWith}
-          onStartRename={(node) => setRenamingPath(node.path)}
-          onCopy={(nodes) => setClipboard({ mode: 'copy', paths: nodes.map((n) => n.path) })}
-          onCut={(nodes) => setClipboard({ mode: 'cut', paths: nodes.map((n) => n.path) })}
-          onDuplicate={handleDuplicate}
-          onPaste={handlePaste}
-          onTrash={(nodes) => handleTrashPaths(nodes.map((n) => n.path))}
-          onRestore={handleRestoreNodes}
-          onDeletePermanent={handleDeletePermanent}
-          onEmptyTrash={handleEmptyTrash}
-          onCompressZip={handleCompressZip}
-          onExtractZip={handleExtractZip}
-          onDownloadHost={(node) => {
-            const a = document.createElement('a');
-            a.href = buildRawFileUrl(node.path, '&download=1');
-            a.click();
-          }}
-          onShowProperties={openPropertiesWindow}
-          onOpenChromium={() => openPrimaryBrowser()}
-          onOpenFolderWindow={openFolderWindow}
-          onOpenTerminalInDir={(dirPath) => openTerminalWindow(dirPath)}
-          onOpenSettings={(tab) => openSettingsWindow(tab || 'stream')}
-          onUpdatePreferences={handleUpdatePreferences}
-          onCycleWallpaper={() => {
-            const idx = WALLPAPERS.findIndex((w) => w.id === meta.preferences.wallpaper);
-            const next = WALLPAPERS[(idx + 1) % WALLPAPERS.length];
-            handleUpdatePreferences({ wallpaper: next.id });
-          }}
-          onRefresh={refreshVfs}
-        />
+        <Suspense fallback={null}>
+          <ContextMenu
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            target={ctxMenu.target}
+            clipboard={clipboard}
+            preferences={meta.preferences}
+            hasTrashItems={trashCount > 0}
+            linuxApps={linuxApps}
+            linuxGuiReady={Boolean(linuxRuntime?.guiReady)}
+            onClose={() => setCtxMenu(null)}
+            onCreateFolder={handleCreateFolder}
+            onCreateQuickFile={handleCreateFile}
+            onOpenCustomFileDialog={(dirPath, pos) => setCustomFileDialog({ parentPath: dirPath, pos })}
+            onTriggerUpload={(dirPath) => {
+              setUploadTargetDir(dirPath);
+              globalUploadRef.current?.click();
+            }}
+            onTriggerWallpaperUpload={() => wallpaperUploadRef.current?.click()}
+            onSetWallpaperFromNode={handleSetWallpaperFromNode}
+            onOpenNode={handleOpenNode}
+            onOpenNodeWith={handleOpenNodeWith}
+            onSetDefaultOpenWith={handleSetDefaultOpenWith}
+            onStartRename={(node) => setRenamingPath(node.path)}
+            onCopy={(nodes) => setClipboard({ mode: 'copy', paths: nodes.map((n) => n.path) })}
+            onCut={(nodes) => setClipboard({ mode: 'cut', paths: nodes.map((n) => n.path) })}
+            onDuplicate={handleDuplicate}
+            onPaste={handlePaste}
+            onTrash={(nodes) => handleTrashPaths(nodes.map((n) => n.path))}
+            onRestore={handleRestoreNodes}
+            onDeletePermanent={handleDeletePermanent}
+            onEmptyTrash={handleEmptyTrash}
+            onCompressZip={handleCompressZip}
+            onExtractZip={handleExtractZip}
+            onDownloadHost={(node) => {
+              const a = document.createElement('a');
+              a.href = buildRawFileUrl(node.path, '&download=1');
+              a.click();
+            }}
+            onShowProperties={openPropertiesWindow}
+            onOpenChromium={() => openPrimaryBrowser()}
+            onOpenFolderWindow={openFolderWindow}
+            onOpenTerminalInDir={(dirPath) => openTerminalWindow(dirPath)}
+            onOpenSettings={(tab) => openSettingsWindow(tab || 'stream')}
+            onUpdatePreferences={handleUpdatePreferences}
+            onCycleWallpaper={() => {
+              const idx = WALLPAPERS.findIndex((w) => w.id === meta.preferences.wallpaper);
+              const next = WALLPAPERS[(idx + 1) % WALLPAPERS.length];
+              handleUpdatePreferences({ wallpaper: next.id });
+            }}
+            onRefresh={refreshVfs}
+          />
+        </Suspense>
       )}
 
       {/* CUSTOM FILE EXTENSION CREATOR */}
       {customFileDialog && (
-        <NewCustomFileModal
-          parentPath={customFileDialog.parentPath}
-          onClose={() => setCustomFileDialog(null)}
-          onCreate={(fileName) => {
-            const { parentPath, pos } = customFileDialog;
-            setCustomFileDialog(null);
-            handleCreateFile(parentPath, fileName, pos);
-          }}
-        />
+        <Suspense fallback={null}>
+          <NewCustomFileModal
+            parentPath={customFileDialog.parentPath}
+            onClose={() => setCustomFileDialog(null)}
+            onCreate={(fileName) => {
+              const { parentPath, pos } = customFileDialog;
+              setCustomFileDialog(null);
+              handleCreateFile(parentPath, fileName, pos);
+            }}
+          />
+        </Suspense>
       )}
 
       {/* TOP-RIGHT SLIDE-IN FULLSCREEN RECOMMENDATION */}
@@ -2723,43 +2798,55 @@ export default function App() {
       />
 
       {/* ANIMATED SCREENSAVER */}
-      <ScreensaverOverlay
-        active={screensaverActive && !locked}
-        scene={meta.preferences.screensaver?.scene || DEFAULT_SCREENSAVER_PREFERENCES.scene}
-        customVideoUrl={meta.preferences.screensaver?.customVideoUrl}
-        currentWallpaperId={meta.preferences.wallpaper}
-        currentCustomWallpaper={meta.preferences.customWallpaper}
-        theme={meta.preferences.theme || 'dark'}
-        requirePassword={Boolean(
-          authStatus.enabled && (meta.preferences.screensaver?.requirePassword ?? true)
-        )}
-        onDismiss={handleDismissScreensaver}
-      />
+      {screensaverActive && !locked && (
+        <Suspense fallback={null}>
+          <ScreensaverOverlay
+            active
+            scene={meta.preferences.screensaver?.scene || DEFAULT_SCREENSAVER_PREFERENCES.scene}
+            customVideoUrl={meta.preferences.screensaver?.customVideoUrl}
+            currentWallpaperId={meta.preferences.wallpaper}
+            currentCustomWallpaper={meta.preferences.customWallpaper}
+            theme={meta.preferences.theme || 'dark'}
+            requirePassword={Boolean(
+              authStatus.enabled && (meta.preferences.screensaver?.requirePassword ?? true)
+            )}
+            onDismiss={handleDismissScreensaver}
+          />
+        </Suspense>
+      )}
 
       {/* LOCK SCREEN */}
-      <LockScreenOverlay
-        locked={locked}
-        style={meta.preferences.lockScreen?.style || DEFAULT_LOCK_SCREEN_PREFERENCES.style}
-        showClock={meta.preferences.lockScreen?.showClock ?? true}
-        requirePassword={meta.preferences.lockScreen?.requirePassword ?? true}
-        wallpaperId={meta.preferences.wallpaper}
-        customWallpaper={meta.preferences.customWallpaper}
-        theme={meta.preferences.theme || 'dark'}
-        authStatus={authStatus}
-        lockClock={lockClock}
-        onUnlock={unlockDesktop}
-        onLogout={authStatus.enabled ? handleLogout : undefined}
-      />
+      {locked && (
+        <Suspense fallback={null}>
+          <LockScreenOverlay
+            locked
+            style={meta.preferences.lockScreen?.style || DEFAULT_LOCK_SCREEN_PREFERENCES.style}
+            showClock={meta.preferences.lockScreen?.showClock ?? true}
+            requirePassword={meta.preferences.lockScreen?.requirePassword ?? true}
+            wallpaperId={meta.preferences.wallpaper}
+            customWallpaper={meta.preferences.customWallpaper}
+            theme={meta.preferences.theme || 'dark'}
+            authStatus={authStatus}
+            lockClock={lockClock}
+            onUnlock={unlockDesktop}
+            onLogout={authStatus.enabled ? handleLogout : undefined}
+          />
+        </Suspense>
+      )}
 
       {/* OFFLINE / DISCONNECTED BLUR OVERLAY */}
-      <OfflineBannerOverlay
-        offline={!isBrowserOnline || wsDisconnected}
-        onRetry={() => {
-          setIsBrowserOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
-          setWsReconnectNonce((n) => n + 1);
-          refreshVfs();
-        }}
-      />
+      {(!isBrowserOnline || wsDisconnected) && (
+        <Suspense fallback={null}>
+          <OfflineBannerOverlay
+            offline
+            onRetry={() => {
+              setIsBrowserOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
+              setWsReconnectNonce((n) => n + 1);
+              refreshVfs();
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* BRIGHTNESS OVERLAY */}
       {brightness < 100 && (
