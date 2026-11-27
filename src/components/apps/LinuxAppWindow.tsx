@@ -177,12 +177,13 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     let rafId: number | null = null;
     let pendingAckCount = 0;
 
-    // Adaptive jitter-buffer telemetry (active when smoothBuffer is enabled)
+    // Adaptive PLL jitter-buffer state (active when smoothBuffer is enabled)
     let lastArrivalAt = 0;
-    let avgIntervalMs = 24;
-    let jitterMs = 12;
+    let avgIntervalMs = 33;
+    let jitterMs = 15;
     let lastPaintedAt = 0;
-    let smoothBuffering = false;
+    let nextDueAt = 0;
+    let primed = false;
 
     const getCtx = (canvas: HTMLCanvasElement) => {
       if (!ctxRef.current) {
@@ -215,10 +216,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       const now = performance.now();
       if (lastArrivalAt > 0) {
         const dt = now - lastArrivalAt;
-        if (dt > 2 && dt < 280) {
-          avgIntervalMs = avgIntervalMs * 0.8 + dt * 0.2;
+        if (dt > 5 && dt < 260) {
+          avgIntervalMs = avgIntervalMs * 0.85 + dt * 0.15;
           const dev = Math.abs(dt - avgIntervalMs);
-          jitterMs = Math.min(140, jitterMs * 0.82 + dev * 0.18);
+          jitterMs = Math.min(140, jitterMs * 0.85 + dev * 0.15);
         }
       }
       lastArrivalAt = now;
@@ -255,7 +256,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       const now = performance.now();
 
       if (!smoothBufferRef.current) {
-        smoothBuffering = false;
+        primed = false;
+        nextDueAt = 0;
         while (readySlots.has(nextPaintSeq)) {
           const slot = readySlots.get(nextPaintSeq)!;
           readySlots.delete(nextPaintSeq);
@@ -274,58 +276,84 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         return;
       }
 
-      // Adaptive Smooth Buffer Mode: hold small RTT+jitter cushion and pace steady 1-frame/VSync playback
-      const targetBufferMs = Math.min(240, Math.max(70, pingMsRef.current * 0.65 + jitterMs * 1.4 + 35));
-      const frameStepMs = Math.max(16, Math.min(45, avgIntervalMs));
-      const targetFrames = Math.max(2, Math.min(10, Math.round(targetBufferMs / frameStepMs)));
+      // True PLL Adaptive Smooth Clock Pacer:
+      // 1) Matches actual source FPS cadence (avgIntervalMs) instead of draining at 60Hz and starving.
+      // 2) Gently stretches pace (+25% max) when cushion dips and gently compresses (-22% max) when cushion grows.
+      // 3) Paints immediately on first click/keystroke from idle so responsiveness stays snappy.
+      const sourceStepMs = Math.max(16, Math.min(85, avgIntervalMs));
+      const targetBufferMs = Math.min(260, Math.max(75, pingMsRef.current * 0.65 + jitterMs * 2.0 + 35));
+      const targetFrames = Math.max(2.5, Math.min(10, targetBufferMs / sourceStepMs));
 
-      if (readySlots.has(nextPaintSeq)) {
-        const head = readySlots.get(nextPaintSeq)!;
-        const headAge = now - head.arrivedAt;
-        const queuedCount = readySlots.size;
-        const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 240;
-
-        // First frame after idle paints immediately (snappy clicks/typing), continuous motion primes smooth buffer
-        if (!readyFiredRef.current || (wasIdle && queuedCount === 1)) {
-          smoothBuffering = false;
-        } else if (queuedCount >= 2 && headAge < targetBufferMs * 0.65 && queuedCount < targetFrames && smoothBuffering) {
-          // Wait briefly to absorb TCP burst jitter before resuming steady cadence
+      if (!readySlots.has(nextPaintSeq)) {
+        if (readySlots.size > 0) {
+          // A newer sequence arrived while earlier bitmap is still decoding — keep rAF alive
           schedulePaint();
-          if (readySlots.size <= 16) flushAcks();
-          return;
         }
+        return;
+      }
 
-        // Guard against unbounded queue growth: jump to newest full keyframe only if extremely backed up (>20)
-        if (queuedCount > 20) {
-          let latestFullSeq = -1;
-          for (const [k, s] of readySlots.entries()) {
-            if (s.kind === 'full' && k > latestFullSeq) latestFullSeq = k;
-          }
-          if (latestFullSeq > nextPaintSeq) {
-            dropStaleBefore(latestFullSeq);
-          }
+      const queuedCount = readySlots.size;
+      const head = readySlots.get(nextPaintSeq)!;
+      const headAge = now - head.arrivedAt;
+      const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 320;
+
+      // Guard against extreme queue growth (>20): jump directly to newest full keyframe safely
+      if (queuedCount > 20) {
+        let latestFullSeq = -1;
+        for (const [k, s] of readySlots.entries()) {
+          if (s.kind === 'full' && k > latestFullSeq) latestFullSeq = k;
         }
-
-        // Gentle catch-up: paint 1 frame normally, 2 frames only when queue exceeds target cushion
-        const paintBudget =
-          queuedCount > targetFrames + 5 || headAge > targetBufferMs + 140 ? 2 : 1;
-
-        for (let painted = 0; painted < paintBudget && readySlots.has(nextPaintSeq); painted++) {
-          const slot = readySlots.get(nextPaintSeq)!;
-          readySlots.delete(nextPaintSeq);
-          nextPaintSeq += 1;
-          if (paintSlot(canvas, slot)) {
-            paintedAny = true;
-            lastPaintedAt = now;
-          }
-          disposeSlot(slot);
+        if (latestFullSeq > nextPaintSeq) {
+          dropStaleBefore(latestFullSeq);
         }
+      }
 
-        if (readySlots.size === 0) {
-          smoothBuffering = true;
+      const curQueued = readySlots.size;
+      const err = curQueued - targetFrames;
+      // Smooth proportional clock speed adjustment (zero sudden stops!)
+      const rateFactor = Math.max(0.76, Math.min(1.26, 1.0 - err * 0.085));
+      const paceMs = Math.max(15, sourceStepMs * rateFactor);
+
+      // Brief one-time cushion prime only when continuous motion starts (queued >= 2)
+      if (!primed) {
+        if (!readyFiredRef.current || (wasIdle && curQueued === 1)) {
+          // Instant response on very first frame or single idle click/keystroke
+          nextDueAt = now;
+        } else if (curQueued >= Math.ceil(targetFrames * 0.7) || headAge >= targetBufferMs * 0.75) {
+          primed = true;
+          nextDueAt = now;
         } else {
           schedulePaint();
+          if (curQueued <= 16) flushAcks();
+          return;
         }
+      }
+
+      // Snap within 4.5ms of display VSync to avoid 16.6ms quantization skips
+      if (nextDueAt === 0 || now >= nextDueAt - 4.5) {
+        const slot = readySlots.get(nextPaintSeq)!;
+        readySlots.delete(nextPaintSeq);
+        nextPaintSeq += 1;
+        if (paintSlot(canvas, slot)) {
+          paintedAny = true;
+          lastPaintedAt = now;
+        }
+        disposeSlot(slot);
+
+        // Advance phase-locked schedule cleanly without accumulating drift
+        const baseTime = nextDueAt > 0 && Math.abs(now - nextDueAt) < paceMs * 1.4 ? nextDueAt : now;
+        nextDueAt = baseTime + paceMs;
+        if (readySlots.size > targetFrames + 4) {
+          // Gently pull schedule forward if excess frames accumulated
+          nextDueAt = now + Math.max(15, sourceStepMs * 0.72);
+        }
+      }
+
+      if (readySlots.size > 0) {
+        schedulePaint();
+      } else if (now - lastArrivalAt > 300) {
+        primed = false;
+        nextDueAt = 0;
       }
 
       if (paintedAny && !readyFiredRef.current) {

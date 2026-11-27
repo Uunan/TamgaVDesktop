@@ -32,7 +32,7 @@ import { VSCodeServerManager } from './vscodeManager';
 import { WebAppProxyManager } from './webAppProxy';
 import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.3.3';
+export const TAMGA_VERSION = '2.3.4';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',

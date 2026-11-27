@@ -620,6 +620,8 @@ class PrevFrameCache:
                         if bx + seg > max_bx:
                             max_bx = bx + seg
                         break
+                if min_bx == 0 and max_bx >= row_bytes:
+                    break
             if max_bx > min_bx:
                 ax = rx + (min_bx // bpp)
                 aw = (max_bx - min_bx + bpp - 1) // bpp
@@ -655,10 +657,12 @@ class PrevFrameCache:
             band_y0 = 0
             last_dirty_y1 = 0
             clean_bands = 0
+            dirty_rows_total = 0
             for y in range(0, full_h, 8):
                 rows = min(8, full_h - y)
                 off = y * stride
                 if libc.memcmp(base_data + off, self.ptr + off, rows * stride) != 0:
+                    dirty_rows_total += rows
                     if not in_band:
                         band_y0 = y
                         in_band = True
@@ -674,6 +678,9 @@ class PrevFrameCache:
                 bands.append((band_y0, last_dirty_y1))
             if not bands:
                 return False, None
+            # Fast-exit on full-screen motion: avoid thousands of per-row FFI calls when >=60% height changed
+            if dirty_rows_total >= int(full_h * 0.60):
+                return True, None
 
             raw: list[tuple[int, int, int, int]] = []
             for by0, by1 in bands:
@@ -1334,17 +1341,26 @@ def main() -> None:
                 active_interval = micro_interval
 
         if dirty and in_flight < max_in_flight and (now - last_sent) >= active_interval:
+            is_continuous_motion = (not force_full) and (now - last_sent) < max(0.20, min_interval * 3.0)
+            is_large_update = True
+            if pending_damage and pending_damage[0] is not None:
+                pb = pending_damage[0]
+                is_large_update = (pb[2] * pb[3]) > int(width * height * 0.35)
             effective_dynamic_drop = dynamic_drop and (not smooth_buffer)
-            is_rapid_motion = (
-                effective_dynamic_drop and not force_full and (now - last_sent) < max(0.20, min_interval * 3.0)
-            )
+            is_rapid_motion = effective_dynamic_drop and is_continuous_motion
             congestion_drop = 0 if smooth_buffer else (8 if in_flight >= (max_in_flight - 1) else 0)
             send_qual = (
                 max(30, motion_quality - congestion_drop)
                 if is_rapid_motion
                 else max(45, max_quality)
             )
-            subsamp = TJSAMP_420 if is_rapid_motion else (TJSAMP_444 if not force_full else TJSAMP_422)
+            if is_rapid_motion:
+                subsamp = TJSAMP_420
+            elif force_full or (smooth_buffer and is_continuous_motion and is_large_update):
+                # 4:2:2 preserves full horizontal typography sharpness while encoding ~30% faster & lighter than 4:4:4
+                subsamp = TJSAMP_422
+            else:
+                subsamp = TJSAMP_444
             status, sent_rect = grab_and_send(
                 send_qual,
                 subsamp,
@@ -1360,7 +1376,7 @@ def main() -> None:
                 in_flight += 1
                 in_flight_since = time.monotonic()
                 last_sent = in_flight_since
-                if is_rapid_motion and send_qual < max_quality:
+                if (is_rapid_motion and send_qual < max_quality) or (subsamp != TJSAMP_444 and not force_full):
                     needs_settle = True
                     settle_rect = union_rects(settle_rect, sent_rect)
                     last_motion_at = last_sent
