@@ -533,11 +533,14 @@ const DEFAULT_SCREEN_H = 840;
 const PROFILE_LOCKED_APPS = new Set([
   'firefox',
   'firefox-esr',
+  'thunderbird',
   'chrome',
   'google-chrome',
   'google-chrome-stable',
   'chromium',
   'chromium-browser',
+  'brave',
+  'brave-browser',
   'antigravity',
 ]);
 
@@ -663,8 +666,8 @@ export class LinuxAppSession {
     this.displayNum = displayNum;
     this.displayStr = `:${displayNum}`;
 
-    const rawScreenW = Math.max(1280, Math.min(1920, Math.round(opts.viewportWidth || DEFAULT_SCREEN_W)));
-    const rawScreenH = Math.max(760, Math.min(1080, Math.round(opts.viewportHeight || DEFAULT_SCREEN_H)));
+    const rawScreenW = Math.max(1024, Math.min(1920, Math.round(opts.viewportWidth || DEFAULT_SCREEN_W)));
+    const rawScreenH = Math.max(580, Math.min(1080, Math.round(opts.viewportHeight || DEFAULT_SCREEN_H)));
     this.screenWidth = rawScreenW - (rawScreenW % 2);
     this.screenHeight = rawScreenH - (rawScreenH % 2);
 
@@ -798,6 +801,8 @@ export class LinuxAppSession {
             'tcp',
             '-ac',
             '+extension',
+            'GLX',
+            '+extension',
             'RANDR',
             '+extension',
             'DAMAGE',
@@ -826,6 +831,7 @@ export class LinuxAppSession {
     );
     const sysPath =
       process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+    const hasHardwareGpu = fs.existsSync('/dev/dri/renderD128');
 
     const baseEnv: NodeJS.ProcessEnv = applyIpv4PreferenceToEnv({
       ...process.env,
@@ -848,6 +854,7 @@ export class LinuxAppSession {
       LC_ALL: 'C.UTF-8',
       XDG_RUNTIME_DIR: this.tempDir,
       GDK_SCALE: '1',
+      QT_QPA_PLATFORM: 'xcb',
       QT_AUTO_SCREEN_SCALE_FACTOR: '0',
       QT_X11_NO_MITSHM: '0',
       MOZ_ENABLE_WAYLAND: '0',
@@ -855,6 +862,14 @@ export class LinuxAppSession {
       GTK_OVERLAY_SCROLLING: '0',
       NO_AT_BRIDGE: '1',
       XCURSOR_THEME: 'DMZ-White',
+      ...(!hasHardwareGpu
+        ? {
+            LIBGL_ALWAYS_SOFTWARE: '1',
+            GALLIUM_DRIVER: 'llvmpipe',
+            MESA_GL_VERSION_OVERRIDE: '4.5',
+            MESA_GLSL_VERSION_OVERRIDE: '450',
+          }
+        : {}),
     });
     delete baseEnv.DBUS_SESSION_BUS_ADDRESS;
     this.baseEnv = baseEnv;
@@ -1262,11 +1277,38 @@ export class LinuxAppSession {
       finalCmd = extraNewWindow
         ? `${finalCmd} -profile "${profileDir}" --new-window about:home`
         : `${finalCmd} -profile "${profileDir}"${safeInitUrl}`;
+    } else if (baseBin === 'thunderbird') {
+      if (!extraNewWindow) {
+        for (const stale of ['.startup-incomplete', '.parentlock', 'lock']) {
+          try {
+            fs.rmSync(path.join(profileDir, stale), { force: true });
+          } catch {}
+        }
+      }
+      try {
+        fs.writeFileSync(
+          path.join(profileDir, 'user.js'),
+          [
+            'user_pref("mail.shell.checkDefaultClient", false);',
+            'user_pref("general.smoothScroll", true);',
+            'user_pref("gfx.webrender.software", true);',
+            'user_pref("gfx.x11-egl.force-disabled", true);',
+            'user_pref("network.dns.disableIPv6", true);',
+            'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
+          ].join('\n') + '\n',
+          'utf-8'
+        );
+      } catch {}
+      finalCmd = `${finalCmd} -profile "${profileDir}"`;
     } else if (
       this.needsNoSandbox ||
       [
         'code',
+        'codium',
+        'cursor',
         'antigravity',
+        'obsidian',
+        'discord',
         'chromium',
         'chromium-browser',
         'google-chrome',
@@ -1376,11 +1418,13 @@ export class LinuxAppSession {
           };
           fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf-8');
         } catch {}
-      } else if (baseBin === 'code' || baseBin === 'codium' || baseBin === 'antigravity') {
+      } else if (baseBin === 'code' || baseBin === 'codium' || baseBin === 'antigravity' || baseBin === 'cursor') {
         try {
           const userCfgDir =
             baseBin === 'antigravity'
               ? path.join(xdgConfigHome, 'Antigravity', 'User')
+              : baseBin === 'cursor'
+              ? path.join(xdgConfigHome, 'Cursor', 'User')
               : path.join(profileDir, 'User');
           fs.mkdirSync(userCfgDir, { recursive: true });
           const settingsPath = path.join(userCfgDir, 'settings.json');
@@ -1448,8 +1492,70 @@ export class LinuxAppSession {
         }
       }
       finalCmd = `${finalCmd} ${extraFlags.join(' ')}`;
-    } else if (extraNewWindow && baseBin === 'gimp') {
-      finalCmd = `${finalCmd} -n`;
+    } else if (baseBin === 'gimp') {
+      // Ensure clean single-window-mode with full Toolbox & Layers docks (GIMP 2.10 reads this from sessionrc)
+      try {
+        const gimpCfgDir = path.join(xdgConfigHome, 'GIMP', '2.10');
+        fs.mkdirSync(gimpCfgDir, { recursive: true });
+        const gimprcPath = path.join(gimpCfgDir, 'gimprc');
+        if (fs.existsSync(gimprcPath)) {
+          const raw = fs.readFileSync(gimprcPath, 'utf-8');
+          if (raw.includes('(show-welcome-dialog no)') && raw.trim().split('\n').length <= 3) {
+            fs.rmSync(gimprcPath, { force: true });
+          }
+        }
+        const sessionRcPath = path.join(gimpCfgDir, 'sessionrc');
+        if (!fs.existsSync(sessionRcPath) && fs.existsSync('/etc/gimp/2.0/sessionrc')) {
+          const baseRc = fs.readFileSync('/etc/gimp/2.0/sessionrc', 'utf-8');
+          const fitW = Math.max(800, Math.min(1180, this.screenWidth - 20));
+          const fitH = Math.max(540, Math.min(720, this.screenHeight - 20));
+          const patched = baseRc
+            .replace(/\(size\s+1024\s+768\)/, `(size ${fitW} ${fitH})`)
+            .replace(/\(position\s+200\s+100\)/g, '(position 0 0)');
+          fs.writeFileSync(sessionRcPath, patched, 'utf-8');
+        }
+      } catch {}
+      const gimpArgs: string[] = [];
+      if (!finalCmd.includes('--no-splash') && !finalCmd.includes('-s')) {
+        gimpArgs.push('--no-splash');
+      }
+      if (extraNewWindow) {
+        gimpArgs.push('-n');
+      }
+      if (!extraNewWindow && this.initialFiles.length > 0) {
+        for (const fp of this.initialFiles) {
+          gimpArgs.push(`'${fp.replace(/'/g, "'\\''")}'`);
+        }
+      }
+      if (gimpArgs.length > 0) {
+        finalCmd = `${finalCmd} ${gimpArgs.join(' ')}`;
+      }
+    } else if (baseBin === 'subl') {
+      const sublArgs: string[] = [];
+      if (!extraNewWindow && !finalCmd.includes('-w')) {
+        sublArgs.push('-w');
+      }
+      if (!extraNewWindow && this.initialFiles.length > 0) {
+        for (const fp of this.initialFiles) {
+          sublArgs.push(`'${fp.replace(/'/g, "'\\''")}'`);
+        }
+      }
+      if (sublArgs.length > 0) {
+        finalCmd = `${finalCmd} ${sublArgs.join(' ')}`;
+      }
+    } else if (baseBin === 'libreoffice' || baseBin === 'soffice') {
+      const loArgs: string[] = [];
+      if (!finalCmd.includes('--nologo')) loArgs.push('--nologo');
+      if (!finalCmd.includes('--norestore')) loArgs.push('--norestore');
+      if (!finalCmd.includes('UserInstallation')) {
+        loArgs.push(`"-env:UserInstallation=${pathToFileURL(profileDir).href}"`);
+      }
+      if (!extraNewWindow && this.initialFiles.length > 0) {
+        for (const fp of this.initialFiles) {
+          loArgs.push(`'${fp.replace(/'/g, "'\\''")}'`);
+        }
+      }
+      finalCmd = `${finalCmd} ${loArgs.join(' ')}`;
     } else if (!extraNewWindow && this.initialFiles.length > 0) {
       const quoted = this.initialFiles.map((fp) => `'${fp.replace(/'/g, "'\\''")}'`).join(' ');
       finalCmd = `${finalCmd} ${quoted}`;
@@ -1462,6 +1568,7 @@ export class LinuxAppSession {
     const { cmd, cwd, xdgConfigHome } = this.buildLaunchCommand(false);
     const downloadsDir = path.join(this.desktopDataRoot, 'vfs', 'Downloads');
 
+    let stderrTail = '';
     this.appProc = spawn('/bin/bash', ['-c', `exec ${cmd}`], {
       cwd,
       env: {
@@ -1471,36 +1578,69 @@ export class LinuxAppSession {
         XDG_DOWNLOAD_DIR: downloadsDir,
         DONT_PROMPT_WSL_INSTALL: '1',
       },
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
+
+    this.appProc.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString('utf-8')).slice(-2048);
+    });
+
+    const hasMappedWindow = (): boolean => {
+      try {
+        const out = execSync('wmctrl -l', {
+          env: { ...process.env, DISPLAY: this.displayStr },
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 1200,
+        })
+          .toString('utf-8')
+          .trim();
+        return out.length > 0;
+      } catch {
+        return false;
+      }
+    };
 
     this.appProc.on('exit', (code) => {
       if (this.closed) return;
-      setTimeout(() => {
-        if (this.closed) return;
-        try {
-          const out = execSync('wmctrl -l', {
-            env: { ...process.env, DISPLAY: this.displayStr },
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: 1200,
-          })
-            .toString('utf-8')
-            .trim();
-          if (out.length > 0) {
-            this.hadWindow = true;
-            return;
-          }
-        } catch {}
+      // Clean launcher forks (code === 0, e.g. code/cursor/subl/discord/libreoffice/obsidian/telegram)
+      // often exit immediately while their child GUI process needs 2-10s to map on cold VPS start.
+      const maxChecks = code === 0 ? 24 : 5;
+      let attempt = 0;
 
-        if (!this.hadWindow || code !== 0) {
-          for (const v of this.views.values()) {
-            for (const sub of v.subscribers) {
-              sub.onEvent({ type: 'app_exit', code: code ?? 0 });
-            }
-          }
-          this.close();
+      const checkWindow = () => {
+        if (this.closed) return;
+        attempt += 1;
+        if (this.hadWindow || hasMappedWindow()) {
+          this.hadWindow = true;
+          return;
         }
-      }, 1500);
+        if (attempt < maxChecks) {
+          setTimeout(checkWindow, 500).unref();
+          return;
+        }
+        const errHint = stderrTail
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !/^(Gtk-Message|libEGL warning|MESA:|Fontconfig|Xlib:)/i.test(l))
+          .slice(-2)
+          .join(' — ');
+        for (const v of this.views.values()) {
+          for (const sub of v.subscribers) {
+            if (!this.hadWindow && (code !== 0 || errHint)) {
+              sub.onEvent({
+                type: 'error',
+                message: errHint
+                  ? `${this.appName} başlatılamadı (kod ${code ?? 1}): ${errHint.slice(0, 220)}`
+                  : `${this.appName} beklenmedik şekilde kapandı (kod ${code ?? 1}).`,
+              });
+            }
+            sub.onEvent({ type: 'app_exit', code: code ?? 0 });
+          }
+        }
+        this.close();
+      };
+
+      setTimeout(checkWindow, 600).unref();
     });
   }
 

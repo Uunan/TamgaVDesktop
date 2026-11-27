@@ -249,7 +249,7 @@ apt-get remove -y antigravity 2>/dev/null || true`,
     name: 'Cursor',
     publisher: 'Anysphere',
     description: 'Yapay zeka destekli yeni nesil kod editörü (Linux x64/ARM64)',
-    binaryNames: ['cursor', '/usr/local/bin/cursor', '/opt/Cursor/AppRun'],
+    binaryNames: ['/usr/local/bin/cursor', 'cursor', '/opt/Cursor/AppRun'],
     defaultCommand: '/usr/local/bin/cursor',
     category: 'development',
     accent: '#27272a',
@@ -258,20 +258,22 @@ apt-get remove -y antigravity 2>/dev/null || true`,
     installScript: [
       'set -e',
       'export DEBIAN_FRONTEND=noninteractive',
-      'apt-get update -y && apt-get install -y curl python3 ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1',
+      'apt-get update -y && (apt-get install -y curl python3 ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 2>/dev/null || apt-get install -y curl python3 ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 || true)',
       'ARCH=$(dpkg --print-architecture)',
       'if [ "$ARCH" = "arm64" ]; then PLAT="linux-arm64"; else PLAT="linux-x64"; fi',
       'cat <<\'PYEOF\' > /tmp/cursor_resolve.py',
       'import json, os, urllib.request',
       'plat = os.environ.get("PLAT", "linux-x64")',
-      'req = urllib.request.Request("https://www.cursor.com/api/download?platform=" + plat + "&releaseTrack=latest", headers={"User-Agent": "Mozilla/5.0"})',
-      'with urllib.request.urlopen(req, timeout=20) as r:',
+      'url = "https://www.cursor.com/api/download?platform=" + plat + "&releaseTrack=latest"',
+      'req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})',
+      'with urllib.request.urlopen(req, timeout=25) as r:',
       '    data = json.loads(r.read().decode("utf-8"))',
       'print(data.get("downloadUrl", ""))',
       'PYEOF',
       'URL=$(PLAT="$PLAT" python3 /tmp/cursor_resolve.py || true)',
       'rm -f /tmp/cursor_resolve.py',
-      'if [ -z "$URL" ]; then URL="https://downloader.cursor.sh/linux/appImage/x64"; fi',
+      'if [ -z "$URL" ]; then echo "Hata: Cursor indirme bağlantısı çözümlenemedi."; exit 1; fi',
+      'echo "İndiriliyor: $URL"',
       'rm -rf /tmp/cursor-dl /opt/Cursor',
       'mkdir -p /tmp/cursor-dl',
       'curl -fL --progress-bar "$URL" -o /tmp/cursor-dl/cursor.AppImage',
@@ -281,10 +283,23 @@ apt-get remove -y antigravity 2>/dev/null || true`,
       'rm -rf /tmp/cursor-dl',
       'BIN_C=$(find /opt/Cursor -maxdepth 3 -type f -perm /111 -name "cursor" ! -path "*/resources/*" | head -n 1)',
       'if [ -z "$BIN_C" ]; then BIN_C="/opt/Cursor/AppRun"; fi',
+      'chmod +x "$BIN_C"',
       'printf "#!/bin/sh\\nexec \\"%s\\" \\"\\$@\\"\\n" "$BIN_C" > /usr/local/bin/cursor',
       'chmod +x /usr/local/bin/cursor',
+      'ICON_C=$(find /opt/Cursor -maxdepth 4 -type f \\( -name "*.png" -o -name "*.svg" \\) | grep -iE "cursor|code|icon" | head -n 1 || true)',
+      'if [ -n "$ICON_C" ]; then mkdir -p /usr/share/pixmaps && cp "$ICON_C" /usr/share/pixmaps/cursor.png 2>/dev/null || true; fi',
+      'cat > /usr/share/applications/cursor.desktop <<DESK',
+      '[Desktop Entry]',
+      'Name=Cursor',
+      'Comment=AI Code Editor',
+      'Exec=/usr/local/bin/cursor %F',
+      'Icon=cursor',
+      'Terminal=false',
+      'Type=Application',
+      'Categories=Development;IDE;',
+      'DESK',
     ].join('\n'),
-    uninstallScript: 'set -e\nrm -rf /opt/Cursor /usr/local/bin/cursor /usr/share/applications/cursor.desktop',
+    uninstallScript: 'set -e\nrm -rf /opt/Cursor /usr/local/bin/cursor /usr/share/applications/cursor.desktop /usr/share/pixmaps/cursor.png',
   },
   {
     id: 'gemini-cli',
@@ -360,8 +375,9 @@ apt-get update -y && apt-get install -y code`,
     packageName: 'google-chrome-stable',
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && apt-get install -y wget ca-certificates
 wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-apt-get update -y && apt-get install -y /tmp/google-chrome.deb
+apt-get install -y /tmp/google-chrome.deb
 rm -f /tmp/google-chrome.deb`,
     uninstallScript: APT_REMOVE('google-chrome-stable'),
   },
@@ -378,6 +394,7 @@ rm -f /tmp/google-chrome.deb`,
     packageName: 'firefox',
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && apt-get install -y wget ca-certificates gnupg
 install -d -m 0755 /etc/apt/keyrings
 wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- | tee /etc/apt/keyrings/packages.mozilla.org.asc >/dev/null
 echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list
@@ -555,13 +572,22 @@ apt-get update -y && apt-get install -y sublime-text`,
     name: 'VLC Media Player',
     publisher: 'VideoLAN',
     description: 'Her formatı oynatan hızlı ve güvenilir video & ses oynatıcı',
-    binaryNames: ['vlc'],
-    defaultCommand: 'vlc',
+    binaryNames: ['/usr/local/bin/vlc', 'vlc'],
+    defaultCommand: '/usr/local/bin/vlc',
     category: 'media',
     accent: '#f97316',
     packageName: 'vlc',
-    installScript: APT_HELPER('vlc'),
-    uninstallScript: APT_REMOVE('vlc'),
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && apt-get install -y vlc
+if [ -x /usr/bin/vlc ]; then
+  sed 's/geteuid/getppid/g' /usr/bin/vlc > /usr/local/bin/vlc
+  chmod 0755 /usr/local/bin/vlc
+fi`,
+    uninstallScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+rm -f /usr/local/bin/vlc
+apt-get remove -y vlc && apt-get autoremove -y`,
   },
   {
     id: 'obs-studio',
@@ -649,33 +675,101 @@ apt-get update -y && apt-get install -y sublime-text`,
     name: 'Obsidian',
     publisher: 'Obsidian',
     description: 'Markdown tabanlı kişisel bilgi grafiği ve not alma uygulaması',
-    binaryNames: ['obsidian'],
+    binaryNames: ['obsidian', '/usr/bin/obsidian'],
     defaultCommand: 'obsidian',
     category: 'office',
     accent: '#7c3aed',
     needsNoSandbox: true,
     packageName: 'obsidian',
-    installScript: `set -e
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get install -y curl
-URL=$(curl -fsSL https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest | grep -oE 'https://github\\.com/obsidianmd/obsidian-releases/releases/download/[^"]+amd64\\.deb' | head -n 1)
-curl -fL "$URL" -o /tmp/obsidian.deb
-apt-get install -y /tmp/obsidian.deb
-rm -f /tmp/obsidian.deb`,
+    installScript: [
+      'set -e',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'apt-get update -y && (apt-get install -y curl python3 ca-certificates libasound2t64 2>/dev/null || apt-get install -y curl python3 ca-certificates libasound2 || true)',
+      'ARCH=$(dpkg --print-architecture)',
+      'cat <<\'PYEOF\' > /tmp/obs_resolve.py',
+      'import json, os, re, time, urllib.request',
+      'arch = os.environ.get("ARCH", "amd64")',
+      'UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}',
+      'def resolve():',
+      '    for _ in range(3):',
+      '        try:',
+      '            req = urllib.request.Request("https://github.com/obsidianmd/obsidian-releases/releases/latest", headers=UA)',
+      '            with urllib.request.urlopen(req, timeout=20) as r:',
+      '                final_url = r.geturl()',
+      '            m = re.search(r"/tag/v([^/?#]+)", final_url)',
+      '            if m:',
+      '                ver = m.group(1)',
+      '                return f"https://github.com/obsidianmd/obsidian-releases/releases/download/v{ver}/obsidian_{ver}_{arch}.deb"',
+      '        except Exception:',
+      '            time.sleep(2)',
+      '    for _ in range(2):',
+      '        try:',
+      '            req = urllib.request.Request("https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest", headers=UA)',
+      '            with urllib.request.urlopen(req, timeout=20) as r:',
+      '                data = json.loads(r.read().decode("utf-8", "ignore"))',
+      '            for a in data.get("assets", []):',
+      '                u = a.get("browser_download_url", "")',
+      '                if u.endswith(f"_{arch}.deb"):',
+      '                    return u',
+      '        except Exception:',
+      '            time.sleep(2)',
+      '    return ""',
+      'print(resolve())',
+      'PYEOF',
+      'URL=$(ARCH="$ARCH" python3 /tmp/obs_resolve.py || true)',
+      'rm -f /tmp/obs_resolve.py',
+      'if [ -z "$URL" ]; then echo "Hata: Obsidian indirme bağlantısı çözümlenemedi."; exit 1; fi',
+      'echo "İndiriliyor: $URL"',
+      'curl -fL --retry 3 --retry-delay 2 --progress-bar "$URL" -o /tmp/obsidian.deb',
+      'apt-get install -y /tmp/obsidian.deb',
+      'rm -f /tmp/obsidian.deb',
+    ].join('\n'),
     uninstallScript: APT_REMOVE('obsidian'),
   },
   {
     id: 'thunderbird',
     name: 'Thunderbird',
     publisher: 'Mozilla',
-    description: 'Güçlü masaüstü e-posta, takvim ve kişi yöneticisi',
-    binaryNames: ['thunderbird'],
-    defaultCommand: 'thunderbird',
+    description: 'Güçlü masaüstü e-posta, takvim ve kişi yöneticisi (Resmi Mozilla)',
+    binaryNames: ['/usr/local/bin/thunderbird', '/opt/thunderbird/thunderbird'],
+    defaultCommand: '/usr/local/bin/thunderbird',
     category: 'office',
     accent: '#0284c7',
-    packageName: 'thunderbird',
-    installScript: APT_HELPER('thunderbird'),
-    uninstallScript: APT_REMOVE('thunderbird'),
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && (apt-get install -y curl ca-certificates tar xz-utils bzip2 libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2t64 2>/dev/null || apt-get install -y curl ca-certificates tar xz-utils bzip2 libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 || true)
+ARCH=$(dpkg --print-architecture)
+if [ "$ARCH" = "arm64" ]; then MOZ_OS="linux-aarch64"; else MOZ_OS="linux64"; fi
+URL="https://download.mozilla.org/?product=thunderbird-latest&os=\${MOZ_OS}&lang=tr"
+echo "Resmi Mozilla Thunderbird indiriliyor ($MOZ_OS)..."
+rm -rf /tmp/tb-dl /opt/thunderbird
+mkdir -p /tmp/tb-dl /opt/thunderbird
+curl -fL --progress-bar "$URL" -o /tmp/tb-dl/thunderbird.tar
+tar -xf /tmp/tb-dl/thunderbird.tar -C /tmp/tb-dl
+if [ -d /tmp/tb-dl/thunderbird ]; then
+  cp -a /tmp/tb-dl/thunderbird/. /opt/thunderbird/
+else
+  cp -a /tmp/tb-dl/. /opt/thunderbird/
+fi
+rm -rf /tmp/tb-dl
+chmod +x /opt/thunderbird/thunderbird
+ln -sf /opt/thunderbird/thunderbird /usr/local/bin/thunderbird
+if [ -f /opt/thunderbird/chrome/icons/default/default128.png ]; then
+  mkdir -p /usr/share/pixmaps
+  cp /opt/thunderbird/chrome/icons/default/default128.png /usr/share/pixmaps/thunderbird.png || true
+fi
+cat > /usr/share/applications/thunderbird.desktop <<DESK
+[Desktop Entry]
+Name=Thunderbird
+Comment=Mozilla Thunderbird E-Posta İstemcisi
+Exec=/usr/local/bin/thunderbird %u
+Icon=thunderbird
+Terminal=false
+Type=Application
+Categories=Network;Email;
+DESK`,
+    uninstallScript: `set -e
+rm -rf /opt/thunderbird /usr/local/bin/thunderbird /usr/share/applications/thunderbird.desktop /usr/share/pixmaps/thunderbird.png`,
   },
   {
     id: 'mousepad',
@@ -718,8 +812,8 @@ rm -f /tmp/obsidian.deb`,
     packageName: 'discord',
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get install -y curl
-curl -fL "https://discord.com/api/download?platform=linux&format=deb" -o /tmp/discord.deb
+apt-get update -y && (apt-get install -y curl ca-certificates libasound2t64 2>/dev/null || apt-get install -y curl ca-certificates libasound2 || true)
+curl -fL --progress-bar "https://discord.com/api/download?platform=linux&format=deb" -o /tmp/discord.deb
 apt-get install -y /tmp/discord.deb
 rm -f /tmp/discord.deb`,
     uninstallScript: APT_REMOVE('discord'),
@@ -729,13 +823,39 @@ rm -f /tmp/discord.deb`,
     name: 'Telegram Desktop',
     publisher: 'Telegram',
     description: 'Hızlı, bulut tabanlı resmi Telegram masaüstü istemcisi',
-    binaryNames: ['telegram-desktop'],
-    defaultCommand: 'telegram-desktop',
+    binaryNames: ['/usr/local/bin/telegram-desktop', '/opt/telegram/Telegram', 'telegram-desktop'],
+    defaultCommand: '/usr/local/bin/telegram-desktop',
     category: 'communication',
     accent: '#0ea5e9',
-    packageName: 'telegram-desktop',
-    installScript: APT_HELPER('telegram-desktop'),
-    uninstallScript: APT_REMOVE('telegram-desktop'),
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && (apt-get install -y curl ca-certificates tar xz-utils libglib2.0-0 libgl1 libxcb-cursor0 2>/dev/null || apt-get install -y curl ca-certificates tar xz-utils libglib2.0-0 libgl1 || true)
+echo "Resmi Telegram Desktop indiriliyor..."
+rm -rf /tmp/tg-dl /opt/telegram
+mkdir -p /tmp/tg-dl /opt/telegram
+curl -fL --progress-bar "https://telegram.org/dl/desktop/linux" -o /tmp/tg-dl/telegram.tar.xz
+tar -xf /tmp/tg-dl/telegram.tar.xz -C /tmp/tg-dl
+if [ -d /tmp/tg-dl/Telegram ]; then
+  cp -a /tmp/tg-dl/Telegram/. /opt/telegram/
+else
+  cp -a /tmp/tg-dl/. /opt/telegram/
+fi
+rm -rf /tmp/tg-dl
+chmod +x /opt/telegram/Telegram
+ln -sf /opt/telegram/Telegram /usr/local/bin/telegram-desktop
+ln -sf /opt/telegram/Telegram /usr/local/bin/telegram
+cat > /usr/share/applications/telegram-desktop.desktop <<DESK
+[Desktop Entry]
+Name=Telegram Desktop
+Comment=Resmi Telegram Masaüstü İstemcisi
+Exec=/usr/local/bin/telegram-desktop -- %u
+Icon=telegram
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+DESK`,
+    uninstallScript: `set -e
+rm -rf /opt/telegram /usr/local/bin/telegram-desktop /usr/local/bin/telegram /usr/share/applications/telegram-desktop.desktop`,
   },
 
   /* ─── SYSTEM & UTILITIES ─── */
@@ -797,7 +917,7 @@ rm -f /tmp/discord.deb`,
     publisher: 'Flameshot',
     description: 'Gelişmiş ekran görüntüsü alma ve işaretleme aracı',
     binaryNames: ['flameshot'],
-    defaultCommand: 'flameshot gui',
+    defaultCommand: 'flameshot launcher',
     category: 'system',
     accent: '#a855f7',
     packageName: 'flameshot',
@@ -884,12 +1004,18 @@ export class LinuxAppManager {
           break;
         }
       }
+      let resolvedCommand = def.defaultCommand;
+      if (def.launchMode !== 'web' && foundBin) {
+        const defaultParts = def.defaultCommand.trim().split(/\s+/);
+        const extraArgs = defaultParts.slice(1).join(' ');
+        resolvedCommand = extraArgs ? `${foundBin} ${extraArgs}` : foundBin;
+      }
       byId.set(def.id, {
         id: def.id,
         name: def.name,
         publisher: def.publisher,
         description: def.description,
-        command: def.launchMode === 'web' ? def.defaultCommand : foundBin || def.defaultCommand,
+        command: resolvedCommand,
         category: def.category,
         accent: def.accent,
         featured: def.featured,

@@ -100,7 +100,7 @@ export const ScreensaverOverlay: React.FC<ScreensaverOverlayProps> = ({
         <WallpaperLayer
           wallpaperId={wallpaperToShow}
           theme={scene === 'clock' ? 'dark' : theme}
-          customWallpaper={scene === 'current' ? currentCustomWallpaper : undefined}
+          customWallpaper={scene === 'current' || scene === 'wallpaper' ? currentCustomWallpaper : undefined}
           animated={true}
         />
       )}
@@ -238,7 +238,7 @@ export const LockScreenOverlay: React.FC<LockScreenOverlayProps> = ({
             wallpaperId={wallpaperId}
             theme={theme}
             customWallpaper={customWallpaper}
-            animated={true}
+            animated={false}
           />
           <div
             className={`absolute inset-0 ${

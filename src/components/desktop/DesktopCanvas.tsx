@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ClipboardState, DesktopMeta, VFSNode } from '../../types/os';
 import {
-  AppStoreIcon,
   ComputeSystemIcon,
   FileIcon,
   FirefoxLogoIcon,
@@ -27,7 +26,7 @@ interface DesktopCanvasProps {
   useFirefoxIcon?: boolean;
   onOpenChromium: (initialUrl?: string) => void;
   onOpenTerminal: () => void;
-  onOpenAppStore: () => void;
+  onOpenAppStore?: () => void;
   onOpenFolderWindow: (path: string) => void;
   onMoveNodesToFolder: (paths: string[], targetDir: string) => void;
   onTrashNodes: (paths: string[]) => void;
@@ -40,6 +39,52 @@ interface DesktopCanvasProps {
 
 const PAD_X = 26;
 const PAD_Y = 26;
+
+type ActiveGhostState =
+  | {
+      kind: 'vfs';
+      node: VFSNode;
+      count: number;
+      initialX: number;
+      initialY: number;
+    }
+  | {
+      kind: 'system';
+      sysId: string;
+      label: string;
+      initialX: number;
+      initialY: number;
+    };
+
+type DragState =
+  | {
+      kind: 'vfs';
+      pointerId: number;
+      node: VFSNode;
+      dragPaths: string[];
+      startMouseX: number;
+      startMouseY: number;
+      origX: number;
+      origY: number;
+      currX: number;
+      currY: number;
+      moved: boolean;
+      hoverTarget: string | null;
+    }
+  | {
+      kind: 'system';
+      pointerId: number;
+      sysId: string;
+      label: string;
+      startMouseX: number;
+      startMouseY: number;
+      origX: number;
+      origY: number;
+      currX: number;
+      currY: number;
+      moved: boolean;
+      hoverTarget: null;
+    };
 
 export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   desktopNodes,
@@ -56,7 +101,6 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   useFirefoxIcon = false,
   onOpenChromium,
   onOpenTerminal,
-  onOpenAppStore,
   onOpenFolderWindow,
   onMoveNodesToFolder,
   onTrashNodes,
@@ -86,26 +130,8 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
   } | null>(null);
 
   // Active floating drag ghost rendered in document.body portal above ALL windows
-  const [activeGhost, setActiveGhost] = useState<{
-    node: VFSNode;
-    count: number;
-    initialX: number;
-    initialY: number;
-  } | null>(null);
-
-  const dragStateRef = useRef<{
-    pointerId: number;
-    node: VFSNode;
-    dragPaths: string[];
-    startMouseX: number;
-    startMouseY: number;
-    origX: number;
-    origY: number;
-    currX: number;
-    currY: number;
-    moved: boolean;
-    hoverTarget: string | null;
-  } | null>(null);
+  const [activeGhost, setActiveGhost] = useState<ActiveGhostState | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
 
   const sizeConfig = useMemo(() => {
     switch (meta.preferences.iconSize) {
@@ -139,6 +165,112 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     return copy;
   }, [desktopNodes, meta.preferences.sortBy]);
 
+  const systemIcons = useMemo(
+    () => [
+      {
+        id: 'sys-browser',
+        label: primaryBrowserLabel,
+        row: 0,
+        dropFolder: undefined as string | undefined,
+        renderIcon: () =>
+          useFirefoxIcon ? (
+            <FirefoxLogoIcon size={sizeConfig.iconPx} />
+          ) : (
+            <GoogleChromeLogoIcon size={sizeConfig.iconPx} />
+          ),
+        onOpen: () => onOpenChromium(),
+        onContext: (x: number, y: number) =>
+          onContextMenu(x, y, {
+            kind: 'system-icon',
+            dirPath: '/Desktop',
+            systemAction: 'open-chromium',
+          }),
+      },
+      {
+        id: 'sys-terminal',
+        label: 'Terminal',
+        row: 1,
+        dropFolder: undefined as string | undefined,
+        renderIcon: () => <TerminalAppIcon size={sizeConfig.iconPx} />,
+        onOpen: () => onOpenTerminal(),
+        onContext: (x: number, y: number) =>
+          onContextMenu(x, y, {
+            kind: 'system-icon',
+            dirPath: '/Desktop',
+            systemAction: 'open-terminal',
+          }),
+      },
+      {
+        id: 'sys-compute',
+        label: 'Dosyalar',
+        row: 2,
+        dropFolder: undefined as string | undefined,
+        renderIcon: () => <ComputeSystemIcon size={sizeConfig.iconPx} />,
+        onOpen: () => onOpenFolderWindow('/'),
+        onContext: (x: number, y: number) =>
+          onContextMenu(x, y, {
+            kind: 'system-icon',
+            dirPath: '/Desktop',
+            systemAction: 'open-compute',
+          }),
+      },
+      {
+        id: 'sys-trash',
+        label: 'Çöp Kutusu',
+        row: 3,
+        dropFolder: '/.trash' as string | undefined,
+        renderIcon: () => <RecycleBinIcon size={sizeConfig.iconPx} hasItems={trashCount > 0} />,
+        onOpen: () => onOpenFolderWindow('/.trash'),
+        onContext: (x: number, y: number) =>
+          onContextMenu(x, y, {
+            kind: 'recycle-bin-icon',
+            dirPath: '/.trash',
+          }),
+      },
+    ],
+    [
+      primaryBrowserLabel,
+      useFirefoxIcon,
+      sizeConfig.iconPx,
+      trashCount,
+      onOpenChromium,
+      onOpenTerminal,
+      onOpenFolderWindow,
+      onContextMenu,
+    ]
+  );
+
+  const clampDesktopPos = (pos: { x: number; y: number }) => {
+    const maxX = Math.max(
+      PAD_X,
+      (typeof window !== 'undefined' ? window.innerWidth : 1280) - sizeConfig.cellW - 8
+    );
+    const maxY = Math.max(
+      PAD_Y,
+      (typeof window !== 'undefined' ? window.innerHeight : 800) - 86 - sizeConfig.cellH
+    );
+    return {
+      x: Math.max(10, Math.min(maxX, Math.round(pos.x))),
+      y: Math.max(10, Math.min(maxY, Math.round(pos.y))),
+    };
+  };
+
+  const systemPositions = useMemo(() => {
+    const map: Record<string, { x: number; y: number }> = {};
+    systemIcons.forEach((sys) => {
+      const saved = !meta.preferences.autoArrange ? meta.positions[sys.id] : undefined;
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        map[sys.id] = clampDesktopPos(saved);
+      } else {
+        map[sys.id] = {
+          x: PAD_X,
+          y: PAD_Y + sys.row * sizeConfig.cellH,
+        };
+      }
+    });
+    return map;
+  }, [systemIcons, meta.positions, meta.preferences.autoArrange, sizeConfig]);
+
   const nodePositions = useMemo(() => {
     const map: Record<string, { x: number; y: number }> = {};
     const usableHeight = Math.max(
@@ -149,10 +281,10 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
 
     sortedNodes.forEach((node, idx) => {
       const saved = !meta.preferences.autoArrange ? meta.positions[node.path] : undefined;
-      if (saved) {
-        map[node.path] = saved;
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        map[node.path] = clampDesktopPos(saved);
       } else {
-        const slotIndex = idx + 5;
+        const slotIndex = idx + systemIcons.length;
         const col = Math.floor(slotIndex / maxRows);
         const row = slotIndex % maxRows;
         map[node.path] = {
@@ -162,7 +294,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       }
     });
     return map;
-  }, [sortedNodes, meta.positions, meta.preferences.autoArrange, sizeConfig]);
+  }, [sortedNodes, systemIcons.length, meta.positions, meta.preferences.autoArrange, sizeConfig]);
 
   useEffect(() => {
     if (!renamingPath) return;
@@ -228,29 +360,51 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       if (!ds.moved && Math.hypot(dx, dy) > 6) {
         clearLongPress();
         ds.moved = true;
-        setActiveGhost({
-          node: ds.node,
-          count: ds.dragPaths.length,
-          initialX: ds.origX + dx,
-          initialY: ds.origY + dy,
-        });
+        const cRect = containerRef.current?.getBoundingClientRect();
+        const offX = cRect ? cRect.left : 0;
+        const offY = cRect ? cRect.top : 0;
+        if (ds.kind === 'vfs') {
+          setActiveGhost({
+            kind: 'vfs',
+            node: ds.node,
+            count: ds.dragPaths.length,
+            initialX: offX + ds.origX + dx,
+            initialY: offY + ds.origY + dy,
+          });
+        } else {
+          setActiveGhost({
+            kind: 'system',
+            sysId: ds.sysId,
+            label: ds.label,
+            initialX: offX + ds.origX + dx,
+            initialY: offY + ds.origY + dy,
+          });
+        }
       }
 
       if (!ds.moved) return;
 
-      const nextX = Math.max(
-        10,
-        Math.min(window.innerWidth - sizeConfig.cellW, ds.origX + dx)
-      );
-      const nextY = Math.max(
-        10,
-        Math.min(window.innerHeight - 84 - sizeConfig.cellH, ds.origY + dy)
-      );
+      const cRect = containerRef.current?.getBoundingClientRect();
+      const offX = cRect ? cRect.left : 0;
+      const offY = cRect ? cRect.top : 0;
+      const contW = cRect ? cRect.width : window.innerWidth;
+      const contH = cRect ? cRect.height : window.innerHeight - 84;
+      const nextX = Math.max(10, Math.min(contW - sizeConfig.cellW, ds.origX + dx));
+      const nextY = Math.max(10, Math.min(contH - sizeConfig.cellH, ds.origY + dy));
       ds.currX = nextX;
       ds.currY = nextY;
 
       if (ghostElRef.current) {
-        ghostElRef.current.style.transform = `translate3d(${nextX}px, ${nextY}px, 0) scale(1.04)`;
+        ghostElRef.current.style.transform = `translate3d(${offX + nextX}px, ${offY + nextY}px, 0) scale(1.04)`;
+      }
+
+      // System icons can ONLY be repositioned on desktop — NEVER dropped into folders, Trash, or apps!
+      if (ds.kind === 'system') {
+        if (dropHoverTarget !== null) {
+          setDropHoverTarget(null);
+          onExternalDropHover?.(null);
+        }
+        return;
       }
 
       // Inspect element directly underneath pointer (works across open Folder & Browser windows!)
@@ -295,6 +449,22 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         onExternalDropHover?.(null);
 
         if (ds.moved) {
+          if (ds.kind === 'system') {
+            // Hard Guard: system icons can NEVER be dropped into folders, Trash, or open windows
+            const hitEl = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+            const overDesktop = Boolean(hitEl && containerRef.current?.contains(hitEl));
+            const hitFolder = hitEl?.closest('[data-drop-folder]') as HTMLElement | null;
+            const droppedIntoAnotherFolder =
+              Boolean(hitFolder) && hitFolder?.getAttribute('data-system-id') !== ds.sysId;
+            if (overDesktop && !droppedIntoAnotherFolder) {
+              onSaveIconPosition(ds.sysId, {
+                x: Math.round(ds.currX),
+                y: Math.round(ds.currY),
+              });
+            }
+            return;
+          }
+
           if (ds.hoverTarget?.startsWith('linux-app:') && !ds.node.isDir) {
             const sid = ds.hoverTarget.slice('linux-app:'.length);
             onDropFilesOnLinuxApp?.(sid, ds.dragPaths);
@@ -333,6 +503,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     sortedNodes,
     nodePositions,
     sizeConfig,
+    dropHoverTarget,
     onSelectPaths,
     onTrashNodes,
     onMoveNodesToFolder,
@@ -358,81 +529,6 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
     }
   };
 
-  const systemIcons = [
-    {
-      id: 'sys-browser',
-      label: primaryBrowserLabel,
-      row: 0,
-      dropFolder: undefined,
-      renderIcon: () =>
-        useFirefoxIcon ? (
-          <FirefoxLogoIcon size={sizeConfig.iconPx} />
-        ) : (
-          <GoogleChromeLogoIcon size={sizeConfig.iconPx} />
-        ),
-      onOpen: () => onOpenChromium(),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'system-icon',
-          dirPath: '/Desktop',
-          systemAction: 'open-chromium',
-        }),
-    },
-    {
-      id: 'sys-terminal',
-      label: 'Terminal',
-      row: 1,
-      dropFolder: undefined,
-      renderIcon: () => <TerminalAppIcon size={sizeConfig.iconPx} />,
-      onOpen: () => onOpenTerminal(),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'desktop',
-          dirPath: '/Desktop',
-        }),
-    },
-    {
-      id: 'sys-apps',
-      label: 'Uygulamalar',
-      row: 2,
-      dropFolder: undefined,
-      renderIcon: () => <AppStoreIcon size={sizeConfig.iconPx} />,
-      onOpen: () => onOpenAppStore(),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'desktop',
-          dirPath: '/Desktop',
-        }),
-    },
-    {
-      id: 'sys-compute',
-      label: 'Dosyalar',
-      row: 3,
-      dropFolder: undefined,
-      renderIcon: () => <ComputeSystemIcon size={sizeConfig.iconPx} />,
-      onOpen: () => onOpenFolderWindow('/'),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'system-icon',
-          dirPath: '/Desktop',
-          systemAction: 'open-compute',
-        }),
-    },
-    {
-      id: 'sys-trash',
-      label: 'Çöp Kutusu',
-      row: 4,
-      dropFolder: '/.trash',
-      renderIcon: () => <RecycleBinIcon size={sizeConfig.iconPx} hasItems={trashCount > 0} />,
-      onOpen: () => onOpenFolderWindow('/.trash'),
-      onContext: (x: number, y: number) =>
-        onContextMenu(x, y, {
-          kind: 'recycle-bin-icon',
-          dirPath: '/.trash',
-        }),
-    },
-  ];
-
   const dockPos = meta.preferences.dock?.position || 'bottom';
   const dockInsetClass =
     dockPos === 'top'
@@ -443,9 +539,15 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       ? 'inset-0 right-[78px]'
       : 'inset-0 bottom-[74px]';
 
+  const activeGhostSystem =
+    activeGhost?.kind === 'system'
+      ? systemIcons.find((s) => s.id === activeGhost.sysId)
+      : undefined;
+
   return (
     <div
       ref={containerRef}
+      data-testid="desktop-canvas"
       onPointerDown={(e) => {
         if (e.target !== containerRef.current) return;
         if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -516,18 +618,23 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         </div>
       )}
 
-      {/* System Pinned Desktop Icons */}
+      {/* Draggable System Desktop Icons (Google Chrome, Terminal, Dosyalar, Çöp Kutusu — cannot be dropped into folders) */}
       {systemIcons.map((sys) => {
+        const pos = systemPositions[sys.id] || { x: PAD_X, y: PAD_Y + sys.row * sizeConfig.cellH };
         const isSel = selectedSystemId === sys.id;
+        const isBeingDragged = activeGhost?.kind === 'system' && activeGhost.sysId === sys.id;
         const isBinHover = sys.id === 'sys-trash' && dropHoverTarget === 'folder:/.trash';
         return (
           <div
             key={sys.id}
+            data-testid={`desktop-icon-${sys.id}`}
+            data-system-id={sys.id}
             data-drop-folder={sys.dropFolder}
             style={{
-              left: PAD_X,
-              top: PAD_Y + sys.row * sizeConfig.cellH,
+              left: pos.x,
+              top: pos.y,
               width: sizeConfig.cellW - 6,
+              zIndex: isSel ? 10 : 1,
             }}
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -535,6 +642,31 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
               setSelectedSystemId(sys.id);
               onSelectPaths([]);
               handleTapOrDoubleOpen(sys.id, e.pointerType, sys.onOpen);
+
+              if (e.pointerType === 'touch') {
+                clearLongPress();
+                const cx = e.clientX;
+                const cy = e.clientY;
+                longPressTimerRef.current = setTimeout(() => {
+                  dragStateRef.current = null;
+                  sys.onContext(cx, cy);
+                }, 520);
+              }
+
+              dragStateRef.current = {
+                kind: 'system',
+                pointerId: e.pointerId,
+                sysId: sys.id,
+                label: sys.label,
+                startMouseX: e.clientX,
+                startMouseY: e.clientY,
+                origX: pos.x,
+                origY: pos.y,
+                currX: pos.x,
+                currY: pos.y,
+                moved: false,
+                hoverTarget: null,
+              };
             }}
             onDoubleClick={sys.onOpen}
             onContextMenu={(e) => {
@@ -543,13 +675,13 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
               setSelectedSystemId(sys.id);
               sys.onContext(e.clientX, e.clientY);
             }}
-            className={`absolute flex flex-col items-center p-2 rounded-2xl cursor-pointer transition-colors ${
+            className={`absolute flex flex-col items-center p-2 rounded-2xl cursor-pointer transition-opacity ${
               isBinHover
                 ? 'bg-white/20 ring-2 ring-white/75 scale-105'
                 : isSel
                 ? 'bg-black/18 ring-1 ring-white/25'
                 : 'hover:bg-black/10'
-            }`}
+            } ${isBeingDragged ? 'opacity-35' : ''}`}
           >
             <div className="mb-1.5">{sys.renderIcon()}</div>
             <span
@@ -568,7 +700,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
       {/* User VFS Desktop Files & Folders */}
       {sortedNodes.map((node) => {
         const basePos = nodePositions[node.path] || { x: 140, y: PAD_Y };
-        const isBeingDragged = activeGhost?.node.path === node.path;
+        const isBeingDragged = activeGhost?.kind === 'vfs' && activeGhost.node.path === node.path;
         const isSelected = selectedPaths.includes(node.path);
         const isRenaming = renamingPath === node.path;
         const isCut = cutSet.has(node.path);
@@ -577,6 +709,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
         return (
           <div
             key={node.path}
+            data-testid={`desktop-node-${node.name}`}
             data-drop-folder={node.isDir ? node.path : undefined}
             style={{
               left: basePos.x,
@@ -618,6 +751,7 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
               }
 
               dragStateRef.current = {
+                kind: 'vfs',
                 pointerId: e.pointerId,
                 node,
                 dragPaths: nextSel.includes(node.path) ? nextSel : [node.path],
@@ -718,15 +852,21 @@ export const DesktopCanvas: React.FC<DesktopCanvasProps> = ({
             className="fixed z-[9999] pointer-events-none flex flex-col items-center p-2 rounded-2xl"
           >
             <div className="relative mb-1.5">
-              <FileIcon node={activeGhost.node} size={sizeConfig.iconPx} />
-              {activeGhost.count > 1 && (
-                <span className="absolute -top-1 -right-2 px-1.5 py-0.5 rounded-full bg-white text-neutral-950 text-[10px] font-bold shadow">
-                  {activeGhost.count}
-                </span>
+              {activeGhost.kind === 'vfs' ? (
+                <>
+                  <FileIcon node={activeGhost.node} size={sizeConfig.iconPx} />
+                  {activeGhost.count > 1 && (
+                    <span className="absolute -top-1 -right-2 px-1.5 py-0.5 rounded-full bg-white text-neutral-950 text-[10px] font-bold shadow">
+                      {activeGhost.count}
+                    </span>
+                  )}
+                </>
+              ) : (
+                activeGhostSystem?.renderIcon()
               )}
             </div>
             <span className="text-xs font-medium text-center text-white desktop-label-shadow line-clamp-1 break-all px-1">
-              {activeGhost.node.name}
+              {activeGhost.kind === 'vfs' ? activeGhost.node.name : activeGhost.label}
             </span>
           </div>,
           document.body

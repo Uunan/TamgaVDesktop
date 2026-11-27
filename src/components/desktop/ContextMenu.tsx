@@ -42,7 +42,7 @@ export interface ContextMenuItemTarget {
   kind: 'desktop' | 'folder-bg' | 'nodes' | 'recycle-bin-icon' | 'system-icon';
   dirPath: string;
   nodes?: VFSNode[];
-  systemAction?: 'open-chromium' | 'open-compute';
+  systemAction?: 'open-chromium' | 'open-compute' | 'open-terminal';
   spawnPos?: { x: number; y: number };
 }
 
@@ -277,7 +277,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         <button
           onClick={() =>
             run(() =>
-              target.systemAction === 'open-chromium' ? onOpenChromium() : onOpenFolderWindow('/')
+              target.systemAction === 'open-chromium'
+                ? onOpenChromium()
+                : target.systemAction === 'open-terminal'
+                ? onOpenTerminalInDir('/Desktop')
+                : onOpenFolderWindow('/')
             )
           }
           className={itemCls}

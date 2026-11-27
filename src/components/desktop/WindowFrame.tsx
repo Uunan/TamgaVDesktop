@@ -411,18 +411,22 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
     (contentWidth: number, contentHeight: number, options?: { center?: boolean }) => {
       const w = winRef.current;
       const vw = window.innerWidth;
-      const vh = window.innerHeight - barReserve;
-      const maxW = Math.max(minWidth, vw - EDGE_PAD * 2);
-      const maxH = Math.max(minHeight, vh - EDGE_PAD);
+      const vh = window.innerHeight;
+      const pTop = dockPosition === 'top' ? barReserve : EDGE_PAD;
+      const pBottom = dockPosition === 'bottom' ? barReserve : EDGE_PAD;
+      const pLeft = dockPosition === 'left' ? barReserve : EDGE_PAD;
+      const pRight = dockPosition === 'right' ? barReserve : EDGE_PAD;
+      const availW = Math.max(minWidth, vw - pLeft - pRight);
+      const availH = Math.max(minHeight, vh - pTop - pBottom);
       const chromeH = overlayTitlebar ? 0 : 42;
-      const targetW = Math.max(minWidth, Math.min(maxW, Math.round(contentWidth)));
-      const targetH = Math.max(minHeight, Math.min(maxH, Math.round(contentHeight + chromeH)));
+      const targetW = Math.max(minWidth, Math.min(availW, Math.round(contentWidth)));
+      const targetH = Math.max(minHeight, Math.min(availH, Math.round(contentHeight + chromeH)));
       const targetX = options?.center
-        ? Math.max(EDGE_PAD, Math.round((vw - targetW) / 2))
-        : Math.max(EDGE_PAD, Math.min(vw - targetW - EDGE_PAD, w.x));
+        ? Math.max(pLeft, Math.round(pLeft + (availW - targetW) / 2))
+        : Math.max(pLeft, Math.min(vw - pRight - targetW, w.x));
       const targetY = options?.center
-        ? Math.max(EDGE_PAD, Math.round((vh - targetH) / 2))
-        : Math.max(EDGE_PAD, Math.min(vh - targetH, w.y));
+        ? Math.max(pTop, Math.round(pTop + (availH - targetH) / 2))
+        : Math.max(pTop, Math.min(vh - pBottom - targetH, w.y));
       onUpdateBounds(w.id, {
         maximized: false,
         snap: null,
@@ -432,7 +436,7 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({
         height: targetH,
       });
     },
-    [minWidth, minHeight, overlayTitlebar, onUpdateBounds, barReserve]
+    [minWidth, minHeight, overlayTitlebar, onUpdateBounds, barReserve, dockPosition]
   );
 
   const setMaximized = useCallback(

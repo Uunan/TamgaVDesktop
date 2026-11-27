@@ -608,7 +608,9 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         } else if (msg.type === 'app_exit') {
           onExitRef.current?.();
         } else if (msg.type === 'error' && msg.message) {
-          setErrorMsg(String(msg.message));
+          const text = String(msg.message);
+          setErrorMsg(text);
+          onNotify?.('Uygulama Başlatılamadı', text, 'error');
           if (!readyFiredRef.current) {
             readyFiredRef.current = true;
             onReadyRef.current?.();

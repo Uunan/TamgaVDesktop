@@ -269,8 +269,8 @@ def list_windows_geom(env: dict) -> list[dict]:
 
 
 def classify_window(wid: str, env: dict) -> dict:
-    """Return {'main': bool, 'is_splash': bool, 'transient_for': str|None}."""
-    info = {"main": True, "is_splash": False, "transient_for": None}
+    """Return {'main': bool, 'is_splash': bool, 'is_dialog': bool, 'transient_for': str|None}."""
+    info = {"main": True, "is_splash": False, "is_dialog": False, "transient_for": None}
     try:
         prop = subprocess.check_output(
             ["xprop", "-id", wid, "WM_TRANSIENT_FOR", "_NET_WM_WINDOW_TYPE"],
@@ -287,6 +287,8 @@ def classify_window(wid: str, env: dict) -> dict:
     if "_NET_WM_WINDOW_TYPE_SPLASH" in prop:
         info["main"] = False
         info["is_splash"] = True
+    if "_NET_WM_WINDOW_TYPE_DIALOG" in prop:
+        info["is_dialog"] = True
     for skip in (
         "_NET_WM_WINDOW_TYPE_DIALOG",
         "_NET_WM_WINDOW_TYPE_MENU",
@@ -332,6 +334,7 @@ class WindowManager:
         self.dialogs: dict[str, str] = {}  # dialog_wid -> parent_vid
         self.active_view = "main"
         self.main_assigned = False
+        self.started_at = time.monotonic()
         self.splash_handoff_until = 0.0
         self.class_cache: dict[str, dict] = {}
         self.placed_dialogs: set[str] = set()
@@ -466,16 +469,23 @@ class WindowManager:
                     was_splash = bool(v.get("is_splash"))
                     del self.views[vid]
                     if vid == "main" and was_splash:
-                        # Splash closed while handing off to real main window -> hold main slot briefly
-                        self.splash_handoff_until = now + 5.0
+                        # Splash closed while handing off to real main window -> hold main slot
+                        self.splash_handoff_until = now + 8.0
                     elif vid == "main" and not self.views:
-                        # Single window vanished (could be launcher/Terms -> main transition or real exit)
-                        self.splash_handoff_until = now + 1.4
+                        # Single window vanished: during initial 20s startup this is often an updater/launcher
+                        # transition (Discord Updater, LibreOffice, Obsidian); hold slot longer before exit
+                        grace = 5.0 if (now - self.started_at) < 20.0 else 1.4
+                        self.splash_handoff_until = now + grace
                     else:
                         emit({"type": "view_closed", "view": vid})
 
+            had_dialogs = bool(self.dialogs)
             self.placed_dialogs = {d for d in self.placed_dialogs if any(same_wid(d, p) for p in present)}
             self.dialogs = {d: pv for d, pv in self.dialogs.items() if any(same_wid(d, p) for p in present)}
+            if had_dialogs and not self.dialogs:
+                active_v = self.views.get(self.active_view)
+                if active_v:
+                    run_quiet(["wmctrl", "-i", "-a", active_v["wid"]], self.env)
 
             if wins:
                 self.had_window = True
@@ -567,9 +577,18 @@ class WindowManager:
                     self._emit_targets()
                     continue
 
-                # Initial startup splash screen before any main window exists
-                if v is None and cls["is_splash"] and not self.main_assigned:
+                # Initial startup splash OR standalone first-run dialog (e.g. Inkscape Welcome, Flameshot Capture Launcher
+                # where Qt sets WM_TRANSIENT_FOR to an unmapped hidden leader window)
+                tf = cls.get("transient_for")
+                has_mapped_parent = bool(tf and any(same_wid(tf, p) for p in present))
+                is_startup_dialog = bool(cls.get("is_dialog") and not has_mapped_parent)
+                if (
+                    v is None
+                    and (cls["is_splash"] or is_startup_dialog)
+                    and (not self.main_assigned or (not self.views and now <= self.splash_handoff_until))
+                ):
                     self.main_assigned = True
+                    self.splash_handoff_until = 0.0
                     cw, ch = self.clamp_size(win["w"], win["h"])
                     top_wid = find_top_frame(self.rec_dpy, self.rec_root, wid)
                     v = {
@@ -652,7 +671,7 @@ class WindowManager:
                     run_quiet(["wmctrl", "-i", "-r", wid, "-e", "0,0,0,-1,-1"], self.env)
 
     def _confirm_all_closed(self, wait_sec: float) -> None:
-        deadline = time.monotonic() + max(1.2, min(6.0, wait_sec))
+        deadline = time.monotonic() + max(1.2, min(8.5, wait_sec))
         while time.monotonic() < deadline:
             time.sleep(0.3)
             if list_windows_geom(self.env):

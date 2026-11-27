@@ -360,34 +360,46 @@ export interface ToastItem {
 export interface WallpaperPreset {
   id: string;
   name: string;
+  animated?: boolean;
   dynamicTime?: boolean;
+  category?: 'studio' | 'nature' | 'cosmic';
 }
 
 export const WALLPAPERS: WallpaperPreset[] = [
-  { id: 'mono-peaks', name: 'Geometrik Dağ' },
-  { id: 'geo-dunes', name: 'Çöl Kumulları' },
-  { id: 'geo-prism', name: 'Kristal Prizma' },
-  { id: 'geo-waves', name: 'Topo Dalgalar' },
-  { id: 'geo-aurora', name: 'Kuzey Işıkları' },
-  { id: 'geo-horizon', name: 'Minimal Ufuk' },
-  { id: 'wheat-field', name: 'Buğday Tarlası (Canlı)', dynamicTime: true },
-  { id: 'ocean-horizon', name: 'Okyanus Ufku (Canlı)', dynamicTime: true },
-  { id: 'cherry-blossom', name: 'Kiraz Çiçeği' },
-  { id: 'bamboo-breeze', name: 'Bambu Esintisi' },
-  { id: 'rainy-forest', name: 'Yağmurlu Orman' },
-  { id: 'snowy-pines', name: 'Karlı Çamlık' },
-  { id: 'lavender-valley', name: 'Lavanta Vadisi', dynamicTime: true },
-  { id: 'starry-nebula', name: 'Yıldızlı Nebula' },
-  { id: 'red-canyon', name: 'Kızıl Kanyon', dynamicTime: true },
-  { id: 'solar-eclipse', name: 'Güneş Tutulması' },
-  { id: 'glacial-mirror', name: 'Buzul Yansıması' },
-  { id: 'moonlit-lake', name: 'Ay Işığı Gölü', dynamicTime: true },
-  { id: 'cyber-grid', name: 'Siber Izgara' },
-  { id: 'silk-flow', name: 'İpek Akışı' },
-  { id: 'glass-orbs', name: 'Cam Küreler' },
-  { id: 'golden-waves', name: 'Altın Dalgalar' },
-  { id: 'dark-fractal', name: 'Karanlık Fraktal' },
-  { id: 'volcanic-glow', name: 'Volkanik Parıltı' },
-  { id: 'nordic-sea', name: 'Kuzey Denizi' },
-  { id: 'prism-spectrum', name: 'Prizma Işığı' },
+  /* ─── TAMGA STUDIO FLAGSHIP & ARCHITECTURAL ─── */
+  { id: 'mono-peaks', name: 'Geometrik Dağ', animated: false, category: 'studio' },
+  { id: 'geo-aurora', name: 'Kuzey Işıkları', animated: true, category: 'cosmic' },
+  { id: 'silk-flow', name: 'İpek Akışı', animated: true, category: 'studio' },
+  { id: 'geo-dunes', name: 'Çöl Kumulları', animated: false, category: 'studio' },
+  { id: 'geo-prism', name: 'Kristal Prizma', animated: false, category: 'studio' },
+  { id: 'geo-waves', name: 'Topo Dalgalar', animated: false, category: 'studio' },
+  { id: 'geo-horizon', name: 'Minimal Ufuk', animated: false, category: 'studio' },
+  { id: 'glass-orbs', name: 'Cam Küreler', animated: false, category: 'studio' },
+  { id: 'golden-waves', name: 'Altın Dalgalar', animated: false, category: 'studio' },
+  { id: 'dark-fractal', name: 'Karanlık Fraktal', animated: false, category: 'studio' },
+  { id: 'prism-spectrum', name: 'Prizma Işığı', animated: false, category: 'studio' },
+  { id: 'cyber-grid', name: 'Siber Izgara', animated: false, category: 'studio' },
+
+  /* ─── LIVING NATURE & ATMOSPHERIC ─── */
+  { id: 'wheat-field', name: 'Buğday Tarlası', animated: true, dynamicTime: true, category: 'nature' },
+  { id: 'ocean-horizon', name: 'Okyanus Ufku', animated: true, dynamicTime: true, category: 'nature' },
+  { id: 'moonlit-lake', name: 'Ay Işığı Gölü', animated: true, dynamicTime: true, category: 'nature' },
+  { id: 'rainy-forest', name: 'Yağmurlu Orman', animated: true, category: 'nature' },
+  { id: 'cherry-blossom', name: 'Kiraz Çiçeği', animated: true, category: 'nature' },
+  { id: 'snowy-pines', name: 'Karlı Çamlık', animated: true, category: 'nature' },
+  { id: 'bamboo-breeze', name: 'Bambu Korusu', animated: false, category: 'nature' },
+  { id: 'lavender-valley', name: 'Lavanta Vadisi', animated: false, dynamicTime: true, category: 'nature' },
+  { id: 'red-canyon', name: 'Kızıl Kanyon', animated: false, dynamicTime: true, category: 'nature' },
+  { id: 'glacial-mirror', name: 'Buzul Yansıması', animated: false, category: 'nature' },
+  { id: 'nordic-sea', name: 'Kuzey Denizi', animated: false, category: 'nature' },
+
+  /* ─── COSMIC & ELEMENTAL ─── */
+  { id: 'starry-nebula', name: 'Yıldızlı Nebula', animated: true, category: 'cosmic' },
+  { id: 'volcanic-glow', name: 'Volkanik Parıltı', animated: true, category: 'cosmic' },
+  { id: 'solar-eclipse', name: 'Güneş Tutulması', animated: false, category: 'cosmic' },
 ];
+
+export function isWallpaperAnimated(wallpaperId: string): boolean {
+  return Boolean(WALLPAPERS.find((w) => w.id === wallpaperId)?.animated);
+}
+

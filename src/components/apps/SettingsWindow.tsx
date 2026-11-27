@@ -1052,12 +1052,12 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 })}
               </div>
 
-              {/* 26 Animated & Clock-Aware Wallpapers */}
+              {/* 26 Strictly Static Studio Wallpapers */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] p-4 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium flex items-center">
-                    Hareketli & Geometrik Duvar Kağıtları ({WALLPAPERS.length})
-                    <InfoTip text="Buğday tarlası ve doğa/geometrik sahneler gerçek saate göre gün ışığından gece yıldızlarına yumuşak animasyonla dönüşür." />
+                    Stüdyo Duvar Kağıtları ({WALLPAPERS.length})
+                    <InfoTip text="Masaüstü duvar kağıtları tam netlik ve sıfır işlemci yükü için hareketsizdir. Hareketli halleri yalnızca Ekran Koruyucuda oynatılır." />
                   </span>
                   <button
                     onClick={onTriggerWallpaperUpload}
@@ -1068,7 +1068,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2.5 max-h-72 overflow-y-auto pr-1">
+                <div className="grid grid-cols-3 gap-2.5 max-h-80 overflow-y-auto pr-1">
                   {WALLPAPERS.map((wp) => {
                     const active = meta.preferences.wallpaper === wp.id;
                     return (
@@ -1076,15 +1076,15 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                         key={wp.id}
                         data-testid={`wp-card-${wp.id}`}
                         onClick={() => onUpdatePreferences({ wallpaper: wp.id })}
-                        className={`rounded-xl p-1.5 text-left border transition-all ${
+                        className={`group rounded-xl p-1.5 text-left border transition-all ${
                           active
                             ? 'border-[var(--os-text)] bg-[var(--os-surface-3)]'
                             : 'border-[var(--os-border)] bg-[var(--os-bg)] hover:border-[var(--os-border-strong)]'
                         }`}
                       >
-                        <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-14" />
-                        <div className="text-[11px] font-medium truncate px-1 pt-1.5">
-                          {wp.name}
+                        <WallpaperThumb wallpaperId={wp.id} theme={theme} className="w-full h-16" />
+                        <div className="flex items-center justify-between gap-1 px-1 pt-1.5">
+                          <span className="text-[11px] font-medium truncate">{wp.name}</span>
                         </div>
                       </button>
                     );
@@ -1101,7 +1101,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                       <img
                         src={customWallpaperUrl}
                         alt="Özel"
-                        className="w-full h-14 object-cover rounded-lg"
+                        className="w-full h-16 object-cover rounded-lg"
                       />
                       <div className="text-[11px] font-medium truncate px-1 pt-1.5">Özel Resim</div>
                     </button>
@@ -1109,34 +1109,41 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                 </div>
               </div>
 
-              {/* Clean & Simple Screensaver Controls */}
+              {/* Animated Screensaver Controls (Living Versions of Wallpapers) */}
               <div
                 data-testid="screensaver-settings-card"
                 className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]"
               >
-                <Row
-                  label="Ekran Koruyucu"
-                  tip="Belirlenen süre boyunca işlem yapılmazsa seçtiğiniz hareketli sahneyi veya videoyu tam ekran oynatır."
-                  right={
-                    <div className="flex items-center gap-2">
-                      {onPreviewScreensaver && (
-                        <button
-                          type="button"
-                          data-testid="screensaver-preview-btn"
-                          onClick={onPreviewScreensaver}
-                          className="px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)] text-[11px] font-medium"
-                        >
-                          Önizle
-                        </button>
-                      )}
-                      <Toggle
-                        testId="toggle-screensaver-enabled"
-                        checked={screensaver.enabled}
-                        onChange={(v) => updateScreensaver({ enabled: v })}
-                      />
-                    </div>
-                  }
-                />
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div className="text-xs font-medium text-[var(--os-text)] flex items-center gap-2">
+                    <span>Ekran Koruyucu</span>
+                    <span
+                      data-testid="screensaver-badge-animated"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-semibold text-emerald-400"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Hareketli
+                    </span>
+                    <InfoTip text="Belirlenen süre işlem yapılmazsa seçtiğiniz duvar kağıdının hareketli sahnesini tam ekran oynatır." />
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {onPreviewScreensaver && (
+                      <button
+                        type="button"
+                        data-testid="screensaver-preview-btn"
+                        onClick={onPreviewScreensaver}
+                        className="px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] hover:border-[var(--os-border-strong)] text-[11px] font-medium"
+                      >
+                        Önizle
+                      </button>
+                    )}
+                    <Toggle
+                      testId="toggle-screensaver-enabled"
+                      checked={screensaver.enabled}
+                      onChange={(v) => updateScreensaver({ enabled: v })}
+                    />
+                  </div>
+                </div>
 
                 <Row
                   label="Başlama Süresi"
@@ -1156,26 +1163,57 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
                   }
                 />
 
-                <Row
-                  label="Hareketli Sahne / Video"
-                  right={
+                <div className="px-4 py-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-xs font-medium text-[var(--os-text)]">
+                      Hareketli Sahne / Video
+                    </span>
                     <select
                       data-testid="screensaver-scene-select"
                       value={screensaver.scene}
                       onChange={(e) => updateScreensaver({ scene: e.target.value })}
-                      className="max-w-[230px] px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text)] focus:outline-none"
+                      className="max-w-[240px] px-2.5 py-1 rounded-lg bg-[var(--os-bg)] border border-[var(--os-border)] text-xs text-[var(--os-text)] focus:outline-none"
                     >
-                      <option value="wallpaper">Mevcut Arkaplanım (Hareketli)</option>
-                      <option value="clock">Sade Büyük Saat</option>
+                      <option value="wallpaper">Mevcut Duvar Kağıdım (Hareketli)</option>
+                      <option value="clock">Sade Büyük Saat (Hareketli)</option>
                       {WALLPAPERS.map((wp) => (
                         <option key={wp.id} value={wp.id}>
-                          {wp.name}
+                          {wp.name} (Hareketli)
                         </option>
                       ))}
                       <option value="custom-video">Özel Video URL (MP4/WebM)</option>
                     </select>
-                  }
-                />
+                  </div>
+
+                  {screensaver.scene !== 'custom-video' && (
+                    <div className="relative h-20 rounded-xl overflow-hidden border border-[var(--os-border)]">
+                      <WallpaperThumb
+                        wallpaperId={
+                          screensaver.scene === 'wallpaper' || screensaver.scene === 'current'
+                            ? meta.preferences.wallpaper
+                            : screensaver.scene === 'clock'
+                            ? 'starry-nebula'
+                            : screensaver.scene || 'wheat-field'
+                        }
+                        theme={screensaver.scene === 'clock' ? 'dark' : theme}
+                        className="w-full h-full"
+                        animated={true}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-r from-black/55 via-transparent to-black/30 pointer-events-none" />
+                      <span className="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/62 backdrop-blur-md border border-white/20 text-[9px] font-semibold text-white">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Hareketli Ekran Koruyucu
+                      </span>
+                      <span className="absolute bottom-2 left-3 text-[11px] font-medium text-white drop-shadow">
+                        {screensaver.scene === 'wallpaper' || screensaver.scene === 'current'
+                          ? `${WALLPAPERS.find((w) => w.id === meta.preferences.wallpaper)?.name || 'Mevcut'} — Hareketli Hali`
+                          : screensaver.scene === 'clock'
+                          ? 'Sade Büyük Saat'
+                          : WALLPAPERS.find((w) => w.id === screensaver.scene)?.name || screensaver.scene}
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 {screensaver.scene === 'custom-video' && (
                   <div className="px-4 py-2.5 flex items-center gap-2">

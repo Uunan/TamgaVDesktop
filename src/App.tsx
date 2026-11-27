@@ -766,16 +766,33 @@ export default function App() {
     }) => {
       remoteAudio.ensureContext();
       const vw = window.innerWidth;
-      const vh = window.innerHeight - 76;
-      const viewportWidth = Math.max(960, vw - 36);
-      const viewportHeight = Math.max(600, vh - 32 - 42);
+      const activeDockCfg = { ...DEFAULT_DOCK_PREFERENCES, ...(meta.preferences.dock || {}) };
+      const dockEdge = activeDockCfg.position || 'bottom';
+      const isDockVert = dockEdge === 'left' || dockEdge === 'right';
+      const dockScale = Math.max(
+        0.85,
+        Math.min(
+          1.85,
+          activeDockCfg.barScale ??
+            (activeDockCfg.size === 'sm' ? 1.0 : activeDockCfg.size === 'lg' ? 1.65 : 1.4)
+        )
+      );
+      const dockRes = Math.max(
+        68,
+        Math.round((isDockVert ? 58 : 54) * dockScale) + (activeDockCfg.style === 'full' ? 8 : 20)
+      );
+      const availW = isDockVert ? vw - dockRes - 12 : vw - 24;
+      const availH = isDockVert ? window.innerHeight - 24 : window.innerHeight - dockRes - 12;
+      const vh = availH;
+      const viewportWidth = Math.max(960, Math.round(availW));
+      const viewportHeight = Math.max(580, Math.round(availH - 42));
       const isBrowserApp =
         params.appId === 'chrome' ||
         params.appId === 'firefox' ||
         params.appId === 'brave' ||
         params.launchMode === 'web';
-      const width = Math.min(isBrowserApp ? 1160 : 740, vw - 36);
-      const height = Math.min(isBrowserApp ? 730 : 520, vh - 32);
+      const width = Math.min(isBrowserApp ? 1160 : 780, Math.max(420, availW - 12));
+      const height = Math.min(isBrowserApp ? 730 : 540, Math.max(320, availH - 12));
 
       // Run VS Code Web in Web-Native DOM mode while leaving 'vscode' as native Linux Desktop app
       if (params.appId === 'vscode-web') {
@@ -922,7 +939,7 @@ export default function App() {
         pushToast('Uygulama Başlatılamadı', (e as Error).message, 'error');
       }
     },
-    [pushToast, openVSCodeWindow, openWebAppWindow, linuxApps, focusWindow]
+    [pushToast, openVSCodeWindow, openWebAppWindow, linuxApps, focusWindow, meta.preferences.dock]
   );
 
   const openPreviewWindow = useCallback((node: VFSNode) => {
@@ -2094,11 +2111,12 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden select-none bg-[var(--os-bg)] text-[var(--os-text)]">
-      {/* Animated Wallpaper Layer (Custom Image or Built-in Day/Night Geometric Presets) */}
+      {/* Motionless High-Craft Studio Wallpaper Layer */}
       <WallpaperLayer
         wallpaperId={meta.preferences.wallpaper}
         theme={meta.preferences.theme || 'dark'}
         customWallpaper={meta.preferences.customWallpaper}
+        animated={false}
       />
 
       <input
@@ -2354,9 +2372,15 @@ export default function App() {
                 }
                 onWindowOpened={(extra) => {
                   const vw = window.innerWidth;
-                  const vh = window.innerHeight - 76;
-                  const extraW = Math.max(240, Math.min(vw - 28, Math.round(extra.width || 900)));
-                  const extraH = Math.max(222, Math.min(vh - 14, Math.round((extra.height || 640) + 42)));
+                  const vh = window.innerHeight;
+                  const pTop = dockPos === 'top' ? dockReserve : 12;
+                  const pBottom = dockPos === 'bottom' ? dockReserve : 12;
+                  const pLeft = dockPos === 'left' ? dockReserve : 12;
+                  const pRight = dockPos === 'right' ? dockReserve : 12;
+                  const availW = Math.max(320, vw - pLeft - pRight);
+                  const availH = Math.max(240, vh - pTop - pBottom);
+                  const extraW = Math.max(240, Math.min(availW, Math.round(extra.width || 900)));
+                  const extraH = Math.max(222, Math.min(availH, Math.round((extra.height || 640) + 42)));
                   const extraId = `win-linux-${win.appSessionId}-${extra.view}`;
                   const z = ++nextZRef.current;
                   setWindows((prev) => {
@@ -2372,8 +2396,8 @@ export default function App() {
                         appId: win.appId,
                         appIconName: win.appIconName,
                         launching: true,
-                        x: Math.max(18, Math.min(vw - extraW - 18, win.x + 34)),
-                        y: Math.max(18, Math.min(vh - extraH - 12, win.y + 34)),
+                        x: Math.max(pLeft, Math.min(vw - pRight - extraW, win.x + 34)),
+                        y: Math.max(pTop, Math.min(vh - pBottom - extraH, win.y + 34)),
                         width: extraW,
                         height: extraH,
                         minimized: false,
@@ -2383,6 +2407,11 @@ export default function App() {
                     ];
                   });
                   setFocusedWindowId(extraId);
+                  setTimeout(() => {
+                    setWindows((prev) =>
+                      prev.map((w) => (w.id === extraId && w.launching ? { ...w, launching: false } : w))
+                    );
+                  }, 10000);
                 }}
                 onAppExit={() => {
                   setWindows((prev) => prev.filter((w) => w.id !== win.id));
