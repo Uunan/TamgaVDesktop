@@ -24,6 +24,8 @@ interface LinuxAppWindowProps {
   isFocused?: boolean;
   externalDropHighlighted?: boolean;
   scrollSensitivity?: number;
+  smoothBuffer?: boolean;
+  pingMs?: number;
   onTitleChange?: (title: string) => void;
   onReady?: () => void;
   onAppExit?: () => void;
@@ -44,6 +46,8 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   isFocused = true,
   externalDropHighlighted = false,
   scrollSensitivity = 1.0,
+  smoothBuffer = false,
+  pingMs = 20,
   onTitleChange,
   onReady,
   onAppExit,
@@ -86,6 +90,10 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
   onLockScreenRef.current = onLockScreen;
   const scrollSensRef = useRef(scrollSensitivity);
   scrollSensRef.current = scrollSensitivity;
+  const smoothBufferRef = useRef(smoothBuffer);
+  smoothBufferRef.current = smoothBuffer;
+  const pingMsRef = useRef(pingMs);
+  pingMsRef.current = pingMs;
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
@@ -97,6 +105,11 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       ws.send(JSON.stringify(payload));
     }
   }, []);
+
+  useEffect(() => {
+    if (!Number.isFinite(pingMs) || pingMs <= 0) return;
+    sendInput({ type: 'net_stats', rttMs: Math.round(pingMs) });
+  }, [pingMs, sendInput]);
 
   const focusInputSink = useCallback(() => {
     const sink = inputSinkRef.current;
@@ -153,6 +166,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       kind: 'full' | 'patches';
       fullW: number;
       fullH: number;
+      arrivedAt: number;
       patches?: PaintPatch[];
       failed?: boolean;
     };
@@ -162,6 +176,13 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     let nextPaintSeq = 1;
     let rafId: number | null = null;
     let pendingAckCount = 0;
+
+    // Adaptive jitter-buffer telemetry (active when smoothBuffer is enabled)
+    let lastArrivalAt = 0;
+    let avgIntervalMs = 24;
+    let jitterMs = 12;
+    let lastPaintedAt = 0;
+    let smoothBuffering = false;
 
     const getCtx = (canvas: HTMLCanvasElement) => {
       if (!ctxRef.current) {
@@ -187,9 +208,43 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       }
       const count = pendingAckCount;
       pendingAckCount = 0;
-      for (let i = 0; i < count; i++) {
-        ws.send('{"type":"ack"}');
+      ws.send(count === 1 ? '{"type":"ack"}' : JSON.stringify({ type: 'ack', count }));
+    };
+
+    const recordFrameArrival = (): number => {
+      const now = performance.now();
+      if (lastArrivalAt > 0) {
+        const dt = now - lastArrivalAt;
+        if (dt > 2 && dt < 280) {
+          avgIntervalMs = avgIntervalMs * 0.8 + dt * 0.2;
+          const dev = Math.abs(dt - avgIntervalMs);
+          jitterMs = Math.min(140, jitterMs * 0.82 + dev * 0.18);
+        }
       }
+      lastArrivalAt = now;
+      return now;
+    };
+
+    const paintSlot = (canvas: HTMLCanvasElement | null, slot: DecodedSlot): boolean => {
+      if (!slot.failed && canvas && slot.patches && slot.patches.length > 0) {
+        const targetW =
+          slot.kind === 'full' ? slot.patches[0].bitmap.width : slot.fullW;
+        const targetH =
+          slot.kind === 'full' ? slot.patches[0].bitmap.height : slot.fullH;
+        if (targetW > 0 && targetH > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
+          canvas.width = targetW;
+          canvas.height = targetH;
+          ctxRef.current = null;
+        }
+        const ctx = getCtx(canvas);
+        if (ctx) {
+          for (const p of slot.patches) {
+            ctx.drawImage(p.bitmap, p.rx, p.ry);
+          }
+        }
+        return true;
+      }
+      return false;
     };
 
     const paintLoop = () => {
@@ -197,38 +252,89 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
       if (closed) return;
       const canvas = canvasRef.current;
       let paintedAny = false;
+      const now = performance.now();
 
-      while (readySlots.has(nextPaintSeq)) {
-        const slot = readySlots.get(nextPaintSeq)!;
-        readySlots.delete(nextPaintSeq);
-        nextPaintSeq += 1;
-
-        if (!slot.failed && canvas && slot.patches && slot.patches.length > 0) {
-          const targetW =
-            slot.kind === 'full' ? slot.patches[0].bitmap.width : slot.fullW;
-          const targetH =
-            slot.kind === 'full' ? slot.patches[0].bitmap.height : slot.fullH;
-          if (targetW > 0 && targetH > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
-            canvas.width = targetW;
-            canvas.height = targetH;
-            ctxRef.current = null;
+      if (!smoothBufferRef.current) {
+        smoothBuffering = false;
+        while (readySlots.has(nextPaintSeq)) {
+          const slot = readySlots.get(nextPaintSeq)!;
+          readySlots.delete(nextPaintSeq);
+          nextPaintSeq += 1;
+          if (paintSlot(canvas, slot)) {
+            paintedAny = true;
+            lastPaintedAt = now;
           }
-          const ctx = getCtx(canvas);
-          if (ctx) {
-            for (const p of slot.patches) {
-              ctx.drawImage(p.bitmap, p.rx, p.ry);
-            }
-          }
-          paintedAny = true;
+          disposeSlot(slot);
         }
-        disposeSlot(slot);
+        if (paintedAny && !readyFiredRef.current) {
+          readyFiredRef.current = true;
+          onReadyRef.current?.();
+        }
+        flushAcks();
+        return;
+      }
+
+      // Adaptive Smooth Buffer Mode: hold small RTT+jitter cushion and pace steady 1-frame/VSync playback
+      const targetBufferMs = Math.min(240, Math.max(70, pingMsRef.current * 0.65 + jitterMs * 1.4 + 35));
+      const frameStepMs = Math.max(16, Math.min(45, avgIntervalMs));
+      const targetFrames = Math.max(2, Math.min(10, Math.round(targetBufferMs / frameStepMs)));
+
+      if (readySlots.has(nextPaintSeq)) {
+        const head = readySlots.get(nextPaintSeq)!;
+        const headAge = now - head.arrivedAt;
+        const queuedCount = readySlots.size;
+        const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 240;
+
+        // First frame after idle paints immediately (snappy clicks/typing), continuous motion primes smooth buffer
+        if (!readyFiredRef.current || (wasIdle && queuedCount === 1)) {
+          smoothBuffering = false;
+        } else if (queuedCount >= 2 && headAge < targetBufferMs * 0.65 && queuedCount < targetFrames && smoothBuffering) {
+          // Wait briefly to absorb TCP burst jitter before resuming steady cadence
+          schedulePaint();
+          if (readySlots.size <= 16) flushAcks();
+          return;
+        }
+
+        // Guard against unbounded queue growth: jump to newest full keyframe only if extremely backed up (>20)
+        if (queuedCount > 20) {
+          let latestFullSeq = -1;
+          for (const [k, s] of readySlots.entries()) {
+            if (s.kind === 'full' && k > latestFullSeq) latestFullSeq = k;
+          }
+          if (latestFullSeq > nextPaintSeq) {
+            dropStaleBefore(latestFullSeq);
+          }
+        }
+
+        // Gentle catch-up: paint 1 frame normally, 2 frames only when queue exceeds target cushion
+        const paintBudget =
+          queuedCount > targetFrames + 5 || headAge > targetBufferMs + 140 ? 2 : 1;
+
+        for (let painted = 0; painted < paintBudget && readySlots.has(nextPaintSeq); painted++) {
+          const slot = readySlots.get(nextPaintSeq)!;
+          readySlots.delete(nextPaintSeq);
+          nextPaintSeq += 1;
+          if (paintSlot(canvas, slot)) {
+            paintedAny = true;
+            lastPaintedAt = now;
+          }
+          disposeSlot(slot);
+        }
+
+        if (readySlots.size === 0) {
+          smoothBuffering = true;
+        } else {
+          schedulePaint();
+        }
       }
 
       if (paintedAny && !readyFiredRef.current) {
         readyFiredRef.current = true;
         onReadyRef.current?.();
       }
-      flushAcks();
+      if (readySlots.size <= 16) {
+        flushAcks();
+      }
     };
 
     const schedulePaint = () => {
@@ -250,8 +356,11 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
     };
 
     const enqueueFullFrame = (bytes: Uint8Array) => {
+      const arrivedAt = recordFrameArrival();
       const seq = nextSeq++;
-      dropStaleBefore(seq);
+      if (!smoothBufferRef.current) {
+        dropStaleBefore(seq);
+      }
       pendingAckCount += 1;
       const blob = new Blob([bytes as BlobPart], { type: 'image/jpeg' });
       createImageBitmap(blob, { colorSpaceConversion: 'none' })
@@ -266,18 +375,23 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             kind: 'full',
             fullW: bitmap.width,
             fullH: bitmap.height,
+            arrivedAt,
             patches: [{ rx: 0, ry: 0, bitmap }],
           });
+          if (smoothBufferRef.current && readySlots.size <= 16) {
+            flushAcks();
+          }
           schedulePaint();
         })
         .catch(() => {
-          readySlots.set(seq, { seq, kind: 'full', fullW: 0, fullH: 0, failed: true });
+          readySlots.set(seq, { seq, kind: 'full', fullW: 0, fullH: 0, arrivedAt, failed: true });
           schedulePaint();
         });
     };
 
     const enqueueRectFrame = (buf: ArrayBuffer) => {
       if (buf.byteLength <= 13) return;
+      const arrivedAt = recordFrameArrival();
       const seq = nextSeq++;
       pendingAckCount += 1;
       const dv = new DataView(buf);
@@ -298,18 +412,23 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             kind: 'patches',
             fullW,
             fullH,
+            arrivedAt,
             patches: [{ rx, ry, bitmap }],
           });
+          if (smoothBufferRef.current && readySlots.size <= 16) {
+            flushAcks();
+          }
           schedulePaint();
         })
         .catch(() => {
-          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
           schedulePaint();
         });
     };
 
     const enqueueMultiRectFrame = (buf: ArrayBuffer) => {
       if (buf.byteLength <= 7) return;
+      const arrivedAt = recordFrameArrival();
       const dv = new DataView(buf);
       const count = dv.getUint16(1, false);
       const fullW = dv.getUint16(3, false);
@@ -332,7 +451,7 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
         jobs.push(createImageBitmap(blob, { colorSpaceConversion: 'none' }).then((bitmap) => ({ rx, ry, bitmap })));
       }
       if (jobs.length === 0) {
-        readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+        readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
         schedulePaint();
         return;
       }
@@ -343,16 +462,22 @@ export const LinuxAppWindow: React.FC<LinuxAppWindowProps> = ({
             flushAcks();
             return;
           }
-          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, patches });
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, patches });
+          if (smoothBufferRef.current && readySlots.size <= 16) {
+            flushAcks();
+          }
           schedulePaint();
         })
         .catch(() => {
-          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, failed: true });
+          readySlots.set(seq, { seq, kind: 'patches', fullW, fullH, arrivedAt, failed: true });
           schedulePaint();
         });
     };
 
     ws.onopen = () => {
+      if (pingMsRef.current > 0) {
+        sendInput({ type: 'net_stats', rttMs: Math.round(pingMsRef.current) });
+      }
       if (isFocused) {
         sendInput({ type: 'focus' });
         focusInputSink();

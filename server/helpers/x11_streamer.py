@@ -15,6 +15,7 @@ Key performance optimizations:
 """
 import ctypes
 import json
+import math
 import os
 import select
 import struct
@@ -1126,11 +1127,25 @@ def main() -> None:
     max_quality = quality
     motion_quality = max(30, min(max_quality, max_quality - 24))
     dynamic_drop = True
+    smooth_buffer = False
+    client_rtt_sec = 0.04
     settle_sec = 0.18
     needs_settle = False
     settle_rect: tuple[int, int, int, int] | None = None
     last_motion_at = 0.0
     pending_damage: tuple[tuple[int, int, int, int] | None, list[tuple[int, int, int, int]] | None] | None = None
+
+    def recompute_pipeline_window() -> None:
+        nonlocal max_in_flight
+        if smooth_buffer:
+            buffer_sec = min(0.24, max(0.08, client_rtt_sec * 0.75 + 0.05))
+            bdp_frames = int(math.ceil(max_fps * (client_rtt_sec + buffer_sec))) + 2
+            max_in_flight = max(6, min(18, bdp_frames))
+        else:
+            bdp_frames = int(math.ceil(max_fps * client_rtt_sec)) + 2
+            max_in_flight = max(4, min(8, bdp_frames))
+
+    recompute_pipeline_window()
 
     # Gentle initial settle window while the X11 app first paints its window
     startup_until = time.monotonic() + 2.4
@@ -1138,7 +1153,8 @@ def main() -> None:
     while True:
         now = time.monotonic()
         # Prevent permanent deadlock if a client browser tab goes backgrounded without acking
-        if in_flight > 0 and (now - in_flight_since) > 0.35:
+        inflight_timeout = max(0.45, client_rtt_sec * 2.6 + (0.28 if smooth_buffer else 0.0))
+        if in_flight > 0 and (now - in_flight_since) > inflight_timeout:
             in_flight = max(0, in_flight - 1)
             in_flight_since = now
 
@@ -1183,9 +1199,15 @@ def main() -> None:
                     s = line.strip()
                     if not s:
                         continue
-                    if s == b"k":
+                    if s == b"k" or s.startswith(b"k "):
                         use_client_ack = True
-                        in_flight = max(0, in_flight - 1)
+                        ack_n = 1
+                        if len(s) > 2:
+                            try:
+                                ack_n = max(1, min(32, int(s[2:].strip())))
+                            except ValueError:
+                                ack_n = 1
+                        in_flight = max(0, in_flight - ack_n)
                         in_flight_since = time.monotonic()
                     elif s == b"a":
                         if not use_client_ack:
@@ -1226,6 +1248,11 @@ def main() -> None:
                                 force_full = True
                                 pending_damage = None
                                 dirty = True
+                            elif ctype == "net_stats":
+                                if "rtt_ms" in cmd:
+                                    rtt_ms = max(2.0, min(1200.0, float(cmd["rtt_ms"])))
+                                    client_rtt_sec = client_rtt_sec * 0.65 + (rtt_ms / 1000.0) * 0.35
+                                    recompute_pipeline_window()
                             elif ctype == "stream_config":
                                 if "fps" in cmd and cmd["fps"]:
                                     max_fps = max(8, min(60, int(cmd["fps"])))
@@ -1237,8 +1264,14 @@ def main() -> None:
                                     motion_quality = max(30, min(max_quality, int(cmd["motion_quality"])))
                                 if "dynamic_drop" in cmd:
                                     dynamic_drop = bool(cmd["dynamic_drop"])
+                                if "smooth_buffer" in cmd:
+                                    smooth_buffer = bool(cmd["smooth_buffer"])
+                                if "rtt_ms" in cmd and cmd["rtt_ms"]:
+                                    rtt_ms = max(2.0, min(1200.0, float(cmd["rtt_ms"])))
+                                    client_rtt_sec = rtt_ms / 1000.0
                                 if "settle_ms" in cmd and cmd["settle_ms"]:
                                     settle_sec = max(0.10, min(1.2, float(cmd["settle_ms"]) / 1000.0))
+                                recompute_pipeline_window()
                                 prev_cache.reset()
                                 force_full = True
                                 pending_damage = None
@@ -1301,10 +1334,11 @@ def main() -> None:
                 active_interval = micro_interval
 
         if dirty and in_flight < max_in_flight and (now - last_sent) >= active_interval:
+            effective_dynamic_drop = dynamic_drop and (not smooth_buffer)
             is_rapid_motion = (
-                dynamic_drop and not force_full and (now - last_sent) < max(0.20, min_interval * 3.0)
+                effective_dynamic_drop and not force_full and (now - last_sent) < max(0.20, min_interval * 3.0)
             )
-            congestion_drop = 8 if in_flight >= (max_in_flight - 1) else 0
+            congestion_drop = 0 if smooth_buffer else (8 if in_flight >= (max_in_flight - 1) else 0)
             send_qual = (
                 max(30, motion_quality - congestion_drop)
                 if is_rapid_motion

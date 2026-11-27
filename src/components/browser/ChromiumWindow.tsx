@@ -44,6 +44,8 @@ interface ChromiumWindowBodyProps {
   muted: boolean;
   defaultUrl?: string;
   maxDpr?: number;
+  smoothBuffer?: boolean;
+  pingMs?: number;
   sendWs: (msg: Record<string, unknown>) => void;
   onOpenFolder: (path: string) => void;
   onVfsSaved: () => void;
@@ -136,6 +138,8 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
   muted,
   defaultUrl = 'https://www.google.com',
   maxDpr = 2,
+  smoothBuffer = false,
+  pingMs = 20,
   sendWs,
   onOpenFolder,
   onVfsSaved,
@@ -149,6 +153,10 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const localMediaRef = useRef<HTMLMediaElement | null>(null);
   const lastMoveSentRef = useRef<number>(0);
+  const smoothBufferRef = useRef(smoothBuffer);
+  smoothBufferRef.current = smoothBuffer;
+  const pingMsRef = useRef(pingMs);
+  pingMsRef.current = pingMs;
 
   // Touch gesture tracking for smooth tablet scrolling inside Chromium canvas
   const touchTrackRef = useRef<{
@@ -178,12 +186,91 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
     }
   }, [volume, muted, activeTab?.id]);
 
-  // Direct zero-rerender GPU bitmap canvas renderer
+  // Direct zero-rerender GPU bitmap canvas renderer (with optional Smooth Buffer VSync pacing)
   useEffect(() => {
+    let closed = false;
     let decoding = false;
     let pendingBytes: Uint8Array | null = null;
+    let rafId: number | null = null;
+    let lastPaintedAt = 0;
+    const smoothQueue: Array<{ bmp: ImageBitmap; arrivedAt: number }> = [];
+
+    const drawBitmap = (bmp: ImageBitmap) => {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+          canvas.width = bmp.width;
+          canvas.height = bmp.height;
+        }
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx?.drawImage(bmp, 0, 0);
+      }
+      bmp.close();
+      lastPaintedAt = performance.now();
+    };
+
+    const tickSmooth = () => {
+      rafId = null;
+      if (closed || smoothQueue.length === 0) return;
+      const now = performance.now();
+      const targetBufferMs = Math.min(220, Math.max(70, pingMsRef.current * 0.65 + 45));
+      const head = smoothQueue[0];
+      const wasIdle = lastPaintedAt === 0 || now - lastPaintedAt > 240;
+
+      if (!smoothBufferRef.current) {
+        const latest = smoothQueue.pop()!;
+        while (smoothQueue.length > 0) smoothQueue.shift()!.bmp.close();
+        drawBitmap(latest.bmp);
+        return;
+      }
+
+      if (wasIdle && smoothQueue.length === 1) {
+        drawBitmap(smoothQueue.shift()!.bmp);
+      } else if (smoothQueue.length >= 2 || now - head.arrivedAt >= targetBufferMs * 0.5) {
+        drawBitmap(smoothQueue.shift()!.bmp);
+        if (smoothQueue.length > 10) {
+          drawBitmap(smoothQueue.shift()!.bmp);
+        }
+      }
+
+      if (smoothQueue.length > 0 && !closed) {
+        rafId = window.requestAnimationFrame(tickSmooth);
+      }
+    };
+
+    const scheduleSmooth = () => {
+      if (rafId === null && !closed) {
+        rafId = window.requestAnimationFrame(tickSmooth);
+      }
+    };
 
     const paintBytes = async (bytes: Uint8Array) => {
+      const arrivedAt = performance.now();
+      if (smoothBufferRef.current) {
+        try {
+          const isPng =
+            bytes.length >= 4 &&
+            bytes[0] === 0x89 &&
+            bytes[1] === 0x50 &&
+            bytes[2] === 0x4e &&
+            bytes[3] === 0x47;
+          const blob = new Blob([bytes as BlobPart], {
+            type: isPng ? 'image/png' : 'image/jpeg',
+          });
+          const bmp = await createImageBitmap(blob);
+          if (closed) {
+            bmp.close();
+            return;
+          }
+          smoothQueue.push({ bmp, arrivedAt });
+          while (smoothQueue.length > 16) {
+            smoothQueue.shift()!.bmp.close();
+          }
+          scheduleSmooth();
+        } catch {}
+        return;
+      }
+
       if (decoding) {
         pendingBytes = bytes;
         return;
@@ -191,29 +278,24 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
       decoding = true;
       try {
         let current: Uint8Array | null = bytes;
-        while (current) {
+        while (current && !closed) {
           const nextToPaint = current;
           pendingBytes = null;
-          const canvas = canvasRef.current;
-          if (canvas) {
-            const isPng =
-              nextToPaint.length >= 4 &&
-              nextToPaint[0] === 0x89 &&
-              nextToPaint[1] === 0x50 &&
-              nextToPaint[2] === 0x4e &&
-              nextToPaint[3] === 0x47;
-            const blob = new Blob([nextToPaint as BlobPart], {
-              type: isPng ? 'image/png' : 'image/jpeg',
-            });
-            const bmp = await createImageBitmap(blob);
-            if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
-              canvas.width = bmp.width;
-              canvas.height = bmp.height;
-            }
-            const ctx = canvas.getContext('2d', { alpha: false });
-            ctx?.drawImage(bmp, 0, 0);
+          const isPng =
+            nextToPaint.length >= 4 &&
+            nextToPaint[0] === 0x89 &&
+            nextToPaint[1] === 0x50 &&
+            nextToPaint[2] === 0x4e &&
+            nextToPaint[3] === 0x47;
+          const blob = new Blob([nextToPaint as BlobPart], {
+            type: isPng ? 'image/png' : 'image/jpeg',
+          });
+          const bmp = await createImageBitmap(blob);
+          if (closed) {
             bmp.close();
+            break;
           }
+          drawBitmap(bmp);
           current = pendingBytes;
         }
       } catch {
@@ -223,7 +305,15 @@ export const ChromiumWindowBody: React.FC<ChromiumWindowBodyProps> = ({
       }
     };
 
-    return subscribeVideoFrame(paintBytes);
+    const unsub = subscribeVideoFrame(paintBytes);
+    return () => {
+      closed = true;
+      unsub();
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      while (smoothQueue.length > 0) {
+        smoothQueue.shift()!.bmp.close();
+      }
+    };
   }, [subscribeVideoFrame, activeTab?.id, activeTab?.mode]);
 
   const hasActiveTab = Boolean(activeTab);

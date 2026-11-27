@@ -2244,6 +2244,8 @@ export default function App() {
                   meta.preferences.browser?.defaultUrl || DEFAULT_BROWSER_PREFERENCES.defaultUrl
                 }
                 maxDpr={meta.preferences.stream?.maxDpr ?? 2}
+                smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
+                pingMs={pingMs}
                 sendWs={sendWs}
                 onOpenFolder={openFolderWindow}
                 onVfsSaved={refreshVfs}
@@ -2333,6 +2335,8 @@ export default function App() {
                 isFocused={focusedWindowId === win.id}
                 externalDropHighlighted={externalDropTarget === `linux-app:${win.appSessionId}`}
                 scrollSensitivity={meta.preferences.stream?.scrollSensitivity ?? 1.0}
+                smoothBuffer={Boolean(meta.preferences.stream?.smoothBuffer)}
+                pingMs={pingMs}
                 onVfsChanged={refreshVfs}
                 onClipboardSync={syncClipboardAcrossDesktop}
                 onLockScreen={activateLockScreen}

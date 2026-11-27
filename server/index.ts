@@ -32,7 +32,7 @@ import { VSCodeServerManager } from './vscodeManager';
 import { WebAppProxyManager } from './webAppProxy';
 import { mediaBridge } from './mediaBridge';
 
-export const TAMGA_VERSION = '2.3.2';
+export const TAMGA_VERSION = '2.3.3';
 
 const MIME_MAP: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -634,6 +634,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         motionQuality: streamPrefs?.x11MotionQuality ?? 58,
         dynamicDrop: streamPrefs?.dynamicQualityDrop ?? true,
         settleMs: streamPrefs?.settleDelayMs ?? 200,
+        smoothBuffer: Boolean(streamPrefs?.smoothBuffer),
         enableAudio: (streamPrefs?.audioEnabled ?? config.linuxApps.audio) && runtime.hasAudio,
       });
 
@@ -1067,9 +1068,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
         const s = meta.preferences.stream;
         browserSession
           .setStreamConfig({
-            dynamicQualityDrop: s.dynamicQualityDrop,
-            motionQuality: s.motionQuality,
-            motionScale: s.motionScale,
+            dynamicQualityDrop: s.smoothBuffer ? false : s.dynamicQualityDrop,
+            motionQuality: s.smoothBuffer ? Math.max(85, s.motionQuality) : s.motionQuality,
+            motionScale: s.smoothBuffer ? 1 : s.motionScale,
             maxDpr: s.maxDpr,
             settlePng: s.settlePng,
             settleDelayMs: s.settleDelayMs,
@@ -1081,6 +1082,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
           motionQuality: s.x11MotionQuality,
           dynamicDrop: s.dynamicQualityDrop,
           settleMs: s.settleDelayMs,
+          smoothBuffer: Boolean(s.smoothBuffer),
         });
       }
       if (prefs?.browser?.defaultUrl) {
@@ -1216,8 +1218,14 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     }
   }
 
-  function sendBinary(ws: WebSocket, packet: Buffer, cb?: () => void, onDrop?: () => void) {
-    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 524_288) {
+  function sendBinary(
+    ws: WebSocket,
+    packet: Buffer,
+    cb?: () => void,
+    onDrop?: () => void,
+    maxBufferBytes = 1_048_576
+  ) {
+    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < maxBufferBytes) {
       ws.send(packet, { binary: true, compress: false }, () => cb?.());
     } else {
       onDrop?.();
@@ -1337,9 +1345,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
               const updated = vfs.updateMeta({ preferences: { stream: msg.stream } });
               const s = updated.preferences.stream;
               await browserSession.setStreamConfig({
-                dynamicQualityDrop: s.dynamicQualityDrop,
-                motionQuality: s.motionQuality,
-                motionScale: s.motionScale,
+                dynamicQualityDrop: s.smoothBuffer ? false : s.dynamicQualityDrop,
+                motionQuality: s.smoothBuffer ? Math.max(85, s.motionQuality) : s.motionQuality,
+                motionScale: s.smoothBuffer ? 1 : s.motionScale,
                 maxDpr: s.maxDpr,
                 settlePng: s.settlePng,
                 settleDelayMs: s.settleDelayMs,
@@ -1350,6 +1358,7 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
                 motionQuality: s.x11MotionQuality,
                 dynamicDrop: s.dynamicQualityDrop,
                 settleMs: s.settleDelayMs,
+                smoothBuffer: Boolean(s.smoothBuffer),
               });
             }
             break;
@@ -1494,14 +1503,21 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
     let dropRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const unsub = session.subscribeView(viewId, {
       onVideoFrame: (framedPkt, done) => {
-        sendBinary(ws, framedPkt, done, () => {
-          if (!dropRefreshTimer) {
-            dropRefreshTimer = setTimeout(() => {
-              dropRefreshTimer = null;
-              session.requestRefresh(viewId);
-            }, 90);
-          }
-        });
+        const maxBuf = session.isSmoothBufferEnabled() ? 4_194_304 : 1_048_576;
+        sendBinary(
+          ws,
+          framedPkt,
+          done,
+          () => {
+            if (!dropRefreshTimer) {
+              dropRefreshTimer = setTimeout(() => {
+                dropRefreshTimer = null;
+                session.requestRefresh(viewId);
+              }, 90);
+            }
+          },
+          maxBuf
+        );
       },
       onAudioChunk: (pcm) => {
         const pkt = Buffer.allocUnsafe(1 + pcm.length);
@@ -1516,7 +1532,9 @@ export async function startTamgaServer(opts: StartServerOptions = {}) {
       try {
         const msg = JSON.parse(raw.toString('utf-8'));
         if (msg.type === 'ack') {
-          session.ackVideoFrame(viewId);
+          session.ackVideoFrame(viewId, Number(msg.count) || 1);
+        } else if (msg.type === 'net_stats' && typeof msg.rttMs === 'number') {
+          session.updateClientRtt(msg.rttMs, viewId);
         } else if (msg.type === 'resize') {
           session.resizeView(viewId, Number(msg.width), Number(msg.height));
         } else if (msg.type === 'focus') {

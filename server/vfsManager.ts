@@ -28,6 +28,7 @@ export interface StreamPreferences {
   x11MotionQuality: number;
   audioEnabled: boolean;
   scrollSensitivity?: number;
+  smoothBuffer?: boolean;
 }
 
 export interface BrowserPreferences {
@@ -120,6 +121,7 @@ export const DEFAULT_STREAM_PREFERENCES: StreamPreferences = {
   x11MotionQuality: 58,
   audioEnabled: true,
   scrollSensitivity: 1.0,
+  smoothBuffer: false,
 };
 
 export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = {

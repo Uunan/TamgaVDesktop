@@ -272,6 +272,7 @@ export interface X11StreamConfig {
   motionQuality?: number;
   dynamicDrop?: boolean;
   settleMs?: number;
+  smoothBuffer?: boolean;
 }
 
 export interface BridgeEndpointInfo {
@@ -301,6 +302,7 @@ export interface LinuxAppSessionOptions {
   motionQuality?: number;
   dynamicDrop?: boolean;
   settleMs?: number;
+  smoothBuffer?: boolean;
   enableAudio?: boolean;
 }
 
@@ -614,6 +616,8 @@ export class LinuxAppSession {
   private motionQuality: number;
   private dynamicDrop: boolean;
   private settleMs: number;
+  private smoothBuffer: boolean;
+  private clientRttMs = 40;
   private enableAudio: boolean;
   private desktopDataRoot: string;
   private command: string;
@@ -671,6 +675,7 @@ export class LinuxAppSession {
     this.motionQuality = Math.max(30, Math.min(this.maxQuality, opts.motionQuality ?? Math.max(40, this.maxQuality - 24)));
     this.dynamicDrop = opts.dynamicDrop ?? true;
     this.settleMs = Math.max(100, Math.min(1200, opts.settleMs ?? 200));
+    this.smoothBuffer = Boolean(opts.smoothBuffer);
     this.enableAudio = opts.enableAudio ?? true;
     this.tempDir = path.join(
       os.tmpdir(),
@@ -699,6 +704,24 @@ export class LinuxAppSession {
     });
   }
 
+  public isSmoothBufferEnabled(): boolean {
+    return this.smoothBuffer;
+  }
+
+  public updateClientRtt(rttMs: number, viewId?: string): void {
+    if (this.closed || !Number.isFinite(rttMs)) return;
+    this.clientRttMs = Math.max(2, Math.min(1200, Math.round(rttMs)));
+    const payload = JSON.stringify({ type: 'net_stats', rtt_ms: this.clientRttMs }) + '\n';
+    const targets = viewId ? [this.views.get(viewId)].filter(Boolean) : Array.from(this.views.values());
+    for (const v of targets) {
+      if (v && v.streamerMode === 'xdamage' && v.streamerProc?.stdin?.writable) {
+        try {
+          v.streamerProc.stdin.write(payload);
+        } catch {}
+      }
+    }
+  }
+
   public updateStreamConfig(cfg: X11StreamConfig): void {
     if (typeof cfg.fps === 'number' && Number.isFinite(cfg.fps)) {
       this.fps = Math.max(8, Math.min(60, Math.round(cfg.fps)));
@@ -715,6 +738,9 @@ export class LinuxAppSession {
     if (typeof cfg.settleMs === 'number' && Number.isFinite(cfg.settleMs)) {
       this.settleMs = Math.max(100, Math.min(1200, Math.round(cfg.settleMs)));
     }
+    if (typeof cfg.smoothBuffer === 'boolean') {
+      this.smoothBuffer = cfg.smoothBuffer;
+    }
     const payload =
       JSON.stringify({
         type: 'stream_config',
@@ -723,6 +749,8 @@ export class LinuxAppSession {
         motion_quality: this.motionQuality,
         dynamic_drop: this.dynamicDrop,
         settle_ms: this.settleMs,
+        smooth_buffer: this.smoothBuffer,
+        rtt_ms: this.clientRttMs,
       }) + '\n';
     for (const v of this.views.values()) {
       if (v.streamerMode === 'xdamage' && v.streamerProc?.stdin?.writable) {
@@ -1623,6 +1651,8 @@ export class LinuxAppSession {
             motion_quality: this.motionQuality,
             dynamic_drop: this.dynamicDrop,
             settle_ms: this.settleMs,
+            smooth_buffer: this.smoothBuffer,
+            rtt_ms: this.clientRttMs,
           }) + '\n'
         );
       } catch {}
@@ -1812,13 +1842,14 @@ export class LinuxAppSession {
     }
   }
 
-  public ackVideoFrame(viewId = 'main'): void {
+  public ackVideoFrame(viewId = 'main', count = 1): void {
     if (this.closed) return;
     const view = this.views.get(viewId || 'main') || this.views.get('main');
     if (!view || view.streamerMode !== 'xdamage' || !view.streamerProc?.stdin?.writable) return;
     view.clientAckActive = true;
+    const n = Math.max(1, Math.min(32, Math.round(count || 1)));
     try {
-      view.streamerProc.stdin.write('k\n');
+      view.streamerProc.stdin.write(n === 1 ? 'k\n' : `k ${n}\n`);
     } catch {}
   }
 

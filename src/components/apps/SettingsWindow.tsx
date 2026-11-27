@@ -52,7 +52,7 @@ export const STREAM_PRESETS: Record<
   {
     label: string;
     tag: string;
-    config: Omit<StreamPreferences, 'audioEnabled' | 'scrollSensitivity'>;
+    config: Omit<StreamPreferences, 'audioEnabled' | 'scrollSensitivity' | 'smoothBuffer'>;
   }
 > = {
   performance: {
@@ -321,6 +321,7 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
         ...STREAM_PRESETS[presetKey].config,
         audioEnabled: stream.audioEnabled,
         scrollSensitivity: stream.scrollSensitivity ?? 1.0,
+        smoothBuffer: Boolean(stream.smoothBuffer),
       },
     });
   };
@@ -460,6 +461,31 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({
 
               {/* Dynamic Motion Quality Section */}
               <div className="rounded-2xl bg-[var(--os-surface-2)] border border-[var(--os-border)] divide-y divide-[var(--os-border)]">
+                <div>
+                  <Row
+                    label="Gecikme Korumalı Akıcı Kalite"
+                    tip="Ping (ms) yükseldiğinde kaliteyi düşürmek yerine kareleri ~80–220 ms adaptif tamponla biraz geriden ama tam netlikte ve takılmadan akıtır."
+                    right={
+                      <Toggle
+                        testId="toggle-smooth-buffer"
+                        checked={Boolean(stream.smoothBuffer)}
+                        onChange={(v) => updateStream({ smoothBuffer: v }, false)}
+                      />
+                    }
+                  />
+                  {stream.smoothBuffer && (
+                    <div
+                      data-testid="smooth-buffer-status"
+                      className="px-4 pb-2.5 -mt-1 text-[11px] text-[var(--os-text-muted)] flex items-center justify-between gap-2"
+                    >
+                      <span>Aktif • Kalite düşürme kapalı, adaptif tampon açık</span>
+                      <span className="font-mono text-[10px] text-[var(--os-text-subtle)] shrink-0">
+                        ~{Math.round(Math.min(220, Math.max(80, pingMs * 0.75 + 60)))} ms tampon
+                      </span>
+                    </div>
+                  )}
+                </div>
+
                 <Row
                   label="Hareket Anında Kalite Düşür"
                   tip="Sayfa kaydırırken veya pencere hareket ederken kare boyutunu geçici küçültür. Düşük internet ve yüksek pingde kaydırmayı çok hızlandırır."
